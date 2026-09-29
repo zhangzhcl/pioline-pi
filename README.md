@@ -28,8 +28,9 @@ Build an installer for the current platform:
 ```sh
 bun run build
 ```
-<img width="1947" height="1307" alt="image" src="https://github.com/user-attachments/assets/002dbed0-8273-49bf-a9f7-9eea413fba45" />
-<img width="2184" height="1386" alt="image" src="https://github.com/user-attachments/assets/1c2e785e-53d8-4ed3-a8fc-0cccfc0da1fe" />
+<img width="1958" height="1310" alt="image" src="https://github.com/user-attachments/assets/0a237195-eafb-4b32-84a7-b858170137eb" />
+<img width="2140" height="1392" alt="image" src="https://github.com/user-attachments/assets/f8c14659-c1e4-49c8-8f85-e3036f977c1a" />
+
 
 The macOS deployment target is 11.0. Developer ID signing and notarization are deferred release tasks, not development prerequisites.
 
