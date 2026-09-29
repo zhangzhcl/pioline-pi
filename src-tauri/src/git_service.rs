@@ -2362,10 +2362,8 @@ mod tests {
                 "discard",
             )
             .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root.path().join("file.txt")).unwrap(),
-            "two\n"
-        );
+        let discarded = std::fs::read_to_string(root.path().join("file.txt")).unwrap();
+        assert_eq!(discarded.replace("\r\n", "\n"), "two\n");
         let _ = entry;
     }
     #[test]
@@ -2948,6 +2946,7 @@ mod tests {
         run(&["init", "-q", "-b", "main"]);
         run(&["config", "user.name", "Test"]);
         run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "core.autocrlf", "false"]);
         (dir, root)
     }
 
@@ -3009,6 +3008,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn log_detail_and_commit_diff_preserve_empty_message_fields() {
         let (_dir, root) = test_repo();
         std::fs::write(root.join("line\nname.txt"), "one\n").unwrap();

@@ -7,10 +7,11 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <base href="/" />
-    <title>Picot</title>
+    <title>Pipline</title>
     <link rel="icon" type="image/svg+xml" href="icons/logo-dark.svg" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#f5f3ef" />
+    <script src="native/compatibility.js"></script>
     <script id="theme-bootstrap">
       // Resolve the theme before loading CSS so the browser's first paint
       // uses the saved palette instead of the default dark tokens.
@@ -137,7 +138,7 @@
               data-i18n-title="nav.chat"
               ><img
                 src="icons/logo-dark.svg"
-                alt="Picot logo"
+                alt="Pipline logo"
                 data-i18n-alt="migrated.index.alt.picotLogo"
                 class="tau-icon"
             /></span>
@@ -581,6 +582,16 @@
             </div>
           </div>
           <div class="header-right">
+            <button
+              type="button"
+              class="ui-button ui-button--sm ui-button--secondary workflow-mode-toggle"
+              id="workflow-mode-toggle"
+              aria-expanded="false"
+              aria-controls="workflow-panel"
+              data-i18n="workflow.open"
+            >
+              Workflow
+            </button>
             <span
               class="pill session-cost"
               id="session-cost"
@@ -825,12 +836,12 @@
                 <div class="welcome-icon">
                   <img
                     src="icons/logo-dark.svg"
-                    alt="Picot logo"
+                    alt="Pipline logo"
                     data-i18n-alt="migrated.index.alt.picotLogo"
                     class="tau-icon-welcome"
                   />
                 </div>
-                <p data-i18n="app.welcome">Welcome to Picot</p>
+                <p data-i18n="app.welcome">Welcome to Pipline</p>
                 <p class="hint" data-i18n="app.welcomeHint">
                   Type a message below to start chatting with Pi, or select a
                   session from the sidebar.
@@ -1376,6 +1387,20 @@
               ></span>
             </div>
             <div class="file-preview-content" id="file-preview-content"></div>
+          </section>
+
+          <section class="workflow-panel app-side-panel hidden" id="workflow-panel" aria-labelledby="workflow-panel-title">
+            <header class="workflow-panel__header">
+              <div>
+                <h2 id="workflow-panel-title" data-i18n="workflow.title">Workflow</h2>
+                <span class="workflow-panel__revision" id="workflow-revision"></span>
+              </div>
+              <div class="workflow-panel__header-actions">
+                <button type="button" class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost" id="workflow-open-window" aria-label="Open workflow in its own window" data-i18n-aria-label="workflow.openInWindow">↗</button>
+                <button type="button" class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost" id="workflow-close" aria-label="Close workflow" data-i18n-aria-label="workflow.close">×</button>
+              </div>
+            </header>
+            <div class="workflow-panel__body" id="workflow-panel-body" aria-live="polite"></div>
           </section>
 
           <!-- Super Agent Runtime Panel (right column, shown when SA active) -->
@@ -1928,7 +1953,7 @@
               </div>
               <div class="settings-row">
                 <span class="settings-label" data-i18n="settings.picotVersion"
-                  >Picot version</span
+                  >Pipline version</span
                 >
                 <span
                   class="settings-static-value ui-loading"
@@ -1972,7 +1997,7 @@
                   <span
                     class="settings-label-sub"
                     data-i18n="migrated.index.text.receivePrereleasePicotBuilds"
-                    >Receive prerelease Picot builds</span
+                    >Receive prerelease Pipline builds</span
                   >
                 </span>
                 <button
@@ -1984,6 +2009,34 @@
                   data-i18n-aria-label="migrated.index.ariaLabel.receiveBetaUpdates"
                   aria-checked="false"
                 ></button>
+              </div>
+            </div>
+            <div class="settings-section" id="settings-diagnostics-section">
+              <div class="settings-section-title" data-i18n="settings.diagnostics">
+                Diagnostics
+              </div>
+              <div class="settings-row settings-update-row">
+                <span class="settings-label settings-label-stack">
+                  <span
+                    class="settings-label-main"
+                    data-i18n="settings.exportLogs"
+                    >Export diagnostic logs</span
+                  >
+                  <span
+                    class="settings-label-sub"
+                    data-i18n="settings.exportLogsDescription"
+                    >Exports Pipline application logs only. Review paths and error details before sharing.</span
+                  >
+                </span>
+                <button
+                  type="button"
+                  class="ui-button ui-button--secondary settings-value-btn"
+                  id="btn-export-logs"
+                  data-i18n="settings.exportLogsButton"
+                  hidden
+                >
+                  Export logs
+                </button>
               </div>
             </div>
           </div>
@@ -2117,7 +2170,7 @@
                   <span
                     class="settings-label-sub"
                     data-i18n="settings.preview.themeDescription"
-                    >Follow the Picot theme, or force light or dark for code
+                    >Follow the Pipline theme, or force light or dark for code
                     and markdown previews.</span
                   >
                 </span>
@@ -2241,7 +2294,7 @@
                   <span
                     class="settings-label-sub"
                     data-i18n="settings.terminal.themeDescription"
-                    >Follow the Picot theme, or force light or dark.</span
+                    >Follow the Pipline theme, or force light or dark.</span
                   >
                 </span>
                 <select
@@ -2434,7 +2487,7 @@
                 Remote Access
               </div>
               <p class="settings-help" data-i18n="settings.remoteAccessHelp">
-                Open or scan this launcher URL on a device on the same network. Tap Request access, then approve it in desktop Picot.
+                Open or scan this launcher URL on a device on the same network. Tap Request access, then approve it in desktop Pipline.
               </p>
               <div class="settings-row remote-access-url-row">
                 <span class="settings-label settings-label-stack">
@@ -2447,7 +2500,7 @@
                 </span>
               </div>
               <span class="settings-save-status remote-access-copy-status" id="remote-access-copy-status" role="status" aria-live="polite"></span>
-              <img class="remote-access-qr" id="remote-access-qr" hidden alt="QR code for the Picot launcher" data-i18n-alt="settings.remoteAccessQrAlt" />
+              <img class="remote-access-qr" id="remote-access-qr" hidden alt="QR code for the Pipline launcher" data-i18n-alt="settings.remoteAccessQrAlt" />
               <p class="settings-help remote-access-note" data-i18n="settings.remoteAccessNote">
                 This QR only opens the plain /app launcher URL. It does not authorize a device. Local-network access uses http://&lt;LAN-IP&gt;:57620/app; traffic is unencrypted, so prompts and source may be observable on the network. Installed-PWA HTTPS requirements are not changed here.
               </p>
@@ -3107,37 +3160,10 @@
     <div id="dialog-container" class="hidden"></div>
 
     <!-- Scripts -->
-    <!-- Import map: redirects browser-only package specifiers to the
-             same-origin ESM vendor bundles produced by scripts/build-frontend.js.
-             Vitest resolves these imports from node_modules directly. -->
-    <script type="importmap">
-      {
-        "imports": {
-          "@codemirror/state": "./vendor/codemirror.js",
-          "@codemirror/view": "./vendor/codemirror.js",
-          "@codemirror/commands": "./vendor/codemirror.js",
-          "@codemirror/language": "./vendor/codemirror.js",
-          "@codemirror/search": "./vendor/codemirror.js",
-          "@codemirror/theme-one-dark": "./vendor/codemirror.js",
-          "@codemirror/lang-javascript": "./vendor/codemirror.js",
-          "@codemirror/lang-json": "./vendor/codemirror.js",
-          "@codemirror/lang-markdown": "./vendor/codemirror.js",
-          "@codemirror/lang-python": "./vendor/codemirror.js",
-          "@codemirror/lang-rust": "./vendor/codemirror.js",
-          "@codemirror/lang-yaml": "./vendor/codemirror.js",
-          "@codemirror/lang-css": "./vendor/codemirror.js",
-          "@codemirror/lang-html": "./vendor/codemirror.js",
-          "@codemirror/legacy-modes/mode/r": "./vendor/codemirror.js",
-          "@codemirror/legacy-modes/mode/shell": "./vendor/codemirror.js",
-          "@tauri-apps/plugin-notification": "./vendor/tauri-notification.js",
-          "pdfjs-dist/legacy/build/pdf.mjs": "./vendor/pdf.js"
-        }
-      }
-    </script>
-    <script type="module" src="bootstrap-entry.js"></script>
-    <script type="module" src="components/super-agent-entry.js"></script>
-    <script type="module" src="components/super-agent-runtime.js"></script>
-    <script type="module" src="components/sa-chat-header.js"></script>
-    <script type="module" src="components/chat-settings-panel.js"></script>
+    <script type="module" src="compat/bootstrap-entry.js"></script>
+    <script type="module" src="compat/components/super-agent-entry.js"></script>
+    <script type="module" src="compat/components/super-agent-runtime.js"></script>
+    <script type="module" src="compat/components/sa-chat-header.js"></script>
+    <script type="module" src="compat/components/chat-settings-panel.js"></script>
   </body>
 </html>

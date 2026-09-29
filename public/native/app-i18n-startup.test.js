@@ -82,15 +82,19 @@ test("native entry initializes i18n before rendering welcome and settings langua
 
   await import("./app.js?startup-i18n-regression");
   await vi.waitFor(() => {
-    expect(document.querySelector("#messages .welcome")?.textContent).toContain("Welcome to Picot");
+    expect(document.querySelector("#messages .welcome")?.textContent).toContain(
+      "Welcome to Pipline",
+    );
   });
 
   expect(document.querySelector("#messages .welcome")?.textContent).not.toContain("app.welcome");
   expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[i18n] missing key:"));
 
   document.getElementById("settings-btn").click();
-  const languageOptions = Array.from(
-    document.querySelectorAll("#settings-language-select option"),
-  ).map((option) => option.value);
-  expect(languageOptions).toEqual(["system", "en", "zh", "ja", "es"]);
+  await vi.waitFor(() => {
+    const languageOptions = Array.from(
+      document.querySelectorAll("#settings-language-select option"),
+    ).map((option) => option.value);
+    expect(languageOptions).toEqual(["system", "en", "zh", "ja", "es"]);
+  });
 }, 20000);

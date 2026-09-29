@@ -23,6 +23,7 @@ export function setupAppUpdater({ logger = console } = {}) {
   let totalBytes = 0;
   let downloadedBytes = 0;
   let silentTimer = null;
+  let stableUpdatesAvailable = null;
 
   function checkCurrentChannel() {
     if (!betaUpdatesEnabled()) return check();
@@ -66,6 +67,14 @@ export function setupAppUpdater({ logger = console } = {}) {
       }
       case "upToDate":
         setState({ status: t("updater.upToDate"), button: t("updater.checkNow") });
+        setSidebarVisible(false);
+        break;
+      case "devBuild":
+        setState({
+          status: t("updater.devBuild"),
+          button: t("updater.checkNow"),
+          disabled: true,
+        });
         setSidebarVisible(false);
         break;
       case "checkFailed":
@@ -155,6 +164,27 @@ export function setupAppUpdater({ logger = console } = {}) {
     }
 
     try {
+      if (!betaUpdatesEnabled()) {
+        if (stableUpdatesAvailable === null) {
+          if (typeof invoke !== "function") {
+            stableUpdatesAvailable = false;
+          } else {
+            try {
+              stableUpdatesAvailable = Boolean(await invoke("stable_updates_available"));
+            } catch (error) {
+              logger.warn?.("[Updater] Could not determine stable updater availability:", error);
+              stableUpdatesAvailable = false;
+            }
+          }
+        }
+        if (!stableUpdatesAvailable) {
+          update = null;
+          view = { kind: "devBuild" };
+          applyView();
+          return null;
+        }
+      }
+
       const result = await checkCurrentChannel();
       update = result
         ? betaUpdatesEnabled()

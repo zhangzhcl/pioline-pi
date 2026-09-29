@@ -17,19 +17,21 @@ import {
   resolveRemoteAuth,
 } from "./remote-auth.js";
 
-document.body.dataset.runtime = "native";
-document.body.classList.add("app-launcher");
-clearSessionSwapOverlay();
+export const appReady = (async () => {
+  document.body.dataset.runtime = "native";
+  document.body.classList.add("app-launcher");
+  clearSessionSwapOverlay();
 
-try {
-  applyTheme(getCurrentTheme());
-  await initI18n();
-  prepareLauncherShell();
-  await startLauncher();
-} catch (error) {
-  prepareLauncherShell();
-  showLauncherError(error);
-}
+  try {
+    applyTheme(getCurrentTheme());
+    await initI18n();
+    prepareLauncherShell();
+    await startLauncher();
+  } catch (error) {
+    prepareLauncherShell();
+    showLauncherError(error);
+  }
+})();
 
 async function startLauncher() {
   const remoteAuth = await resolveRemoteAuth();

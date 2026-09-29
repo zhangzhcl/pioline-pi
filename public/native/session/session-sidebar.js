@@ -10,11 +10,11 @@ import { isSuperAgentEnabled } from "../../super-agent/settings.js";
 import { bindDialogEscape } from "../../ui/dialog-escape.js";
 import { createLoadingPlaceholder } from "../../ui/loading-placeholder.js";
 import { basenameLocalPath } from "../../workspace/path-utils.js";
+import { randomId } from "../utils/random-id.js";
 import {
   isProjectDisconnected,
   subscribeProjectConnectionStatus,
 } from "../workspace/project-connection-status.js";
-import { randomId } from "../utils/random-id.js";
 import { createPinnedItemsStore, migrateFavourites, startPinnedItemsSync } from "./pinned-items.js";
 
 /** Sidebar label for a workspace path. Windows `\\?\UNC\...` paths have no `/`. */

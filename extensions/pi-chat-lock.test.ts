@@ -69,9 +69,9 @@ async function seedLock(
   );
 }
 
-// pid 1 always exists, so this holder cannot be mistaken for a dead one — the
-// exact case the old liveness-only check got stuck on.
-const LIVE_OWNER = "pi-chat-1-aaaaaaaa";
+// Use this test process as the live lock owner; PID 1 is not portable to Windows.
+const LIVE_PID = process.pid;
+const LIVE_OWNER = `pi-chat-${LIVE_PID}-aaaaaaaa`;
 
 afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -80,15 +80,15 @@ afterEach(async () => {
 describe("conversation lock takeover", () => {
   it("refuses a non-preempting claim while a live owner holds the channel", async () => {
     const conversation = await newConversation();
-    await seedLock(conversation, LIVE_OWNER, 1);
+    await seedLock(conversation, LIVE_OWNER, LIVE_PID);
     await expect(acquireConversationLock(conversation, "pi-chat-2-b")).rejects.toThrow(
-      /already locked by .*pid 1/,
+      new RegExp(`already locked by .*pid ${LIVE_PID}`),
     );
   });
 
   it("lets an explicit connect take the channel and bumps the epoch", async () => {
     const conversation = await newConversation();
-    await seedLock(conversation, LIVE_OWNER, 1);
+    await seedLock(conversation, LIVE_OWNER, LIVE_PID);
     expect((await readConversationLock(conversation))?.epoch).toBe(1);
     const second = await acquireConversationLock(conversation, "pi-chat-2-b", { preempt: true });
     expect(second.epoch).toBe(2);
@@ -109,7 +109,7 @@ describe("conversation lock takeover", () => {
     await ensureConversationDirs(conversation);
     await writeFile(conversation.lockPath, `${LIVE_OWNER}\n`, "utf8");
     const legacy = await readConversationLock(conversation);
-    expect(legacy).toMatchObject({ ownerId: LIVE_OWNER, pid: 1, epoch: 1 });
+    expect(legacy).toMatchObject({ ownerId: LIVE_OWNER, pid: LIVE_PID, epoch: 1 });
     await expect(acquireConversationLock(conversation, "pi-chat-2-b")).rejects.toThrow(
       /already locked by/,
     );
@@ -119,7 +119,7 @@ describe("conversation lock takeover", () => {
 
   it("does not delete a lock that now belongs to someone else", async () => {
     const conversation = await newConversation();
-    await seedLock(conversation, LIVE_OWNER, 1);
+    await seedLock(conversation, LIVE_OWNER, LIVE_PID);
     await acquireConversationLock(conversation, "pi-chat-2-b", { preempt: true });
     await releaseConversationLock(conversation, LIVE_OWNER);
     expect(await holdsConversationLock(conversation, "pi-chat-2-b")).toBe(true);

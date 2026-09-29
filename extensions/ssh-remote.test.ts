@@ -55,11 +55,11 @@ import {
   readResolvedProjectSshRemoteSettings,
   registerSshRemoteExtension,
   resolveSshRemoteSettings,
+  SSH_AUTH_REQUIRED_MARKER,
+  SSH_PROJECT_DISCONNECTED_MARKER,
   serializeSshRemoteSettings,
   setSshRemoteSessionPassword,
   shQuote,
-  SSH_AUTH_REQUIRED_MARKER,
-  SSH_PROJECT_DISCONNECTED_MARKER,
   sshControlPath,
   sshExec,
   sshTarget,
@@ -344,6 +344,23 @@ describe("sshExec", () => {
     );
   });
 
+  it("kills and rejects a child process without the requested output pipes", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: null;
+      stderr: null;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.stdout = null;
+    child.stderr = null;
+    child.kill = vi.fn();
+    vi.mocked(spawn).mockReturnValue(child as never);
+
+    await expect(sshExec({ enabled: true, host: "example.com" }, "pwd")).rejects.toThrow(
+      "SSH process did not provide output streams",
+    );
+    expect(child.kill).toHaveBeenCalledOnce();
+  });
+
   it("pipes input to stdin when provided", async () => {
     const child = makeFakeChild();
     vi.mocked(spawn).mockReturnValue(child as never);
@@ -556,6 +573,7 @@ describe("registerSshRemoteExtension", () => {
   });
 
   it("hangs up the shared connection when the session shuts down", async () => {
+    if (process.platform === "win32") return;
     const { pi, registeredTools, trigger } = createHarness();
     registerSshRemoteExtension(pi as never, () => ({
       enabled: true,

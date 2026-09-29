@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Helper: create a fetch mock that returns locale JSON for known locales.
 function makeFetchMock(handlers = {}) {
   const defaults = {
-    en: { app: { welcome: "Welcome to Picot" }, messages: { copy: "Copy", copied: "Copied!" } },
-    zh: { app: { welcome: "欢迎使用 Picot" }, messages: { copy: "复制", copied: "已复制！" } },
+    en: { app: { welcome: "Welcome to Pipline" }, messages: { copy: "Copy", copied: "Copied!" } },
+    zh: { app: { welcome: "欢迎使用 Pipline" }, messages: { copy: "复制", copied: "已复制！" } },
   };
   return vi.fn(async (url) => {
     const u = String(url);
@@ -92,7 +92,7 @@ describe("t() lookup and fallback", () => {
       "fetch",
       makeFetchMock({
         en: { messages: { copy: "Copy" } },
-        zh: { app: { welcome: "欢迎使用 Picot" } }, // no messages.copy
+        zh: { app: { welcome: "欢迎使用 Pipline" } }, // no messages.copy
       }),
     );
     const { initI18n, setLocale, t } = await importFreshI18n();
@@ -122,6 +122,18 @@ describe("t() lookup and fallback", () => {
     const { initI18n, t } = await importFreshI18n();
     await initI18n();
     expect(t("sidebar.minutesAgo", { minutes: 5 })).toBe("5m ago");
+  });
+
+  it("interpolates double-brace locale placeholders", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makeFetchMock({
+        en: { workflow: { revision: "r{{revision}} · {{nodes}} nodes" } },
+      }),
+    );
+    const { initI18n, t } = await importFreshI18n();
+    await initI18n();
+    expect(t("workflow.revision", { revision: 12, nodes: 3 })).toBe("r12 · 3 nodes");
   });
 
   it("missing param becomes empty string", async () => {
@@ -238,6 +250,40 @@ describe("setLocale", () => {
 
     // The stale zh result should NOT have overwritten the en selection
     expect(getLocale()).toBe("en");
+  });
+});
+
+describe("shared locale synchronization", () => {
+  it("does not restart a pending locale load on every polling tick", async () => {
+    vi.useFakeTimers();
+    let resolveZh;
+    const zhResponse = new Promise((resolve) => {
+      resolveZh = resolve;
+    });
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes("/locales/zh.json")) return zhResponse;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ app: { welcome: "Welcome" } }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { initI18n, startSharedLocaleSync } = await importFreshI18n();
+    await initI18n();
+    const stop = startSharedLocaleSync({ intervalMs: 100 });
+
+    document.cookie = "picot-language=zh; Path=/";
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/locales/zh.json")),
+    ).toHaveLength(1);
+
+    resolveZh({ ok: true, status: 200, json: async () => ({ app: { welcome: "欢迎" } }) });
+    await vi.waitFor(() => expect(document.documentElement.lang).toBe("zh-CN"));
+    stop();
+    vi.useRealTimers();
   });
 });
 

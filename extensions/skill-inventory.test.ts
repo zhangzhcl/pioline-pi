@@ -326,7 +326,7 @@ describe("collisions and custom rules", () => {
       makeOptions({ globalConfiguredSkillName: "shared", projectAutoSkillName: "shared" }),
     );
     const [winner, loser] = findAllByName(inv, "shared");
-    expect(winner.sourceRoot).toContain("workspace/.pi/skills");
+    expect(winner.sourceRoot.replaceAll("\\", "/")).toContain("workspace/.pi/skills");
     expect(winner.status).toBe("enabled");
     expect(loser.status).toBe("shadowed");
     expect(loser.shadowedBy?.id).toBe(winner.id);

@@ -12,6 +12,7 @@ const ROOT = path.resolve(__dirname, "..");
 const LOCK_FILE = path.join(__dirname, "terminal-font-version.json");
 const CACHE_DIR = path.join(ROOT, ".cache", "terminal-fonts");
 const OUT_DIR = path.join(ROOT, "public", "fonts", "terminal");
+const LICENSES_DIR = path.join(ROOT, "licenses");
 const VERSION_MARKER = path.join(OUT_DIR, ".version");
 const LICENSE_FILE = "LICENSE";
 
@@ -132,6 +133,12 @@ function replaceDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true });
 }
 
+function publishLicense(lock, sourcePath) {
+  fs.mkdirSync(LICENSES_DIR, { recursive: true });
+  const name = `FiraCodeNerdFontMono-${lock.version}-OFL.txt`;
+  fs.copyFileSync(sourcePath, path.join(LICENSES_DIR, name));
+}
+
 async function convertToWoff2(sourcePath, destinationPath) {
   const { default: convert } = await import("ttf2woff2");
   const converted = convert(fs.readFileSync(sourcePath));
@@ -141,6 +148,7 @@ async function convertToWoff2(sourcePath, destinationPath) {
 async function main() {
   const lock = loadLock();
   if (isUpToDate(lock)) {
+    publishLicense(lock, path.join(OUT_DIR, LICENSE_FILE));
     info(`already installed v${lock.version}; skipping.`);
     return;
   }
@@ -176,6 +184,7 @@ async function main() {
     const license = findFile(extractDir, LICENSE_FILE);
     if (!license) fail(`release archive is missing ${LICENSE_FILE}`);
     fs.copyFileSync(license, path.join(OUT_DIR, LICENSE_FILE));
+    publishLicense(lock, license);
     fs.writeFileSync(VERSION_MARKER, `${lock.version}\n`, "utf8");
   } finally {
     fs.rmSync(extractDir, { recursive: true, force: true });

@@ -3,6 +3,42 @@ import { HostControlGateway } from "./control-gateway.js";
 import { createInMemoryRuntimeAdapter } from "./runtime-gateway.js";
 
 describe("HostControlGateway", () => {
+  it("requires a complete Host workflow node catalog snapshot", async () => {
+    const adapter = createInMemoryRuntimeAdapter();
+    const control = new HostControlGateway(adapter);
+    const response = control.listWorkflowNodeTemplates("workspace-1");
+    const sent = adapter.takeSent();
+    expect(sent).toMatchObject({
+      type: "host_request",
+      operation: "list_workflow_node_templates",
+      workspaceId: "workspace-1",
+    });
+    adapter.receive({
+      type: "host_response",
+      requestId: sent.requestId,
+      templates: [{ id: "custom.example", version: "1.0.0" }],
+      catalogRevision: "catalog-1",
+    });
+    await expect(response).resolves.toEqual({
+      templates: [{ id: "custom.example", version: "1.0.0" }],
+      catalogRevision: "catalog-1",
+    });
+  });
+
+  it("rejects an incomplete node catalog instead of treating it as empty", async () => {
+    const adapter = createInMemoryRuntimeAdapter();
+    const control = new HostControlGateway(adapter);
+    const response = control.listWorkflowNodeTemplates("workspace-1");
+    const sent = adapter.takeSent();
+    adapter.receive({
+      type: "host_response",
+      requestId: sent.requestId,
+      templates: [],
+    });
+
+    await expect(response).rejects.toThrow("Host returned an invalid workflow node catalog");
+  });
+
   it("lists configured pi packages via a host_request", async () => {
     const adapter = createInMemoryRuntimeAdapter();
     const control = new HostControlGateway(adapter);
@@ -16,6 +52,73 @@ describe("HostControlGateway", () => {
       packages: ["npm:pi-web-access"],
     });
     await expect(response).resolves.toEqual(["npm:pi-web-access"]);
+  });
+
+  it("queries isolated workflow code capability and sends only a Run node and inputs", async () => {
+    const adapter = createInMemoryRuntimeAdapter();
+    const control = new HostControlGateway(adapter);
+    const capabilities = control.getWorkflowExecutionCapabilities();
+    const capabilitiesRequest = adapter.takeSent();
+    expect(capabilitiesRequest).toMatchObject({
+      type: "host_request",
+      operation: "get_workflow_execution_capabilities",
+    });
+    adapter.receive({
+      type: "host_response",
+      requestId: capabilitiesRequest.requestId,
+      codeExecution: true,
+    });
+    await expect(capabilities).resolves.toEqual({ codeExecution: true });
+
+    const execution = control.executeWorkflowCode({
+      runId: "run-1",
+      workspaceId: "workspace-1",
+      nodeId: "node-1",
+      inputs: { value: "hello" },
+    });
+    const executionRequest = adapter.takeSent();
+    expect(executionRequest).toMatchObject({
+      type: "host_request",
+      operation: "execute_workflow_code",
+      runId: "run-1",
+      workspaceId: "workspace-1",
+      nodeId: "node-1",
+      inputs: { value: "hello" },
+    });
+    expect(executionRequest).not.toHaveProperty("source");
+    expect(executionRequest).not.toHaveProperty("params");
+    adapter.receive({
+      type: "host_response",
+      requestId: executionRequest.requestId,
+      output: { result: "hello" },
+      logs: ["executed"],
+    });
+    await expect(execution).resolves.toEqual({
+      output: { result: "hello" },
+      logs: ["executed"],
+    });
+  });
+
+  it("sends a cancellation request when an isolated workflow node is aborted", async () => {
+    const adapter = createInMemoryRuntimeAdapter();
+    const control = new HostControlGateway(adapter);
+    const controller = new AbortController();
+    const execution = control.executeWorkflowCode({
+      runId: "run-cancel",
+      workspaceId: "workspace-cancel",
+      nodeId: "node-cancel",
+      inputs: {},
+      signal: controller.signal,
+    });
+    const request = adapter.takeSent();
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({ name: "AbortError" });
+    expect(adapter.takeSent()).toMatchObject({
+      type: "host_request",
+      operation: "cancel_workflow_code",
+      executionRequestId: request.requestId,
+    });
   });
 
   it("checks pi package updates with the workspace scope", async () => {

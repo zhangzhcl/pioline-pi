@@ -1,4 +1,17 @@
 {
   "version": "0.85.1",
-  "_comment": "Locked pi-mono release version that pi-studio bundles. Bump this, run `bun run fetch:pi`, smoke-test, then commit. Optionally pin sha256 per-asset under `sha256` to enable strict checksum verification."
+  "runtimeDependencyLock": {
+    "file": "licenses/pi-runtime/0.85.1/npm-shrinkwrap.json",
+    "sourceUrl": "https://raw.githubusercontent.com/earendil-works/pi/v0.85.1/packages/coding-agent/npm-shrinkwrap.json",
+    "sha256": "5ff461d87e0a7ccac07e6a9eb3edcd18841d3373d375bed043606b51082f1a26"
+  },
+  "_comment": "Locked official Pi release bundled with Pipline. Bump this and update every supported asset SHA-256 from the official release, run `bun run fetch:pi`, smoke-test, then commit.",
+  "sha256": {
+    "pi-darwin-arm64.tar.gz": "d5f70e3c0cf7398eac239fd0261ee074d98b7ba7f6b43fe3617f052ed5b79d06",
+    "pi-darwin-x64.tar.gz": "adb918b845625f184d8bea408d55eacaf21aa87238793c0f5b4f3b9737bce62b",
+    "pi-linux-arm64.tar.gz": "042d20ae885ee4f3b102815f3280b962c377b2e9fb44de4037908cc530eae4d4",
+    "pi-linux-x64.tar.gz": "494e498f47d74d21f40b3386f6a5e921a3d49531a169cab55bbdaca0ea1fe25a",
+    "pi-windows-arm64.zip": "b25e96fe64c9f41f75a924c0d36f395abb98d6c6fec0b78aaa0b86926f938bb4",
+    "pi-windows-x64.zip": "002fa95b90d521245b9985d8f168caebc237ad56e7e30b319807dee1b2e17e1c"
+  }
 }

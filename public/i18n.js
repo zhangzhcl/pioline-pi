@@ -20,6 +20,7 @@ let activeMessages = {};
 let currentLocale = "en";
 let currentPreference = "system";
 let initialized = false;
+let localeSyncTimer = null;
 let localeLoadSequence = 0;
 const listeners = new Set();
 const warnedKeys = new Set();
@@ -93,6 +94,10 @@ export function getLocale() {
   return currentLocale;
 }
 
+export function getLocalePreference() {
+  return currentPreference;
+}
+
 // ── Locale fetching & loading ─────────────────────────────────────────
 
 async function fetchLocale(locale) {
@@ -134,7 +139,8 @@ function lookup(messages, key) {
 
 function interpolate(text, params) {
   if (!params || typeof params !== "object") return text;
-  return text.replace(/\{(\w+)\}/g, (_, name) => {
+  return text.replace(/\{\{(\w+)\}\}|\{(\w+)\}/g, (_, doubleBraceName, singleBraceName) => {
+    const name = doubleBraceName ?? singleBraceName;
     const val = params[name];
     return val !== undefined && val !== null ? String(val) : "";
   });
@@ -233,9 +239,30 @@ export async function initI18n() {
   notifyLocaleChange();
 }
 
+/** Keep a secondary WebView aligned with the shared language cookie. */
+export function startSharedLocaleSync({ intervalMs = 750 } = {}) {
+  if (localeSyncTimer || typeof window === "undefined") return () => {};
+  let pendingPreference = null;
+  localeSyncTimer = window.setInterval(() => {
+    const sharedPreference = getLanguagePreference();
+    if (sharedPreference === currentPreference || sharedPreference === pendingPreference) return;
+
+    pendingPreference = sharedPreference;
+    setLocale(sharedPreference, { persist: false })
+      .catch((error) => console.warn("[i18n] shared language update failed:", error))
+      .finally(() => {
+        if (pendingPreference === sharedPreference) pendingPreference = null;
+      });
+  }, intervalMs);
+  return () => {
+    window.clearInterval(localeSyncTimer);
+    localeSyncTimer = null;
+  };
+}
+
 // ── Locale switching ──────────────────────────────────────────────────
 
-export async function setLocale(preference) {
+export async function setLocale(preference, { persist = true } = {}) {
   const sequence = ++localeLoadSequence;
   const pref = normalizePreference(preference);
   const targetLocale = resolveLocale(pref);
@@ -250,7 +277,7 @@ export async function setLocale(preference) {
   currentPreference = result.fallback ? "system" : pref;
 
   // Only persist the cookie when the requested locale loaded successfully.
-  if (!result.fallback) {
+  if (!result.fallback && persist) {
     writeLanguageCookie(pref);
   }
 

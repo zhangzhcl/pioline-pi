@@ -53,7 +53,7 @@ export function capabilityLabel(capability) {
 }
 
 export function commandUnsupportedCapabilityMessage(commandName, capability) {
-  return `/${commandName} uses terminal-only ${capabilityLabel(capability)}, which Picot cannot show. Run pi in a terminal for the full command.`;
+  return `/${commandName} uses terminal-only ${capabilityLabel(capability)}, which Pipline cannot show. Run pi in a terminal for the full command.`;
 }
 
 /** Parse a bridged host-UI report; returns the capability or null. */

@@ -1,0 +1,1113 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "name": "@anthropic-ai/sdk",
+      "version": "0.123.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@anthropic-ai/sdk/0.123.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-crypto/crc32",
+      "version": "5.2.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-crypto/crc32/5.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-crypto/sha256-browser",
+      "version": "5.2.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-crypto/sha256-browser/5.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-crypto/sha256-js",
+      "version": "5.2.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-crypto/sha256-js/5.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-crypto/supports-web-crypto",
+      "version": "5.2.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-crypto/supports-web-crypto/5.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-crypto/util",
+      "version": "5.2.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-crypto/util/5.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/client-bedrock-runtime",
+      "version": "3.1048.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/client-bedrock-runtime/3.1048.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/core",
+      "version": "3.974.11",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/core/3.974.11/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/credential-provider-env",
+      "version": "3.972.37",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/credential-provider-env/3.972.37/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/credential-provider-http",
+      "version": "3.972.39",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/credential-provider-http/3.972.39/SPDX-Apache-2.0.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: Apache-2.0"
+    },
+    {
+      "name": "@aws-sdk/credential-provider-ini",
+      "version": "3.972.41",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/credential-provider-ini/3.972.41/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/credential-provider-login",
+      "version": "3.972.41",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/credential-provider-login/3.972.41/SPDX-Apache-2.0.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: Apache-2.0"
+    },
+    {
+      "name": "@aws-sdk/credential-provider-node",
+      "version": "3.972.42",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/credential-provider-node/3.972.42/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/credential-provider-process",
+      "version": "3.972.37",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/credential-provider-process/3.972.37/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/credential-provider-sso",
+      "version": "3.972.41",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/credential-provider-sso/3.972.41/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/credential-provider-web-identity",
+      "version": "3.972.41",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/credential-provider-web-identity/3.972.41/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/eventstream-handler-node",
+      "version": "3.972.16",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/eventstream-handler-node/3.972.16/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/middleware-eventstream",
+      "version": "3.972.12",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/middleware-eventstream/3.972.12/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/middleware-websocket",
+      "version": "3.972.19",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/middleware-websocket/3.972.19/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/nested-clients",
+      "version": "3.997.9",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/nested-clients/3.997.9/SPDX-Apache-2.0.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: Apache-2.0"
+    },
+    {
+      "name": "@aws-sdk/signature-v4-multi-region",
+      "version": "3.996.27",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/signature-v4-multi-region/3.996.27/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/token-providers",
+      "version": "3.1048.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/token-providers/3.1048.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/types",
+      "version": "3.973.8",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/types/3.973.8/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/util-locate-window",
+      "version": "3.965.5",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/util-locate-window/3.965.5/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws-sdk/xml-builder",
+      "version": "3.972.24",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws-sdk/xml-builder/3.972.24/LICENSE"
+      ]
+    },
+    {
+      "name": "@aws/lambda-invoke-store",
+      "version": "0.2.4",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@aws/lambda-invoke-store/0.2.4/LICENSE"
+      ]
+    },
+    {
+      "name": "@babel/runtime",
+      "version": "7.29.2",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@babel/runtime/7.29.2/LICENSE"
+      ]
+    },
+    {
+      "name": "@earendil-works/chord",
+      "version": "0.85.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@earendil-works/chord/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt"
+      ],
+      "sharedLicenseSource": "Pi repository-level MIT license"
+    },
+    {
+      "name": "@earendil-works/pi-agent-core",
+      "version": "0.85.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@earendil-works/pi-agent-core/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt"
+      ],
+      "sharedLicenseSource": "Pi repository-level MIT license"
+    },
+    {
+      "name": "@earendil-works/pi-ai",
+      "version": "0.85.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@earendil-works/pi-ai/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt"
+      ],
+      "sharedLicenseSource": "Pi repository-level MIT license"
+    },
+    {
+      "name": "@earendil-works/pi-telemetry",
+      "version": "0.85.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@earendil-works/pi-telemetry/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt"
+      ],
+      "sharedLicenseSource": "Pi repository-level MIT license"
+    },
+    {
+      "name": "@earendil-works/pi-tui",
+      "version": "0.85.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@earendil-works/pi-tui/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt"
+      ],
+      "sharedLicenseSource": "Pi repository-level MIT license"
+    },
+    {
+      "name": "@esbuild/darwin-arm64",
+      "version": "0.28.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@esbuild/darwin-arm64/0.28.1/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@esbuild/darwin-x64",
+      "version": "0.28.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@esbuild/darwin-x64/0.28.1/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@esbuild/win32-x64",
+      "version": "0.28.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@esbuild/win32-x64/0.28.1/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@google/genai",
+      "version": "1.52.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@google/genai/1.52.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@mariozechner/clipboard-darwin-arm64",
+      "version": "0.3.9",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@mariozechner/clipboard-darwin-arm64/0.3.9/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@mariozechner/clipboard-darwin-universal",
+      "version": "0.3.9",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@mariozechner/clipboard-darwin-universal/0.3.9/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@mariozechner/clipboard-darwin-x64",
+      "version": "0.3.9",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@mariozechner/clipboard-darwin-x64/0.3.9/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@mariozechner/clipboard-win32-x64-msvc",
+      "version": "0.3.9",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@mariozechner/clipboard-win32-x64-msvc/0.3.9/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@mariozechner/clipboard",
+      "version": "0.3.9",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@mariozechner/clipboard/0.3.9/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@nodable/entities",
+      "version": "2.1.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@nodable/entities/2.1.0/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@protobufjs/aspromise",
+      "version": "1.1.2",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/aspromise/1.1.2/LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/base64",
+      "version": "1.1.2",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/base64/1.1.2/LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/codegen",
+      "version": "2.0.5",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/codegen/2.0.5/LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/eventemitter",
+      "version": "1.1.1",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/eventemitter/1.1.1/LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/fetch",
+      "version": "1.1.1",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/fetch/1.1.1/LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/float",
+      "version": "1.0.2",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/float/1.0.2/LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/path",
+      "version": "1.1.2",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/path/1.1.2/LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/pool",
+      "version": "1.1.0",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/pool/1.1.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@protobufjs/utf8",
+      "version": "1.1.1",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/@protobufjs/utf8/1.1.1/LICENSE"
+      ]
+    },
+    {
+      "name": "@silvia-odwyer/photon-node",
+      "version": "0.3.4",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@silvia-odwyer/photon-node/0.3.4/LICENSE.md"
+      ]
+    },
+    {
+      "name": "@smithy/core",
+      "version": "3.24.3",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/core/3.24.3/LICENSE"
+      ]
+    },
+    {
+      "name": "@smithy/credential-provider-imds",
+      "version": "4.3.3",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/credential-provider-imds/4.3.3/LICENSE"
+      ]
+    },
+    {
+      "name": "@smithy/fetch-http-handler",
+      "version": "5.4.3",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/fetch-http-handler/5.4.3/LICENSE"
+      ]
+    },
+    {
+      "name": "@smithy/is-array-buffer",
+      "version": "2.2.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/is-array-buffer/2.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@smithy/node-http-handler",
+      "version": "4.7.3",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/node-http-handler/4.7.3/LICENSE"
+      ]
+    },
+    {
+      "name": "@smithy/signature-v4",
+      "version": "5.4.3",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/signature-v4/5.4.3/LICENSE"
+      ]
+    },
+    {
+      "name": "@smithy/types",
+      "version": "4.14.2",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/types/4.14.2/LICENSE"
+      ]
+    },
+    {
+      "name": "@smithy/util-buffer-from",
+      "version": "2.2.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/util-buffer-from/2.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@smithy/util-utf8",
+      "version": "2.3.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/@smithy/util-utf8/2.3.0/LICENSE"
+      ]
+    },
+    {
+      "name": "@stablelib/base64",
+      "version": "1.0.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@stablelib/base64/1.0.1/LICENSE"
+      ]
+    },
+    {
+      "name": "@types/node",
+      "version": "22.19.19",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@types/node/22.19.19/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "@types/retry",
+      "version": "0.12.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/@types/retry/0.12.0/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "agent-base",
+      "version": "7.1.4",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/agent-base/7.1.4/LICENSE"
+      ]
+    },
+    {
+      "name": "balanced-match",
+      "version": "4.0.4",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/balanced-match/4.0.4/LICENSE.md"
+      ]
+    },
+    {
+      "name": "base64-js",
+      "version": "1.5.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/base64-js/1.5.1/LICENSE"
+      ]
+    },
+    {
+      "name": "bignumber.js",
+      "version": "9.3.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/bignumber.js/9.3.1/LICENCE.md"
+      ]
+    },
+    {
+      "name": "bowser",
+      "version": "2.14.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/bowser/2.14.1/LICENSE"
+      ]
+    },
+    {
+      "name": "brace-expansion",
+      "version": "5.0.9",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/brace-expansion/5.0.9/LICENSE"
+      ]
+    },
+    {
+      "name": "buffer-equal-constant-time",
+      "version": "1.0.1",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/buffer-equal-constant-time/1.0.1/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "chalk",
+      "version": "5.6.2",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/chalk/5.6.2/license"
+      ]
+    },
+    {
+      "name": "cross-spawn",
+      "version": "7.0.6",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/cross-spawn/7.0.6/LICENSE"
+      ]
+    },
+    {
+      "name": "data-uri-to-buffer",
+      "version": "4.0.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/data-uri-to-buffer/4.0.1/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "debug",
+      "version": "4.4.3",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/debug/4.4.3/LICENSE"
+      ]
+    },
+    {
+      "name": "diff",
+      "version": "8.0.4",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/diff/8.0.4/LICENSE"
+      ]
+    },
+    {
+      "name": "ecdsa-sig-formatter",
+      "version": "1.0.11",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/ecdsa-sig-formatter/1.0.11/LICENSE"
+      ]
+    },
+    {
+      "name": "esbuild",
+      "version": "0.28.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/esbuild/0.28.1/LICENSE.md"
+      ]
+    },
+    {
+      "name": "extend",
+      "version": "3.0.2",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/extend/3.0.2/LICENSE"
+      ]
+    },
+    {
+      "name": "fast-sha256",
+      "version": "1.3.0",
+      "license": "Unlicense",
+      "files": [
+        "third-party/npm/fast-sha256/1.3.0/LICENSE"
+      ]
+    },
+    {
+      "name": "fast-xml-builder",
+      "version": "1.2.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/fast-xml-builder/1.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "fast-xml-parser",
+      "version": "5.7.3",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/fast-xml-parser/5.7.3/LICENSE"
+      ]
+    },
+    {
+      "name": "fetch-blob",
+      "version": "3.2.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/fetch-blob/3.2.0/LICENSE"
+      ]
+    },
+    {
+      "name": "formdata-polyfill",
+      "version": "4.0.10",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/formdata-polyfill/4.0.10/LICENSE"
+      ]
+    },
+    {
+      "name": "gaxios",
+      "version": "7.1.4",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/gaxios/7.1.4/LICENSE"
+      ]
+    },
+    {
+      "name": "gcp-metadata",
+      "version": "8.1.2",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/gcp-metadata/8.1.2/LICENSE"
+      ]
+    },
+    {
+      "name": "get-east-asian-width",
+      "version": "1.6.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/get-east-asian-width/1.6.0/license"
+      ]
+    },
+    {
+      "name": "google-auth-library",
+      "version": "10.6.2",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/google-auth-library/10.6.2/LICENSE"
+      ]
+    },
+    {
+      "name": "google-logging-utils",
+      "version": "1.1.3",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/google-logging-utils/1.1.3/LICENSE"
+      ]
+    },
+    {
+      "name": "graceful-fs",
+      "version": "4.2.11",
+      "license": "ISC",
+      "files": [
+        "third-party/npm/graceful-fs/4.2.11/LICENSE"
+      ]
+    },
+    {
+      "name": "grok-mermaid",
+      "version": "0.2.2",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/grok-mermaid/0.2.2/LICENSE"
+      ]
+    },
+    {
+      "name": "highlight.js",
+      "version": "10.7.3",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/highlight.js/10.7.3/LICENSE"
+      ]
+    },
+    {
+      "name": "hosted-git-info",
+      "version": "9.0.3",
+      "license": "ISC",
+      "files": [
+        "third-party/npm/hosted-git-info/9.0.3/LICENSE"
+      ]
+    },
+    {
+      "name": "http-proxy-agent",
+      "version": "7.0.2",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/http-proxy-agent/7.0.2/LICENSE"
+      ]
+    },
+    {
+      "name": "https-proxy-agent",
+      "version": "7.0.6",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/https-proxy-agent/7.0.6/LICENSE"
+      ]
+    },
+    {
+      "name": "ignore",
+      "version": "7.0.5",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/ignore/7.0.5/LICENSE-MIT"
+      ]
+    },
+    {
+      "name": "isexe",
+      "version": "2.0.0",
+      "license": "ISC",
+      "files": [
+        "third-party/npm/isexe/2.0.0/LICENSE"
+      ]
+    },
+    {
+      "name": "jiti",
+      "version": "2.7.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/jiti/2.7.0/LICENSE"
+      ]
+    },
+    {
+      "name": "json-bigint",
+      "version": "1.0.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/json-bigint/1.0.0/LICENSE"
+      ]
+    },
+    {
+      "name": "json-schema-to-ts",
+      "version": "3.1.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/json-schema-to-ts/3.1.1/LICENSE"
+      ]
+    },
+    {
+      "name": "jwa",
+      "version": "2.0.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/jwa/2.0.1/LICENSE"
+      ]
+    },
+    {
+      "name": "jws",
+      "version": "4.0.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/jws/4.0.1/LICENSE"
+      ]
+    },
+    {
+      "name": "long",
+      "version": "5.3.2",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/long/5.3.2/LICENSE"
+      ]
+    },
+    {
+      "name": "lru-cache",
+      "version": "11.4.0",
+      "license": "BlueOak-1.0.0",
+      "files": [
+        "third-party/npm/lru-cache/11.4.0/LICENSE.md"
+      ]
+    },
+    {
+      "name": "marked",
+      "version": "18.0.5",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/marked/18.0.5/LICENSE"
+      ]
+    },
+    {
+      "name": "minimatch",
+      "version": "10.2.5",
+      "license": "BlueOak-1.0.0",
+      "files": [
+        "third-party/npm/minimatch/10.2.5/LICENSE.md"
+      ]
+    },
+    {
+      "name": "ms",
+      "version": "2.1.3",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/ms/2.1.3/license.md"
+      ]
+    },
+    {
+      "name": "node-domexception",
+      "version": "1.0.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/node-domexception/1.0.0/LICENSE"
+      ]
+    },
+    {
+      "name": "node-fetch",
+      "version": "3.3.2",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/node-fetch/3.3.2/LICENSE.md"
+      ]
+    },
+    {
+      "name": "openai",
+      "version": "6.40.0",
+      "license": "Apache-2.0",
+      "files": [
+        "third-party/npm/openai/6.40.0/LICENSE"
+      ]
+    },
+    {
+      "name": "p-retry",
+      "version": "4.6.2",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/p-retry/4.6.2/license"
+      ]
+    },
+    {
+      "name": "partial-json",
+      "version": "0.1.7",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/partial-json/0.1.7/LICENSE"
+      ]
+    },
+    {
+      "name": "path-expression-matcher",
+      "version": "1.5.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/path-expression-matcher/1.5.0/LICENSE"
+      ]
+    },
+    {
+      "name": "path-key",
+      "version": "3.1.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/path-key/3.1.1/license"
+      ]
+    },
+    {
+      "name": "proper-lockfile",
+      "version": "4.1.2",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/proper-lockfile/4.1.2/LICENSE"
+      ]
+    },
+    {
+      "name": "protobufjs",
+      "version": "7.6.5",
+      "license": "BSD-3-Clause",
+      "files": [
+        "third-party/npm/protobufjs/7.6.5/LICENSE"
+      ]
+    },
+    {
+      "name": "retry",
+      "version": "0.12.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/retry/0.12.0/License"
+      ]
+    },
+    {
+      "name": "retry",
+      "version": "0.13.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/retry/0.13.1/License"
+      ]
+    },
+    {
+      "name": "safe-buffer",
+      "version": "5.2.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/safe-buffer/5.2.1/LICENSE"
+      ]
+    },
+    {
+      "name": "semver",
+      "version": "7.8.0",
+      "license": "ISC",
+      "files": [
+        "third-party/npm/semver/7.8.0/LICENSE"
+      ]
+    },
+    {
+      "name": "shebang-command",
+      "version": "2.0.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/shebang-command/2.0.0/license"
+      ]
+    },
+    {
+      "name": "shebang-regex",
+      "version": "3.0.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/shebang-regex/3.0.0/license"
+      ]
+    },
+    {
+      "name": "signal-exit",
+      "version": "3.0.7",
+      "license": "ISC",
+      "files": [
+        "third-party/npm/signal-exit/3.0.7/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "standardwebhooks",
+      "version": "1.1.1",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/standardwebhooks/1.1.1/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "strnum",
+      "version": "2.3.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/strnum/2.3.0/LICENSE"
+      ]
+    },
+    {
+      "name": "ts-algebra",
+      "version": "2.0.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/ts-algebra/2.0.0/LICENSE"
+      ]
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "license": "0BSD",
+      "files": [
+        "third-party/npm/tslib/2.8.1/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "typebox",
+      "version": "1.3.7",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/typebox/1.3.7/license"
+      ]
+    },
+    {
+      "name": "undici-types",
+      "version": "6.21.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/undici-types/6.21.0/LICENSE"
+      ]
+    },
+    {
+      "name": "undici",
+      "version": "8.9.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/undici/8.9.0/LICENSE"
+      ]
+    },
+    {
+      "name": "web-streams-polyfill",
+      "version": "3.3.3",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/web-streams-polyfill/3.3.3/LICENSE"
+      ]
+    },
+    {
+      "name": "which",
+      "version": "2.0.2",
+      "license": "ISC",
+      "files": [
+        "third-party/npm/which/2.0.2/LICENSE"
+      ]
+    },
+    {
+      "name": "ws",
+      "version": "8.21.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/ws/8.21.0/LICENSE"
+      ]
+    },
+    {
+      "name": "xml-naming",
+      "version": "0.1.0",
+      "license": "MIT",
+      "files": [
+        "third-party/npm/xml-naming/0.1.0/SPDX-MIT.txt"
+      ],
+      "sharedLicenseSource": "SPDX License List 3.29.0: MIT"
+    },
+    {
+      "name": "yaml",
+      "version": "2.9.0",
+      "license": "ISC",
+      "files": [
+        "third-party/npm/yaml/2.9.0/LICENSE"
+      ]
+    }
+  ],
+  "piVersion": "0.85.1",
+  "targetPlatforms": [
+    "windows-x64",
+    "darwin-x64",
+    "darwin-arm64"
+  ]
+}

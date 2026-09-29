@@ -115,9 +115,9 @@ const TELEGRAM_COMMANDS = [
   { command: "task", description: "Show a task: /task <id>" },
   { command: "compact", description: "Compact the current session" },
   { command: "models", description: "List available models" },
-  { command: "health", description: "Show Picot operations health" },
+  { command: "health", description: "Show Pipline operations health" },
   { command: "errors", description: "Show recent operations errors" },
-  { command: "help", description: "Show all Picot commands" },
+  { command: "help", description: "Show all Pipline commands" },
 ] as const;
 
 export async function syncTelegramCommandMenu(botToken: string): Promise<void> {

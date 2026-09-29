@@ -1,7 +1,7 @@
 {
-  "name": "Picot",
-  "short_name": "Picot",
-  "description": "Local desktop GUI for the Pi coding agent",
+  "name": "Pipline",
+  "short_name": "Pipline",
+  "description": "Pi coding agent desktop with visual workflow orchestration",
   "start_url": "/app",
   "scope": "/app",
   "display": "standalone",

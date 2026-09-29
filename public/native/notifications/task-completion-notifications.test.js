@@ -70,6 +70,12 @@ describe("task completion notifications", () => {
   it("notifies once when a running task settles", async () => {
     const { control, showNotification, task } = setup();
     control.handleRuntimeFrame(runtimeFrame("agent_start"));
+    control.handleRuntimeFrame(runtimeFrame("agent_end", "instance-a", { willRetry: true }));
+    await Promise.resolve();
+    expect(showNotification).not.toHaveBeenCalled();
+    control.handleRuntimeFrame(runtimeFrame("agent_end"));
+    await Promise.resolve();
+    expect(showNotification).not.toHaveBeenCalled();
     control.handleRuntimeFrame(runtimeFrame("agent_settled"));
     control.handleRuntimeFrame(runtimeFrame("agent_end"));
 
@@ -91,6 +97,9 @@ describe("task completion notifications", () => {
     control.handleRuntimeFrame(
       runtimeFrame("agent_end", "instance-a", { errorMessage: "410 status code (no body)" }),
     );
+    await Promise.resolve();
+    expect(showNotification).not.toHaveBeenCalled();
+    control.handleRuntimeFrame(runtimeFrame("agent_settled"));
 
     await vi.waitFor(() => {
       expect(showNotification).toHaveBeenCalledOnce();
@@ -108,6 +117,7 @@ describe("task completion notifications", () => {
     const { control, showNotification } = setup({ storedValue: "false" });
     control.handleRuntimeFrame(runtimeFrame("agent_start"));
     control.handleRuntimeFrame(runtimeFrame("agent_end"));
+    control.handleRuntimeFrame(runtimeFrame("agent_settled"));
 
     await Promise.resolve();
     expect(showNotification).not.toHaveBeenCalled();
@@ -117,6 +127,7 @@ describe("task completion notifications", () => {
     const { control, notificationApi, showNotification } = setup({ permission: false });
     control.handleRuntimeFrame(runtimeFrame("agent_start"));
     control.handleRuntimeFrame(runtimeFrame("agent_end"));
+    control.handleRuntimeFrame(runtimeFrame("agent_settled"));
 
     await vi.waitFor(() => {
       expect(notificationApi.requestPermission).toHaveBeenCalledOnce();
@@ -126,7 +137,7 @@ describe("task completion notifications", () => {
 
   it("ignores completion events without a preceding start", async () => {
     const { control, logger, showNotification } = setup();
-    control.handleRuntimeFrame(runtimeFrame("agent_end"));
+    control.handleRuntimeFrame(runtimeFrame("agent_settled"));
 
     await Promise.resolve();
     expect(showNotification).not.toHaveBeenCalled();

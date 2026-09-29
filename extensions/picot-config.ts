@@ -17,7 +17,12 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSession,
+  ModelRuntime,
+  type ModelRegistry,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import {
   buildModelsJsonProviderEntry,
   detectProviderProtocol,
@@ -82,15 +87,7 @@ type ModelPreferencesFile = {
   health?: Record<string, ModelHealth>;
 };
 
-type CatalogModel = {
-  provider?: string;
-  id?: string;
-  name?: string;
-  contextWindow?: number;
-  api?: string;
-  baseUrl?: string;
-  apiKey?: string;
-};
+type CatalogModel = ReturnType<ModelRegistry["getAll"]>[number];
 
 type CatalogRegistry = {
   getAll: () => CatalogModel[];
@@ -103,7 +100,7 @@ type CatalogRegistry = {
   getProviderDisplayName: (provider: string) => string;
   // The live pi registry resolves to ModelsRefreshResult; every caller here
   // awaits and discards it, so the contract only promises "awaitable".
-  refresh: () => void | Promise<unknown>;
+  refresh: () => undefined | Promise<unknown>;
   getApiKeyForProvider?: (provider: string) => Promise<string | undefined>;
   getApiKeyAndHeaders?: (model: CatalogModel) => Promise<{
     ok?: boolean;
@@ -504,7 +501,6 @@ async function resolveProviderApiKeyForHealthCheck(
       // fall through
     }
   }
-  if (typeof model.apiKey === "string" && model.apiKey.trim()) return model.apiKey.trim();
   try {
     const key = credentialKey(readAuthConfig()[provider]);
     if (key) return key;
@@ -586,7 +582,7 @@ async function runSessionModelHealthCheck(model: CatalogModel): Promise<{
     tools: [],
     sessionManager: SessionManager.inMemory(),
     modelRuntime,
-  } as Parameters<typeof createAgentSession>[0]);
+  });
   try {
     const unsubscribe = session.subscribe((event: unknown) => {
       const evt = event as {
@@ -634,8 +630,8 @@ async function runModelHealthCheck(
   model: CatalogModel,
   preferences: ModelPreferencesStore,
 ): Promise<{ provider: string; modelId: string } & ModelHealth> {
-  const provider = model.provider as string;
-  const modelId = model.id as string;
+  const provider = model.provider;
+  const modelId = model.id;
   const startedAt = Date.now();
   try {
     const httpProbe = await runHttpModelHealthCheck(registry, model);

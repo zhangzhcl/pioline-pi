@@ -6,6 +6,7 @@ import { setupUpdateIndicator } from "../workspace/update-indicator.js";
 import { setupAppearanceSettings } from "./appearance-settings.js";
 import { loadCostDashboard } from "./cost-dashboard.js";
 import { setupLanguageSelector } from "./language-selector.js";
+import { setupLogExport } from "./log-export.js";
 import { setupModelsPage } from "./models-page.js";
 import { setupPackageBrowse } from "./package-browse.js";
 import { setupPackageManager } from "./package-manager.js";
@@ -80,6 +81,15 @@ export function setupSettingsPanel({
     buttonEl: document.getElementById("remote-access-header-btn"),
     onOpen: () => openSettings("remote-access"),
     visible: desktopClient,
+  });
+  setupLogExport({
+    buttonEl: document.getElementById("btn-export-logs"),
+    invoke:
+      desktopClient && typeof globalThis.__TAURI__?.core?.invoke === "function"
+        ? (command) => globalThis.__TAURI__.core.invoke(command)
+        : null,
+    notify,
+    t,
   });
   const packageManager = setupPackageManager({
     control,

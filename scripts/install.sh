@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Picot installer — macOS & Linux
-# Usage:  curl -fsSL https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.sh | bash
-# Or:     curl -fsSL https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.sh | bash -s -- --version v0.3.0
+# Pipline installer — macOS & Linux
+# Set PIPLINE_GITHUB_REPOSITORY=owner/repository, then run:
+#   curl -fsSL "https://raw.githubusercontent.com/$PIPLINE_GITHUB_REPOSITORY/main/scripts/install.sh" | bash
+# Or: curl -fsSL "$URL" | bash -s -- --repository owner/repository --version v0.1.0
 set -euo pipefail
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-REPO="shixin-guo/picot"
-GITHUB_API="https://api.github.com/repos/${REPO}/releases"
-APP_NAME="Picot"
+REPO="${PIPLINE_GITHUB_REPOSITORY:-}"
+APP_NAME="Pipline"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -30,17 +30,33 @@ PINNED_VERSION=""
 FORCE_APPIMAGE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --version|-v) PINNED_VERSION="$2"; shift 2 ;;
+    --version|-v)
+      [ "$#" -ge 2 ] || die "$1 requires a version tag."
+      [ -n "$2" ] || die "$1 requires a non-empty version tag."
+      [[ "$2" != -* ]] || die "$1 requires a version tag, not another option."
+      PINNED_VERSION="$2"
+      shift 2
+      ;;
+    --repository|-r)
+      [ "$#" -ge 2 ] || die "--repository requires an owner/repository value."
+      REPO="$2"
+      shift 2
+      ;;
     --appimage)   FORCE_APPIMAGE=1; shift ;;
     --help|-h)
-      echo "Usage: install.sh [--version <tag>] [--appimage]"
-      echo "  --version   Install a specific release tag (e.g. v0.3.0). Defaults to latest."
+      echo "Usage: install.sh --repository <owner/repository> [--version <tag>] [--appimage]"
+      echo "  --repository GitHub repository containing Pipline releases. May also be set with PIPLINE_GITHUB_REPOSITORY."
+      echo "  --version   Install a specific release tag (e.g. v0.1.0). Defaults to latest."
       echo "  --appimage  Linux only. Install the AppImage into ~/.local/bin instead of"
       echo "              using the system package manager. No sudo required."
       exit 0 ;;
     *) die "Unknown option: $1" ;;
   esac
 done
+
+[[ "$REPO" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] \
+  || die "Set --repository <owner/repository> or PIPLINE_GITHUB_REPOSITORY to the Pipline GitHub repository."
+GITHUB_API="https://api.github.com/repos/${REPO}/releases"
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 need_cmd() { command -v "$1" &>/dev/null || die "Required command not found: $1"; }
@@ -118,7 +134,7 @@ if is_snap_path "$(command -v curl)"; then
   if [ "$CURL_BIN" = "/usr/bin/curl" ]; then
     warn "Snap curl cannot write to /tmp or ~/.cache. Using /usr/bin/curl instead."
   else
-    warn "Snap curl cannot write to /tmp or ~/.cache. Staging the download under ~/picot-install."
+    warn "Snap curl cannot write to /tmp or ~/.cache. Staging the download under ~/pipline-install."
   fi
 fi
 
@@ -145,7 +161,7 @@ fi
 
 # Never rebuild asset filenames from the tag. `scripts/release.sh` encodes
 # prerelease tags into a numeric app version (Windows MSI rejects `-beta.4`),
-# so tag `v0.4.3-beta.4` ships assets named `Picot_0.4.3-10004_*`. Matching the
+# so prerelease tags ship assets with version metadata encoded by Tauri. Matching the
 # asset list the API just handed us keeps this immune to that encoding — and to
 # any future bundler rename.
 ASSET_URLS="$(printf '%s' "$RELEASE_JSON" \
@@ -208,7 +224,7 @@ FILENAME="${DOWNLOAD_URL##*/}"
 if is_snap_path "$CURL_BIN"; then
   # Snap's home interface allows non-hidden $HOME paths only. Host mkdir of
   # ~/.cache succeeds, but snap curl still cannot create the file there.
-  STAGING="${HOME}/picot-install"
+  STAGING="${HOME}/pipline-install"
   mkdir -p "$STAGING"
   TMPDIR="$(mktemp -d "${STAGING}/tmp.XXXXXX")"
   trap 'rm -rf "$TMPDIR"; rmdir "$STAGING" 2>/dev/null || true' EXIT
@@ -235,7 +251,7 @@ success "Downloaded ${FILENAME}"
 header "📦  Installing"
 
 BIN_DIR="${HOME}/.local/bin"
-BIN_PATH="${BIN_DIR}/picot"
+BIN_PATH="${BIN_DIR}/pipline"
 
 install_appimage() {
   mkdir -p "$BIN_DIR"
@@ -258,15 +274,15 @@ install_appimage() {
   extracted="$(cd "$TMPDIR" && "$BIN_PATH" --appimage-extract 'usr/share/icons/hicolor/256x256/apps/*.png' >/dev/null 2>&1 \
     && find "${TMPDIR}/squashfs-root" -name '*.png' | head -1 || true)"
   if [ -n "$extracted" ] && [ -f "$extracted" ]; then
-    cp "$extracted" "${icon_dir}/picot.png"
+    cp "$extracted" "${icon_dir}/pipline.png"
   fi
 
-  cat > "${desktop_dir}/picot.desktop" <<DESKTOP
+  cat > "${desktop_dir}/pipline.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=${APP_NAME}
 Exec=${BIN_PATH}
-Icon=picot
+Icon=pipline
 Categories=Development;Utility;
 Terminal=false
 DESKTOP
@@ -275,7 +291,7 @@ DESKTOP
 
   case ":${PATH}:" in
     *":${BIN_DIR}:"*) ;;
-    *) warn "${BIN_DIR} is not on your PATH. Add it to your shell profile to run \`picot\` directly." ;;
+    *) warn "${BIN_DIR} is not on your PATH. Add it to your shell profile to run \`pipline\` directly." ;;
   esac
   # FUSE 2 is what mounts an AppImage at launch. Ubuntu 24.04+ ships only
   # FUSE 3, so point at both the fix and the no-install escape hatch.
@@ -307,7 +323,7 @@ case "$PLATFORM" in
     rm -rf "$MOUNTPOINT"
 
     # Remove the quarantine bit so Gatekeeper does not block the first launch.
-    # Picot uses ad-hoc signing (not Apple-notarized). Files downloaded via
+    # Pipline uses ad-hoc signing (not Apple-notarized). Files downloaded via
     # curl still receive the com.apple.quarantine xattr from macOS, which
     # causes the "app can't be opened" / Privacy & Security prompt on first
     # launch. Stripping it here means the app opens directly without any
@@ -353,7 +369,7 @@ printf "\n${GREEN}${BOLD}✓ ${APP_NAME} ${VERSION} installed successfully!${RES
 
 case "$PLATFORM" in
   macos) info "Launch it from /Applications/${APP_NAME}.app or Spotlight." ;;
-  linux) info "Launch it by running: picot  (or search in your app menu)" ;;
+  linux) info "Launch it by running: pipline  (or search in your app menu)" ;;
 esac
 
 printf "\n"

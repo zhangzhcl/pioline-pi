@@ -146,7 +146,7 @@
 
 /* File sidebar toggle (merged file-sidebar-toggle + workspace-path pill).
  * Stays a square icon until the path label is shown, then expands like git. */
-.file-sidebar-toggle:has(.file-sidebar-toggle__label:not(.hidden)) {
+.file-sidebar-toggle--has-label {
   width: auto;
   max-width: min(360px, 32vw);
   padding: 0 var(--space-2);

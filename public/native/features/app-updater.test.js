@@ -26,6 +26,7 @@ describe("app updater sidebar action", () => {
     const openSettings = vi.fn();
 
     globalThis.__TAURI__ = {
+      core: { invoke: vi.fn(async () => true) },
       process: { relaunch },
       updater: {
         check: vi.fn(async () => ({ version: "9.9.9", downloadAndInstall })),
@@ -42,5 +43,24 @@ describe("app updater sidebar action", () => {
     await vi.waitFor(() => expect(downloadAndInstall).toHaveBeenCalledTimes(1));
     expect(relaunch).toHaveBeenCalledTimes(1);
     expect(openSettings).not.toHaveBeenCalled();
+  });
+
+  it("does not contact the stable updater when this build has no release endpoint", async () => {
+    const check = vi.fn(async () => ({ version: "9.9.9" }));
+    const invoke = vi.fn(async (command) => command === "stable_updates_available" && false);
+    globalThis.__TAURI__ = {
+      core: { invoke },
+      updater: { check },
+    };
+
+    setupAppUpdater();
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("stable_updates_available"));
+
+    expect(check).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(document.getElementById("btn-check-updates").disabled).toBe(true),
+    );
+    expect(document.getElementById("setting-update-status").textContent).not.toBe("");
   });
 });

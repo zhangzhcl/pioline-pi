@@ -4,6 +4,7 @@ import { setupSettingsPanel } from "./settings-panel.js";
 function renderSettingsDom() {
   document.body.innerHTML = `
     <button id="settings-btn"></button>
+    <button id="btn-export-logs" hidden></button>
     <button id="remote-access-header-btn" class="hidden"></button>
     <button id="sidebar-extensions-btn"></button>
     <button id="sidebar-skills-btn"></button>
@@ -41,6 +42,7 @@ describe("settings panel hash routing", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+    delete globalThis.__TAURI__;
     history.replaceState(null, "", "/app/workspaces/workspace-a/sessions/session-a");
   });
 
@@ -63,6 +65,24 @@ describe("settings panel hash routing", () => {
       document.querySelector('[data-settings-tab="remote-access"]').classList.contains("active"),
     ).toBe(true);
     expect(window.location.hash).toBe("#/settings/remote-access");
+  });
+
+  it("connects the desktop diagnostic log button to the native export command", async () => {
+    const invoke = vi.fn(async () => 2);
+    const notify = vi.fn();
+    globalThis.__TAURI__ = { core: { invoke } };
+    setupSettingsPanel({ desktopClient: true, notify });
+
+    const button = document.getElementById("btn-export-logs");
+    expect(button.hidden).toBe(false);
+    button.click();
+
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("export_app_logs"));
+    expect(notify).toHaveBeenCalledWith({
+      type: "success",
+      title: "status.saved",
+      message: "settings.exportLogsSuccess",
+    });
   });
 
   it("opens the Remote Access tab through the settings composition root", () => {

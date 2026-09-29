@@ -1,0 +1,143 @@
+# Embedded Pi Runtime third-party notices
+
+Pi version: 0.85.1
+Supported runtime targets: windows-x64, darwin-x64, darwin-arm64
+
+Each license text is copied from the exact npm tarball referenced by the locked Pi shrinkwrap and verified against its Subresource Integrity digest. Pi monorepo packages without a tarball digest use the matching repository-level MIT license.
+
+- **@anthropic-ai/sdk@0.123.0** — MIT; `third-party/npm/@anthropic-ai/sdk/0.123.0/LICENSE`
+- **@aws-crypto/crc32@5.2.0** — Apache-2.0; `third-party/npm/@aws-crypto/crc32/5.2.0/LICENSE`
+- **@aws-crypto/sha256-browser@5.2.0** — Apache-2.0; `third-party/npm/@aws-crypto/sha256-browser/5.2.0/LICENSE`
+- **@aws-crypto/sha256-js@5.2.0** — Apache-2.0; `third-party/npm/@aws-crypto/sha256-js/5.2.0/LICENSE`
+- **@aws-crypto/supports-web-crypto@5.2.0** — Apache-2.0; `third-party/npm/@aws-crypto/supports-web-crypto/5.2.0/LICENSE`
+- **@aws-crypto/util@5.2.0** — Apache-2.0; `third-party/npm/@aws-crypto/util/5.2.0/LICENSE`
+- **@aws-sdk/client-bedrock-runtime@3.1048.0** — Apache-2.0; `third-party/npm/@aws-sdk/client-bedrock-runtime/3.1048.0/LICENSE`
+- **@aws-sdk/core@3.974.11** — Apache-2.0; `third-party/npm/@aws-sdk/core/3.974.11/LICENSE`
+- **@aws-sdk/credential-provider-env@3.972.37** — Apache-2.0; `third-party/npm/@aws-sdk/credential-provider-env/3.972.37/LICENSE`
+- **@aws-sdk/credential-provider-http@3.972.39** — Apache-2.0; `third-party/npm/@aws-sdk/credential-provider-http/3.972.39/SPDX-Apache-2.0.txt` (shared source: SPDX License List 3.29.0: Apache-2.0)
+- **@aws-sdk/credential-provider-ini@3.972.41** — Apache-2.0; `third-party/npm/@aws-sdk/credential-provider-ini/3.972.41/LICENSE`
+- **@aws-sdk/credential-provider-login@3.972.41** — Apache-2.0; `third-party/npm/@aws-sdk/credential-provider-login/3.972.41/SPDX-Apache-2.0.txt` (shared source: SPDX License List 3.29.0: Apache-2.0)
+- **@aws-sdk/credential-provider-node@3.972.42** — Apache-2.0; `third-party/npm/@aws-sdk/credential-provider-node/3.972.42/LICENSE`
+- **@aws-sdk/credential-provider-process@3.972.37** — Apache-2.0; `third-party/npm/@aws-sdk/credential-provider-process/3.972.37/LICENSE`
+- **@aws-sdk/credential-provider-sso@3.972.41** — Apache-2.0; `third-party/npm/@aws-sdk/credential-provider-sso/3.972.41/LICENSE`
+- **@aws-sdk/credential-provider-web-identity@3.972.41** — Apache-2.0; `third-party/npm/@aws-sdk/credential-provider-web-identity/3.972.41/LICENSE`
+- **@aws-sdk/eventstream-handler-node@3.972.16** — Apache-2.0; `third-party/npm/@aws-sdk/eventstream-handler-node/3.972.16/LICENSE`
+- **@aws-sdk/middleware-eventstream@3.972.12** — Apache-2.0; `third-party/npm/@aws-sdk/middleware-eventstream/3.972.12/LICENSE`
+- **@aws-sdk/middleware-websocket@3.972.19** — Apache-2.0; `third-party/npm/@aws-sdk/middleware-websocket/3.972.19/LICENSE`
+- **@aws-sdk/nested-clients@3.997.9** — Apache-2.0; `third-party/npm/@aws-sdk/nested-clients/3.997.9/SPDX-Apache-2.0.txt` (shared source: SPDX License List 3.29.0: Apache-2.0)
+- **@aws-sdk/signature-v4-multi-region@3.996.27** — Apache-2.0; `third-party/npm/@aws-sdk/signature-v4-multi-region/3.996.27/LICENSE`
+- **@aws-sdk/token-providers@3.1048.0** — Apache-2.0; `third-party/npm/@aws-sdk/token-providers/3.1048.0/LICENSE`
+- **@aws-sdk/types@3.973.8** — Apache-2.0; `third-party/npm/@aws-sdk/types/3.973.8/LICENSE`
+- **@aws-sdk/util-locate-window@3.965.5** — Apache-2.0; `third-party/npm/@aws-sdk/util-locate-window/3.965.5/LICENSE`
+- **@aws-sdk/xml-builder@3.972.24** — Apache-2.0; `third-party/npm/@aws-sdk/xml-builder/3.972.24/LICENSE`
+- **@aws/lambda-invoke-store@0.2.4** — Apache-2.0; `third-party/npm/@aws/lambda-invoke-store/0.2.4/LICENSE`
+- **@babel/runtime@7.29.2** — MIT; `third-party/npm/@babel/runtime/7.29.2/LICENSE`
+- **@earendil-works/chord@0.85.1** — MIT; `third-party/npm/@earendil-works/chord/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt` (shared source: Pi repository-level MIT license)
+- **@earendil-works/pi-agent-core@0.85.1** — MIT; `third-party/npm/@earendil-works/pi-agent-core/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt` (shared source: Pi repository-level MIT license)
+- **@earendil-works/pi-ai@0.85.1** — MIT; `third-party/npm/@earendil-works/pi-ai/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt` (shared source: Pi repository-level MIT license)
+- **@earendil-works/pi-telemetry@0.85.1** — MIT; `third-party/npm/@earendil-works/pi-telemetry/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt` (shared source: Pi repository-level MIT license)
+- **@earendil-works/pi-tui@0.85.1** — MIT; `third-party/npm/@earendil-works/pi-tui/0.85.1/LICENSE.shared-Pi-Coding-Agent.txt` (shared source: Pi repository-level MIT license)
+- **@esbuild/darwin-arm64@0.28.1** — MIT; `third-party/npm/@esbuild/darwin-arm64/0.28.1/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@esbuild/darwin-x64@0.28.1** — MIT; `third-party/npm/@esbuild/darwin-x64/0.28.1/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@esbuild/win32-x64@0.28.1** — MIT; `third-party/npm/@esbuild/win32-x64/0.28.1/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@google/genai@1.52.0** — Apache-2.0; `third-party/npm/@google/genai/1.52.0/LICENSE`
+- **@mariozechner/clipboard-darwin-arm64@0.3.9** — MIT; `third-party/npm/@mariozechner/clipboard-darwin-arm64/0.3.9/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@mariozechner/clipboard-darwin-universal@0.3.9** — MIT; `third-party/npm/@mariozechner/clipboard-darwin-universal/0.3.9/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@mariozechner/clipboard-darwin-x64@0.3.9** — MIT; `third-party/npm/@mariozechner/clipboard-darwin-x64/0.3.9/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@mariozechner/clipboard-win32-x64-msvc@0.3.9** — MIT; `third-party/npm/@mariozechner/clipboard-win32-x64-msvc/0.3.9/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@mariozechner/clipboard@0.3.9** — MIT; `third-party/npm/@mariozechner/clipboard/0.3.9/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@nodable/entities@2.1.0** — MIT; `third-party/npm/@nodable/entities/2.1.0/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@protobufjs/aspromise@1.1.2** — BSD-3-Clause; `third-party/npm/@protobufjs/aspromise/1.1.2/LICENSE`
+- **@protobufjs/base64@1.1.2** — BSD-3-Clause; `third-party/npm/@protobufjs/base64/1.1.2/LICENSE`
+- **@protobufjs/codegen@2.0.5** — BSD-3-Clause; `third-party/npm/@protobufjs/codegen/2.0.5/LICENSE`
+- **@protobufjs/eventemitter@1.1.1** — BSD-3-Clause; `third-party/npm/@protobufjs/eventemitter/1.1.1/LICENSE`
+- **@protobufjs/fetch@1.1.1** — BSD-3-Clause; `third-party/npm/@protobufjs/fetch/1.1.1/LICENSE`
+- **@protobufjs/float@1.0.2** — BSD-3-Clause; `third-party/npm/@protobufjs/float/1.0.2/LICENSE`
+- **@protobufjs/path@1.1.2** — BSD-3-Clause; `third-party/npm/@protobufjs/path/1.1.2/LICENSE`
+- **@protobufjs/pool@1.1.0** — BSD-3-Clause; `third-party/npm/@protobufjs/pool/1.1.0/LICENSE`
+- **@protobufjs/utf8@1.1.1** — BSD-3-Clause; `third-party/npm/@protobufjs/utf8/1.1.1/LICENSE`
+- **@silvia-odwyer/photon-node@0.3.4** — Apache-2.0; `third-party/npm/@silvia-odwyer/photon-node/0.3.4/LICENSE.md`
+- **@smithy/core@3.24.3** — Apache-2.0; `third-party/npm/@smithy/core/3.24.3/LICENSE`
+- **@smithy/credential-provider-imds@4.3.3** — Apache-2.0; `third-party/npm/@smithy/credential-provider-imds/4.3.3/LICENSE`
+- **@smithy/fetch-http-handler@5.4.3** — Apache-2.0; `third-party/npm/@smithy/fetch-http-handler/5.4.3/LICENSE`
+- **@smithy/is-array-buffer@2.2.0** — Apache-2.0; `third-party/npm/@smithy/is-array-buffer/2.2.0/LICENSE`
+- **@smithy/node-http-handler@4.7.3** — Apache-2.0; `third-party/npm/@smithy/node-http-handler/4.7.3/LICENSE`
+- **@smithy/signature-v4@5.4.3** — Apache-2.0; `third-party/npm/@smithy/signature-v4/5.4.3/LICENSE`
+- **@smithy/types@4.14.2** — Apache-2.0; `third-party/npm/@smithy/types/4.14.2/LICENSE`
+- **@smithy/util-buffer-from@2.2.0** — Apache-2.0; `third-party/npm/@smithy/util-buffer-from/2.2.0/LICENSE`
+- **@smithy/util-utf8@2.3.0** — Apache-2.0; `third-party/npm/@smithy/util-utf8/2.3.0/LICENSE`
+- **@stablelib/base64@1.0.1** — MIT; `third-party/npm/@stablelib/base64/1.0.1/LICENSE`
+- **@types/node@22.19.19** — MIT; `third-party/npm/@types/node/22.19.19/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **@types/retry@0.12.0** — MIT; `third-party/npm/@types/retry/0.12.0/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **agent-base@7.1.4** — MIT; `third-party/npm/agent-base/7.1.4/LICENSE`
+- **balanced-match@4.0.4** — MIT; `third-party/npm/balanced-match/4.0.4/LICENSE.md`
+- **base64-js@1.5.1** — MIT; `third-party/npm/base64-js/1.5.1/LICENSE`
+- **bignumber.js@9.3.1** — MIT; `third-party/npm/bignumber.js/9.3.1/LICENCE.md`
+- **bowser@2.14.1** — MIT; `third-party/npm/bowser/2.14.1/LICENSE`
+- **brace-expansion@5.0.9** — MIT; `third-party/npm/brace-expansion/5.0.9/LICENSE`
+- **buffer-equal-constant-time@1.0.1** — BSD-3-Clause; `third-party/npm/buffer-equal-constant-time/1.0.1/LICENSE.txt`
+- **chalk@5.6.2** — MIT; `third-party/npm/chalk/5.6.2/license`
+- **cross-spawn@7.0.6** — MIT; `third-party/npm/cross-spawn/7.0.6/LICENSE`
+- **data-uri-to-buffer@4.0.1** — MIT; `third-party/npm/data-uri-to-buffer/4.0.1/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **debug@4.4.3** — MIT; `third-party/npm/debug/4.4.3/LICENSE`
+- **diff@8.0.4** — BSD-3-Clause; `third-party/npm/diff/8.0.4/LICENSE`
+- **ecdsa-sig-formatter@1.0.11** — Apache-2.0; `third-party/npm/ecdsa-sig-formatter/1.0.11/LICENSE`
+- **esbuild@0.28.1** — MIT; `third-party/npm/esbuild/0.28.1/LICENSE.md`
+- **extend@3.0.2** — MIT; `third-party/npm/extend/3.0.2/LICENSE`
+- **fast-sha256@1.3.0** — Unlicense; `third-party/npm/fast-sha256/1.3.0/LICENSE`
+- **fast-xml-builder@1.2.0** — MIT; `third-party/npm/fast-xml-builder/1.2.0/LICENSE`
+- **fast-xml-parser@5.7.3** — MIT; `third-party/npm/fast-xml-parser/5.7.3/LICENSE`
+- **fetch-blob@3.2.0** — MIT; `third-party/npm/fetch-blob/3.2.0/LICENSE`
+- **formdata-polyfill@4.0.10** — MIT; `third-party/npm/formdata-polyfill/4.0.10/LICENSE`
+- **gaxios@7.1.4** — Apache-2.0; `third-party/npm/gaxios/7.1.4/LICENSE`
+- **gcp-metadata@8.1.2** — Apache-2.0; `third-party/npm/gcp-metadata/8.1.2/LICENSE`
+- **get-east-asian-width@1.6.0** — MIT; `third-party/npm/get-east-asian-width/1.6.0/license`
+- **google-auth-library@10.6.2** — Apache-2.0; `third-party/npm/google-auth-library/10.6.2/LICENSE`
+- **google-logging-utils@1.1.3** — Apache-2.0; `third-party/npm/google-logging-utils/1.1.3/LICENSE`
+- **graceful-fs@4.2.11** — ISC; `third-party/npm/graceful-fs/4.2.11/LICENSE`
+- **grok-mermaid@0.2.2** — Apache-2.0; `third-party/npm/grok-mermaid/0.2.2/LICENSE`
+- **highlight.js@10.7.3** — BSD-3-Clause; `third-party/npm/highlight.js/10.7.3/LICENSE`
+- **hosted-git-info@9.0.3** — ISC; `third-party/npm/hosted-git-info/9.0.3/LICENSE`
+- **http-proxy-agent@7.0.2** — MIT; `third-party/npm/http-proxy-agent/7.0.2/LICENSE`
+- **https-proxy-agent@7.0.6** — MIT; `third-party/npm/https-proxy-agent/7.0.6/LICENSE`
+- **ignore@7.0.5** — MIT; `third-party/npm/ignore/7.0.5/LICENSE-MIT`
+- **isexe@2.0.0** — ISC; `third-party/npm/isexe/2.0.0/LICENSE`
+- **jiti@2.7.0** — MIT; `third-party/npm/jiti/2.7.0/LICENSE`
+- **json-bigint@1.0.0** — MIT; `third-party/npm/json-bigint/1.0.0/LICENSE`
+- **json-schema-to-ts@3.1.1** — MIT; `third-party/npm/json-schema-to-ts/3.1.1/LICENSE`
+- **jwa@2.0.1** — MIT; `third-party/npm/jwa/2.0.1/LICENSE`
+- **jws@4.0.1** — MIT; `third-party/npm/jws/4.0.1/LICENSE`
+- **long@5.3.2** — Apache-2.0; `third-party/npm/long/5.3.2/LICENSE`
+- **lru-cache@11.4.0** — BlueOak-1.0.0; `third-party/npm/lru-cache/11.4.0/LICENSE.md`
+- **marked@18.0.5** — MIT; `third-party/npm/marked/18.0.5/LICENSE`
+- **minimatch@10.2.5** — BlueOak-1.0.0; `third-party/npm/minimatch/10.2.5/LICENSE.md`
+- **ms@2.1.3** — MIT; `third-party/npm/ms/2.1.3/license.md`
+- **node-domexception@1.0.0** — MIT; `third-party/npm/node-domexception/1.0.0/LICENSE`
+- **node-fetch@3.3.2** — MIT; `third-party/npm/node-fetch/3.3.2/LICENSE.md`
+- **openai@6.40.0** — Apache-2.0; `third-party/npm/openai/6.40.0/LICENSE`
+- **p-retry@4.6.2** — MIT; `third-party/npm/p-retry/4.6.2/license`
+- **partial-json@0.1.7** — MIT; `third-party/npm/partial-json/0.1.7/LICENSE`
+- **path-expression-matcher@1.5.0** — MIT; `third-party/npm/path-expression-matcher/1.5.0/LICENSE`
+- **path-key@3.1.1** — MIT; `third-party/npm/path-key/3.1.1/license`
+- **proper-lockfile@4.1.2** — MIT; `third-party/npm/proper-lockfile/4.1.2/LICENSE`
+- **protobufjs@7.6.5** — BSD-3-Clause; `third-party/npm/protobufjs/7.6.5/LICENSE`
+- **retry@0.12.0** — MIT; `third-party/npm/retry/0.12.0/License`
+- **retry@0.13.1** — MIT; `third-party/npm/retry/0.13.1/License`
+- **safe-buffer@5.2.1** — MIT; `third-party/npm/safe-buffer/5.2.1/LICENSE`
+- **semver@7.8.0** — ISC; `third-party/npm/semver/7.8.0/LICENSE`
+- **shebang-command@2.0.0** — MIT; `third-party/npm/shebang-command/2.0.0/license`
+- **shebang-regex@3.0.0** — MIT; `third-party/npm/shebang-regex/3.0.0/license`
+- **signal-exit@3.0.7** — ISC; `third-party/npm/signal-exit/3.0.7/LICENSE.txt`
+- **standardwebhooks@1.1.1** — MIT; `third-party/npm/standardwebhooks/1.1.1/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **strnum@2.3.0** — MIT; `third-party/npm/strnum/2.3.0/LICENSE`
+- **ts-algebra@2.0.0** — MIT; `third-party/npm/ts-algebra/2.0.0/LICENSE`
+- **tslib@2.8.1** — 0BSD; `third-party/npm/tslib/2.8.1/LICENSE.txt`
+- **typebox@1.3.7** — MIT; `third-party/npm/typebox/1.3.7/license`
+- **undici-types@6.21.0** — MIT; `third-party/npm/undici-types/6.21.0/LICENSE`
+- **undici@8.9.0** — MIT; `third-party/npm/undici/8.9.0/LICENSE`
+- **web-streams-polyfill@3.3.3** — MIT; `third-party/npm/web-streams-polyfill/3.3.3/LICENSE`
+- **which@2.0.2** — ISC; `third-party/npm/which/2.0.2/LICENSE`
+- **ws@8.21.0** — MIT; `third-party/npm/ws/8.21.0/LICENSE`
+- **xml-naming@0.1.0** — MIT; `third-party/npm/xml-naming/0.1.0/SPDX-MIT.txt` (shared source: SPDX License List 3.29.0: MIT)
+- **yaml@2.9.0** — ISC; `third-party/npm/yaml/2.9.0/LICENSE`
+

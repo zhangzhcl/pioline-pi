@@ -16,9 +16,11 @@ extensions/dist/
 
 # Embedded pi binary tree (produced by scripts/fetch-pi-binary.js)
 src-tauri/resources/pi/
-.cache/pi-binaries/
-.cache/terminal-fonts/
-.cache/cjk-fonts/
+licenses/cargo/
+.cache/
+.bun-cache/
+/pipline-*-SHA256SUMS.txt
+/pipline-node-runtime-*-sbom.spdx.json
 
 # Vendored font assets live under public/fonts/.
 # Use scripts/fetch-terminal-font.js and scripts/fetch-cjk-font.js to update them.
@@ -28,6 +30,7 @@ src-tauri/resources/pi/
 
 # Frontend vendor bundles (produced by scripts/build-frontend.js)
 public/vendor/
+public/compat/
 
 # Zed editor
 .zed/

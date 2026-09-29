@@ -31,7 +31,30 @@ export function parseAppRoute(pathname) {
   ) {
     return { name: "session", workspaceId: segments[3], sessionId: segments[5] };
   }
+  if (
+    segments.length === 6 &&
+    segments[1] === "app" &&
+    segments[2] === "workspaces" &&
+    validId(segments[3]) &&
+    segments[4] === "workflows" &&
+    validId(segments[5])
+  ) {
+    return { name: "workflow", workspaceId: segments[3], workflowId: segments[5] };
+  }
   return { name: "not_found" };
+}
+
+export function appEntryPath(routeName) {
+  switch (routeName) {
+    case "session":
+      return "./compat/native/app.js";
+    case "app_launcher":
+      return "./compat/native/features/app-launcher.js";
+    case "workflow":
+      return "./compat/native/workflow/workflow-window.js";
+    default:
+      throw new Error(`Unknown app entry route: ${routeName}`);
+  }
 }
 
 export function appRoutePath(route) {
@@ -46,6 +69,11 @@ export function appRoutePath(route) {
         throw new Error("Invalid workspaceId or sessionId");
       }
       return `/app/workspaces/${route.workspaceId}/sessions/${route.sessionId}`;
+    case "workflow":
+      if (!validId(route.workspaceId) || !validId(route.workflowId)) {
+        throw new Error("Invalid workspaceId or workflowId");
+      }
+      return `/app/workspaces/${route.workspaceId}/workflows/${route.workflowId}`;
     case "settings":
       return "/app/settings";
     default:

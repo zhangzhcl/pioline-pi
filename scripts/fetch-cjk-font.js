@@ -12,6 +12,7 @@ const ROOT = path.resolve(__dirname, "..");
 const LOCK_FILE = path.join(__dirname, "cjk-font-version.json");
 const CACHE_DIR = path.join(ROOT, ".cache", "cjk-fonts");
 const OUT_DIR = path.join(ROOT, "public", "fonts", "cjk");
+const LICENSES_DIR = path.join(ROOT, "licenses");
 const VERSION_MARKER = path.join(OUT_DIR, ".version");
 const LICENSE_FILE = "OFL.txt";
 // A GB2312 subset is ~1.5 MB; anything below this floor is a silently empty
@@ -126,6 +127,12 @@ function replaceDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true });
 }
 
+function publishLicense(lock, sourcePath) {
+  fs.mkdirSync(LICENSES_DIR, { recursive: true });
+  const name = `LXGWWenKaiLite-${lock.version}-OFL.txt`;
+  fs.copyFileSync(sourcePath, path.join(LICENSES_DIR, name));
+}
+
 async function subsetToWoff2(sourcePath, destinationPath) {
   const { default: subsetFont } = await import("subset-font");
   const ttf = fs.readFileSync(sourcePath);
@@ -138,6 +145,7 @@ async function subsetToWoff2(sourcePath, destinationPath) {
 async function main() {
   const lock = loadLock();
   if (isUpToDate(lock)) {
+    publishLicense(lock, path.join(OUT_DIR, LICENSE_FILE));
     info(`already installed v${lock.version}; skipping.`);
     return;
   }
@@ -199,6 +207,7 @@ async function main() {
   );
 
   fs.copyFileSync(licensePath, path.join(OUT_DIR, LICENSE_FILE));
+  publishLicense(lock, licensePath);
   fs.writeFileSync(VERSION_MARKER, `${lock.version}\n`, "utf8");
 
   info(`installed LXGW WenKai Lite v${lock.version} (gb2312 subset) -> ${OUT_DIR}`);

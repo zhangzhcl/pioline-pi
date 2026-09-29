@@ -42,13 +42,22 @@ use std::convert::Infallible;
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::oneshot;
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
+
+#[cfg(test)]
+#[path = "host_server_real_pi_smoke.rs"]
+mod real_pi_smoke;
+
+#[cfg(test)]
+#[path = "host_server_workflow_broadcast.rs"]
+mod workflow_broadcast_smoke;
 
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 const MAX_WS_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -114,6 +123,8 @@ struct HostState {
     port: u16,
     terminal_manager: TerminalManager,
     terminal_events: tokio::sync::broadcast::Sender<(OwnerId, Value)>,
+    workflow_events: tokio::sync::broadcast::Sender<Value>,
+    workflow_code_cancellations: Mutex<WorkflowCodeCancellationRegistry>,
     git_service: Arc<crate::git_service::GitService>,
     git_events: tokio::sync::broadcast::Sender<(String, Value)>,
     // Skill source handle registry: pick_skill_source registers an opaque
@@ -130,11 +141,71 @@ struct HostState {
     metadata: Option<Arc<Mutex<MetadataStore>>>,
     install_secret: String,
     app_handle: Option<tauri::AppHandle>,
+    connection_shutdown: tokio::sync::watch::Receiver<bool>,
+    active_websockets: AtomicUsize,
+    websockets_idle: tokio::sync::Notify,
+}
+
+const MAX_PENDING_WORKFLOW_CODE_CANCELLATIONS: usize = 256;
+const WORKFLOW_CODE_CANCELLATION_TTL: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct WorkflowCodeCancellationRegistry {
+    active: HashMap<(String, String), oneshot::Sender<()>>,
+    cancelled_before_registration: HashMap<(String, String), Instant>,
+}
+
+impl WorkflowCodeCancellationRegistry {
+    fn register(&mut self, key: (String, String)) -> Result<oneshot::Receiver<()>, String> {
+        self.prune_expired();
+        if self.cancelled_before_registration.remove(&key).is_some() {
+            return Err("Workflow code request was cancelled before execution started".into());
+        }
+        if self.active.contains_key(&key) {
+            return Err("Workflow code request id is already active".into());
+        }
+        let (sender, receiver) = oneshot::channel();
+        self.active.insert(key, sender);
+        Ok(receiver)
+    }
+
+    fn cancel(&mut self, key: (String, String)) -> bool {
+        self.prune_expired();
+        if let Some(sender) = self.active.remove(&key) {
+            return sender.send(()).is_ok();
+        }
+        if self.cancelled_before_registration.len() >= MAX_PENDING_WORKFLOW_CODE_CANCELLATIONS {
+            if let Some(oldest_key) = self
+                .cancelled_before_registration
+                .iter()
+                .min_by_key(|(_, created_at)| *created_at)
+                .map(|(key, _)| key.clone())
+            {
+                self.cancelled_before_registration.remove(&oldest_key);
+            }
+        }
+        self.cancelled_before_registration
+            .insert(key, Instant::now());
+        false
+    }
+
+    #[cfg(feature = "workflow-code-runner-prototype")]
+    fn remove(&mut self, key: &(String, String)) {
+        self.active.remove(key);
+    }
+
+    fn prune_expired(&mut self) {
+        let cutoff = Instant::now() - WORKFLOW_CODE_CANCELLATION_TTL;
+        self.cancelled_before_registration
+            .retain(|_, created_at| *created_at >= cutoff);
+    }
 }
 
 pub struct HostServer {
     origin: String,
     shutdown: Option<oneshot::Sender<()>>,
+    connection_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    server_task: Option<tokio::task::JoinHandle<()>>,
     state: Arc<HostState>,
 }
 
@@ -163,8 +234,8 @@ impl HostServer {
     ) -> Result<Self, String> {
         let mut data = HostDataPlane::new(workspace_roots)
             .map_err(|error| format!("Cannot initialize Host data plane: {error:?}"))?;
-        if let Some(home) = dirs::home_dir() {
-            data = data.with_session_root(home.join(".pi/agent/sessions"));
+        if let Some(sessions_dir) = crate::pi_agent_dir::sessions_dir() {
+            data = data.with_session_root(sessions_dir);
         }
         // Prefer a stable, high, rarely-used port so LAN clients get a stable
         // URL/QR across restarts. Scan a small contiguous range so multiple
@@ -187,16 +258,17 @@ impl HostServer {
             Some(listener) => listener,
             None => tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
                 .await
-                .map_err(|error| format!("Cannot bind Picot Host: {error}"))?,
+                .map_err(|error| format!("Cannot bind Pipline Host: {error}"))?,
         };
         let address = listener
             .local_addr()
-            .map_err(|error| format!("Cannot read Picot Host address: {error}"))?;
+            .map_err(|error| format!("Cannot read Pipline Host address: {error}"))?;
         // Bind on 0.0.0.0 so LAN clients can reach the server, but always use
         // 127.0.0.1 for the Tauri WebView origin — browsers reject 0.0.0.0 as
         // a destination address.
         let loopback_origin = format!("http://127.0.0.1:{}", address.port());
         let (terminal_events, _) = tokio::sync::broadcast::channel(256);
+        let (workflow_events, _) = tokio::sync::broadcast::channel(256);
         let (git_events, _) = tokio::sync::broadcast::channel(256);
         let git_service = Arc::new(crate::git_service::GitService::new());
         let skill_registry = Arc::new(crate::skill_source_registry::SkillSourceRegistry::new());
@@ -230,6 +302,7 @@ impl HostServer {
         terminal_manager.set_event_sink(Arc::new(move |owner, event| {
             let _ = terminal_event_sender.send((owner.clone(), event));
         }));
+        let (connection_shutdown, connection_shutdown_rx) = tokio::sync::watch::channel(false);
         let state = Arc::new(HostState {
             router: Mutex::new(HostRouter::new()),
             runtimes,
@@ -242,6 +315,8 @@ impl HostServer {
             port: address.port(),
             terminal_manager,
             terminal_events,
+            workflow_events,
+            workflow_code_cancellations: Mutex::new(WorkflowCodeCancellationRegistry::default()),
             git_service,
             git_events,
             skill_registry,
@@ -249,18 +324,10 @@ impl HostServer {
             metadata,
             install_secret,
             app_handle,
+            connection_shutdown: connection_shutdown_rx,
+            active_websockets: AtomicUsize::new(0),
+            websockets_idle: tokio::sync::Notify::new(),
         });
-        // Prewarm the cost-metrics cache in the background: one full scan at
-        // startup parses every file the Usage dashboard can need, so the first
-        // Settings → Usage open answers from cache instead of parsing hundreds
-        // of MB of session jsonl on the request path. Guarded off in test
-        // builds: the suite starts real servers against the user's real
-        // session root, and a background full scan there starves the
-        // timing-sensitive spawn/route tests of CPU.
-        if !cfg!(test) {
-            let data = state.data.clone();
-            std::thread::spawn(move || data.prewarm_cost_metrics());
-        }
         let index = static_dir.join("index.html");
         // Serve this build's JS/CSS/HTML under a version-stamped path
         // (`/v/<version>/...`) and point index.html's `<base>` at it. The
@@ -356,7 +423,12 @@ impl HostServer {
             .route("/api/workspace-info", get(workspace_info_handler))
             .route("/v2/new-session", post(new_session))
             .route("/v2/resolve-workspace", post(resolve_workspace))
-            .nest_service(&versioned_prefix, versioned_service)
+            // `ServeDir` needs a path relative to its root. Wrap it in a
+            // Router before nesting so Axum strips the fingerprint prefix.
+            .nest_service(
+                &versioned_prefix,
+                Router::new().fallback_service(versioned_service),
+            )
             .fallback_service(static_service)
             .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
             .with_state(state.clone());
@@ -398,7 +470,7 @@ impl HostServer {
             },
         ));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        tokio::spawn(async move {
+        let server_task = tokio::spawn(async move {
             if let Err(error) = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -414,6 +486,8 @@ impl HostServer {
         Ok(Self {
             origin: loopback_origin,
             shutdown: Some(shutdown_tx),
+            connection_shutdown: Some(connection_shutdown),
+            server_task: Some(server_task),
             state,
         })
     }
@@ -439,10 +513,19 @@ impl HostServer {
         &self.origin
     }
 
-    pub fn stop(mut self) {
+    pub async fn stop(mut self) {
         self.state.terminal_manager.kill_all();
+        if let Some(shutdown) = self.connection_shutdown.take() {
+            let _ = shutdown.send(true);
+        }
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
+        }
+        if let Some(server_task) = self.server_task.take() {
+            let _ = server_task.await;
+        }
+        while self.state.active_websockets.load(Ordering::Acquire) > 0 {
+            self.state.websockets_idle.notified().await;
         }
     }
 }
@@ -450,9 +533,28 @@ impl HostServer {
 impl Drop for HostServer {
     fn drop(&mut self) {
         self.state.terminal_manager.kill_all();
+        if let Some(shutdown) = self.connection_shutdown.take() {
+            let _ = shutdown.send(true);
+        }
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
+    }
+}
+
+struct ActiveWebSocket(Arc<HostState>);
+
+impl ActiveWebSocket {
+    fn new(state: Arc<HostState>) -> Self {
+        state.active_websockets.fetch_add(1, Ordering::AcqRel);
+        Self(state)
+    }
+}
+
+impl Drop for ActiveWebSocket {
+    fn drop(&mut self) {
+        self.0.active_websockets.fetch_sub(1, Ordering::AcqRel);
+        self.0.websockets_idle.notify_one();
     }
 }
 
@@ -1002,7 +1104,13 @@ async fn websocket_upgrade(
 }
 
 async fn handle_websocket(mut socket: WebSocket, state: Arc<HostState>, loopback_peer: bool) {
-    let Some(Ok(Message::Text(first))) = socket.next().await else {
+    let _connection = ActiveWebSocket::new(Arc::clone(&state));
+    let mut connection_shutdown = state.connection_shutdown.clone();
+    let first_message = tokio::select! {
+        _ = connection_shutdown.changed() => return,
+        message = socket.next() => message,
+    };
+    let Some(Ok(Message::Text(first))) = first_message else {
         return;
     };
     let hello = match serde_json::from_str::<Value>(&first) {
@@ -1079,6 +1187,7 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<HostState>, loopback
     let mut runtime_events = state.runtimes.subscribe();
     let mut acp_events = state.acp.subscribe();
     let mut terminal_events = state.terminal_events.subscribe();
+    let mut workflow_events = state.workflow_events.subscribe();
     let mut git_events = state.git_events.subscribe();
     let mut subscriptions = HashSet::new();
 
@@ -1091,6 +1200,7 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<HostState>, loopback
     // dialog until the 30s RPC timeout fired.
     let (mut socket_sink, mut socket_stream) = socket.split();
     let (outgoing_tx, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+    let mut dispatch_tasks = tokio::task::JoinSet::new();
     let writer = tokio::spawn(async move {
         while let Some(message) = outgoing_rx.recv().await {
             if socket_sink.send(message).await.is_err() {
@@ -1102,6 +1212,10 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<HostState>, loopback
 
     'connection: loop {
         tokio::select! {
+            _ = connection_shutdown.changed() => break,
+            completed = dispatch_tasks.join_next(), if !dispatch_tasks.is_empty() => {
+                let _ = completed;
+            }
             incoming = socket_stream.next() => {
                 let Some(Ok(message)) = incoming else { break };
                 let Message::Text(text) = message else {
@@ -1158,7 +1272,7 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<HostState>, loopback
                     Ok(action) => {
                         let state = Arc::clone(&state);
                         let outgoing_tx = outgoing_tx.clone();
-                        tokio::spawn(async move {
+                        dispatch_tasks.spawn(async move {
                             let outgoing = match dispatch(action, &state).await {
                                 Ok(value) => value,
                                 Err((code, message)) => {
@@ -1247,6 +1361,21 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<HostState>, loopback
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
+            event = workflow_events.recv() => {
+                match event {
+                    Ok(event) => {
+                        if send_frame(event).is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if send_frame(json!({ "type": "workflow_resync_required" })).is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
             event = git_events.recv() => {
                 match event {
                     Ok((owner, outgoing)) if owner == client_id => {
@@ -1260,6 +1389,8 @@ async fn handle_websocket(mut socket: WebSocket, state: Arc<HostState>, loopback
             }
         }
     }
+    dispatch_tasks.abort_all();
+    while dispatch_tasks.join_next().await.is_some() {}
     drop(outgoing_tx);
     let _ = writer.await;
     if let Ok(mut owners) = state.session_owners.lock() {
@@ -1290,7 +1421,7 @@ fn extension_ui_requires_owner(event: &Value) -> bool {
     }
     matches!(
         event.get("method").and_then(Value::as_str),
-        Some("select" | "confirm" | "input" | "editor")
+        Some("select" | "confirm" | "input" | "editor" | "workflow")
     )
 }
 
@@ -1744,10 +1875,15 @@ async fn dispatch(
                     .get("sessionId")
                     .and_then(Value::as_str)
                     .ok_or(("invalid_session", "sessionId is required".into()))?;
-                let messages = state
-                    .data
-                    .read_session_messages(workspace_id, session_id)
-                    .map_err(host_data_error)?;
+                let data = state.data.clone();
+                let workspace_id = workspace_id.to_owned();
+                let session_id = session_id.to_owned();
+                let messages = tokio::task::spawn_blocking(move || {
+                    data.read_session_messages(&workspace_id, &session_id)
+                })
+                .await
+                .map_err(|error| ("host_data_task_failed", error.to_string()))?
+                .map_err(host_data_error)?;
                 Ok(json!({
                     "type": "data_response",
                     "requestId": request_id,
@@ -1764,10 +1900,15 @@ async fn dispatch(
                     .get("sessionId")
                     .and_then(Value::as_str)
                     .ok_or(("invalid_session", "sessionId is required".into()))?;
-                let tree = state
-                    .data
-                    .read_session_tree(workspace_id, session_id)
-                    .map_err(host_data_error)?;
+                let data = state.data.clone();
+                let workspace_id = workspace_id.to_owned();
+                let session_id = session_id.to_owned();
+                let tree = tokio::task::spawn_blocking(move || {
+                    data.read_session_tree(&workspace_id, &session_id)
+                })
+                .await
+                .map_err(|error| ("host_data_task_failed", error.to_string()))?
+                .map_err(host_data_error)?;
                 Ok(json!({
                     "type": "data_response",
                     "requestId": request_id,
@@ -1904,6 +2045,299 @@ fn dispatch_preference_operation(
     }
 }
 
+fn workflow_id(frame: &Value) -> Result<&str, (&'static str, String)> {
+    let id = frame
+        .get("workflowId")
+        .and_then(Value::as_str)
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+        .ok_or((
+            "invalid_workflow",
+            "workflowId must be 1-128 ASCII letters, digits, '.', '_' or '-'".into(),
+        ))?;
+    Ok(id)
+}
+
+fn dispatch_workflow_operation(
+    state: &HostState,
+    request_id: &str,
+    operation: &str,
+    frame: &Value,
+) -> Result<Value, (&'static str, String)> {
+    let store = state.metadata.as_ref().ok_or((
+        "host_operation_failed",
+        "Workflow store is not available".into(),
+    ))?;
+    let mut store = store
+        .lock()
+        .map_err(|_| ("host_operation_failed", "Workflow store is poisoned".into()))?;
+    let response = |fields: &[(&str, Value)]| {
+        let mut object = serde_json::Map::new();
+        object.insert("type".into(), Value::from("host_response"));
+        object.insert("requestId".into(), Value::from(request_id));
+        object.insert("operation".into(), Value::from(operation));
+        for (name, value) in fields {
+            object.insert((*name).into(), value.clone());
+        }
+        Value::Object(object)
+    };
+    match operation {
+        "list_workflow_node_templates" => {
+            let workspace_id = frame
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or((
+                    "invalid_workflow_template",
+                    "workspaceId is required".into(),
+                ))?;
+            let templates = store
+                .workflow_node_templates_list(workspace_id)
+                .map_err(|message| ("host_operation_failed", message))?;
+            let catalog_revision = store
+                .workflow_node_template_catalog_revision(workspace_id)
+                .map_err(|message| ("host_operation_failed", message))?;
+            Ok(response(&[
+                ("templates", Value::Array(templates)),
+                ("catalogRevision", Value::from(catalog_revision)),
+            ]))
+        }
+        "create_workflow_node_template" => {
+            let workspace_id = frame
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or((
+                    "invalid_workflow_template",
+                    "workspaceId is required".into(),
+                ))?;
+            let meta = frame.get("meta").filter(|value| value.is_object()).ok_or((
+                "invalid_workflow_template",
+                "meta object is required".into(),
+            ))?;
+            let expected_catalog_revision = frame
+                .get("expectedCatalogRevision")
+                .and_then(Value::as_str)
+                .ok_or((
+                    "invalid_workflow_template",
+                    "expectedCatalogRevision is required".into(),
+                ))?;
+            let current_catalog_revision = store
+                .workflow_node_template_catalog_revision(workspace_id)
+                .map_err(|message| ("host_operation_failed", message))?;
+            if expected_catalog_revision != current_catalog_revision {
+                return Err((
+                    "workflow_catalog_conflict",
+                    "Workflow NodeMeta catalog changed; reload it and retry".into(),
+                ));
+            }
+            let created = store
+                .workflow_node_template_create(workspace_id, meta)
+                .map_err(|message| ("invalid_workflow_template", message))?;
+            let catalog_revision = store
+                .workflow_node_template_catalog_revision(workspace_id)
+                .map_err(|message| ("host_operation_failed", message))?;
+            if created {
+                let _ = state.workflow_events.send(json!({
+                    "type": "workflow_node_templates_changed",
+                    "workspaceId": workspace_id,
+                }));
+            }
+            Ok(response(&[
+                ("created", Value::from(created)),
+                ("catalogRevision", Value::from(catalog_revision)),
+            ]))
+        }
+        "load_workflow" => {
+            let id = workflow_id(frame)?;
+            let workspace_id = frame
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or(("invalid_workflow", "workspaceId is required".into()))?;
+            let record = store
+                .workflow_load(id, workspace_id)
+                .map_err(|message| ("host_operation_failed", message))?;
+            Ok(response(&[("record", record.unwrap_or(Value::Null))]))
+        }
+        "create_workflow" => {
+            let workflow = frame
+                .get("workflow")
+                .filter(|value| value.is_object())
+                .ok_or(("invalid_workflow", "workflow object is required".into()))?;
+            let workspace_id = workflow
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or((
+                    "invalid_workflow",
+                    "workflow.workspaceId is required".into(),
+                ))?;
+            let created = store
+                .workflow_create(workspace_id, workflow)
+                .map_err(|message| ("invalid_workflow", message))?;
+            if created {
+                let _ = state.workflow_events.send(json!({
+                    "type": "workflow_changed",
+                    "workspaceId": workspace_id,
+                    "workflowId": workflow.get("id").and_then(Value::as_str).unwrap_or_default(),
+                    "revision": 0,
+                }));
+            }
+            Ok(response(&[("created", Value::from(created))]))
+        }
+        "compare_and_swap_workflow" => {
+            let id = workflow_id(frame)?;
+            let workspace_id = frame
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or(("invalid_workflow", "workspaceId is required".into()))?;
+            let expected = frame
+                .get("expectedRevision")
+                .and_then(Value::as_i64)
+                .ok_or(("invalid_workflow", "expectedRevision is required".into()))?;
+            let workflow = frame
+                .get("workflow")
+                .filter(|value| value.is_object())
+                .ok_or(("invalid_workflow", "workflow object is required".into()))?;
+            let event = frame
+                .get("event")
+                .filter(|value| value.is_object())
+                .ok_or(("invalid_workflow", "event object is required".into()))?;
+            if event.get("actor").and_then(Value::as_str) == Some("agent") {
+                let expected_catalog_revision = frame
+                    .get("expectedCatalogRevision")
+                    .and_then(Value::as_str)
+                    .ok_or((
+                        "invalid_workflow",
+                        "expectedCatalogRevision is required for Agent proposals".into(),
+                    ))?;
+                let current_catalog_revision = store
+                    .workflow_node_template_catalog_revision(workspace_id)
+                    .map_err(|message| ("host_operation_failed", message))?;
+                if expected_catalog_revision != current_catalog_revision {
+                    return Err((
+                        "workflow_catalog_conflict",
+                        "Workflow NodeMeta catalog changed; reload it and retry".into(),
+                    ));
+                }
+            }
+            let saved = store
+                .workflow_compare_and_swap(id, workspace_id, expected, workflow, event)
+                .map_err(|message| {
+                    if message == "Workflow graph is read-only while a Run is active" {
+                        ("workflow_run_active", message)
+                    } else {
+                        ("invalid_workflow", message)
+                    }
+                })?;
+            if saved {
+                let _ = state.workflow_events.send(json!({
+                    "type": "workflow_changed",
+                    "workspaceId": workspace_id,
+                    "workflowId": id,
+                    "revision": expected + 1,
+                }));
+            }
+            Ok(response(&[("saved", Value::from(saved))]))
+        }
+        "create_workflow_run" => {
+            let run = frame
+                .get("run")
+                .filter(|value| value.is_object())
+                .ok_or(("invalid_workflow_run", "run object is required".into()))?;
+            let workspace_id = run
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or(("invalid_workflow_run", "run.workspaceId is required".into()))?;
+            let created = store
+                .workflow_run_create(workspace_id, run)
+                .map_err(|message| ("invalid_workflow_run", message))?;
+            if created {
+                let _ = state.workflow_events.send(json!({
+                    "type": "workflow_run_changed",
+                    "workspaceId": workspace_id,
+                    "workflowId": run.get("workflowId").and_then(Value::as_str).unwrap_or_default(),
+                    "runId": run.get("id").and_then(Value::as_str).unwrap_or_default(),
+                    "status": "queued",
+                    "eventSequence": 0,
+                }));
+            }
+            Ok(response(&[("created", Value::from(created))]))
+        }
+        "load_workflow_run" => {
+            let id = workflow_id(frame)?;
+            let workspace_id = frame
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or(("invalid_workflow_run", "workspaceId is required".into()))?;
+            let record = store
+                .workflow_run_load(id, workspace_id)
+                .map_err(|message| ("host_operation_failed", message))?;
+            Ok(response(&[("record", record.unwrap_or(Value::Null))]))
+        }
+        "list_workflow_runs" => {
+            let id = workflow_id(frame)?;
+            let workspace_id = frame
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or(("invalid_workflow_run", "workspaceId is required".into()))?;
+            let runs = store
+                .workflow_run_list(id, workspace_id, 50)
+                .map_err(|message| ("host_operation_failed", message))?;
+            Ok(response(&[("runs", Value::Array(runs))]))
+        }
+        "append_workflow_run_event" => {
+            let id = workflow_id(frame)?;
+            let workspace_id = frame
+                .get("workspaceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or(("invalid_workflow_run", "workspaceId is required".into()))?;
+            let expected = frame
+                .get("expectedSequence")
+                .and_then(Value::as_i64)
+                .ok_or((
+                    "invalid_workflow_run",
+                    "expectedSequence is required".into(),
+                ))?;
+            let run = frame
+                .get("run")
+                .filter(|value| value.is_object())
+                .ok_or(("invalid_workflow_run", "run object is required".into()))?;
+            let event = frame
+                .get("event")
+                .filter(|value| value.is_object())
+                .ok_or(("invalid_workflow_run", "event object is required".into()))?;
+            let saved = store
+                .workflow_run_append_event(id, workspace_id, expected, run, event)
+                .map_err(|message| ("invalid_workflow_run", message))?;
+            if saved {
+                let _ = state.workflow_events.send(json!({
+                    "type": "workflow_run_changed",
+                    "workspaceId": workspace_id,
+                    "workflowId": run.get("workflowId").and_then(Value::as_str).unwrap_or_default(),
+                    "runId": id,
+                    "status": run.get("status").and_then(Value::as_str).unwrap_or("error"),
+                    "eventSequence": expected.saturating_add(1),
+                    "eventType": event.get("type").and_then(Value::as_str).unwrap_or_default(),
+                }));
+            }
+            Ok(response(&[("saved", Value::from(saved))]))
+        }
+        _ => unreachable!("dispatch_workflow_operation called with unknown operation"),
+    }
+}
+
 async fn dispatch_host_operation(
     state: &HostState,
     client_id: &str,
@@ -1912,8 +2346,39 @@ async fn dispatch_host_operation(
     frame: &Value,
 ) -> Result<Value, (&'static str, String)> {
     match operation {
+        "get_workflow_execution_capabilities" => {
+            ensure_desktop_workflow_code_client(state, client_id)?;
+            #[cfg(feature = "workflow-code-runner-prototype")]
+            let code_execution =
+                crate::workflow_code_runner::platform_isolated_execution_available();
+            #[cfg(not(feature = "workflow-code-runner-prototype"))]
+            let code_execution = false;
+            Ok(json!({
+                "type": "host_response",
+                "requestId": request_id,
+                "operation": operation,
+                "codeExecution": code_execution,
+            }))
+        }
+        "cancel_workflow_code" => {
+            dispatch_cancel_workflow_code_operation(state, client_id, request_id, frame)
+        }
+        "execute_workflow_code" => {
+            dispatch_workflow_code_operation(state, client_id, request_id, frame).await
+        }
         "get_preference" | "set_preference" | "remove_preference" => {
             dispatch_preference_operation(state, request_id, operation, frame)
+        }
+        "load_workflow"
+        | "list_workflow_node_templates"
+        | "create_workflow_node_template"
+        | "create_workflow"
+        | "compare_and_swap_workflow"
+        | "create_workflow_run"
+        | "load_workflow_run"
+        | "list_workflow_runs"
+        | "append_workflow_run_event" => {
+            dispatch_workflow_operation(state, request_id, operation, frame)
         }
         "list_pi_packages" => {
             let resolver = state.pi_launch.clone();
@@ -2232,10 +2697,8 @@ async fn dispatch_host_operation(
             .await
             .map_err(|error| ("host_operation_failed", error.to_string()))?
             .map_err(|message| ("skill_scan_failed", message))?;
-            let agent_dir = dirs::home_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join(".pi")
-                .join("agent");
+            let agent_dir = crate::pi_agent_dir::agent_dir()
+                .unwrap_or_else(|| std::env::temp_dir().join(".pi").join("agent"));
             let install_secret = state.install_secret.clone();
             let context = crate::skill_install::InstallContext {
                 agent_dir,
@@ -2338,10 +2801,8 @@ async fn dispatch_host_operation(
             .map_err(|message| ("skill_install_failed", message))?;
             // On success, consume the sourceId so it cannot be reused — the
             // design contract makes a successful install consume the handle.
-            let agent_dir = dirs::home_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join(".pi")
-                .join("agent");
+            let agent_dir = crate::pi_agent_dir::agent_dir()
+                .unwrap_or_else(|| std::env::temp_dir().join(".pi").join("agent"));
             let install_secret = state.install_secret.clone();
             let context = crate::skill_install::InstallContext {
                 agent_dir,
@@ -2580,6 +3041,191 @@ async fn dispatch_host_operation(
             "Host operation is not implemented on protocol v2".into(),
         )),
     }
+}
+
+fn dispatch_cancel_workflow_code_operation(
+    state: &HostState,
+    client_id: &str,
+    request_id: &str,
+    frame: &Value,
+) -> Result<Value, (&'static str, String)> {
+    ensure_desktop_workflow_code_client(state, client_id)?;
+    let execution_request_id = frame
+        .get("executionRequestId")
+        .and_then(Value::as_str)
+        .filter(|value| valid_workflow_code_request_id(value))
+        .ok_or((
+            "invalid_workflow_code_request",
+            "executionRequestId is required".into(),
+        ))?;
+    let cancelled = state
+        .workflow_code_cancellations
+        .lock()
+        .map_err(|_| {
+            (
+                "host_operation_failed",
+                "Workflow cancellation registry is poisoned".into(),
+            )
+        })?
+        .cancel((client_id.to_owned(), execution_request_id.to_owned()));
+    Ok(json!({
+        "type": "host_response",
+        "requestId": request_id,
+        "operation": "cancel_workflow_code",
+        "cancelled": cancelled,
+    }))
+}
+
+fn ensure_desktop_workflow_code_client(
+    state: &HostState,
+    client_id: &str,
+) -> Result<(), (&'static str, String)> {
+    let router = state
+        .router
+        .lock()
+        .map_err(|_| ("host_operation_failed", "Host router is unavailable".into()))?;
+    match router.client_kind(client_id) {
+        Some(ClientKind::Desktop) => Ok(()),
+        Some(ClientKind::Remote) => Err((
+            "workflow_code_forbidden",
+            "Workflow code execution is only available to local desktop windows".into(),
+        )),
+        None => Err((
+            "workflow_code_forbidden",
+            "Workflow code execution requires an authenticated desktop window".into(),
+        )),
+    }
+}
+
+#[cfg(feature = "workflow-code-runner-prototype")]
+async fn dispatch_workflow_code_operation(
+    state: &HostState,
+    client_id: &str,
+    request_id: &str,
+    frame: &Value,
+) -> Result<Value, (&'static str, String)> {
+    ensure_desktop_workflow_code_client(state, client_id)?;
+    if !valid_workflow_code_request_id(request_id) {
+        return Err((
+            "invalid_workflow_code_request",
+            "Workflow code request id is invalid".into(),
+        ));
+    }
+    if !crate::workflow_code_runner::platform_isolated_execution_available() {
+        return Err((
+            "workflow_code_disabled",
+            "No verified workflow code sandbox is available on this platform".into(),
+        ));
+    }
+    let run_id = frame
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(("invalid_workflow_code_request", "runId is required".into()))?;
+    let workspace_id = frame
+        .get("workspaceId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or((
+            "invalid_workflow_code_request",
+            "workspaceId is required".into(),
+        ))?;
+    let node_id = frame
+        .get("nodeId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(("invalid_workflow_code_request", "nodeId is required".into()))?;
+    let inputs = frame.get("inputs").ok_or((
+        "invalid_workflow_code_request",
+        "inputs are required".into(),
+    ))?;
+    let store = state.metadata.as_ref().ok_or((
+        "workflow_code_disabled",
+        "Workflow metadata store is unavailable".into(),
+    ))?;
+    let record = {
+        let store = store
+            .lock()
+            .map_err(|_| ("host_operation_failed", "Workflow store is poisoned".into()))?;
+        store
+            .workflow_run_load(run_id, workspace_id)
+            .map_err(|message| ("host_operation_failed", message))?
+    }
+    .ok_or((
+        "invalid_workflow_code_request",
+        "Workflow Run was not found".into(),
+    ))?;
+    let authorized = crate::workflow_code_authorization::authorize_code_node(
+        &record,
+        run_id,
+        workspace_id,
+        node_id,
+        inputs,
+    )
+    .map_err(|message| ("workflow_code_forbidden", message))?;
+    let cancellation_key = (client_id.to_owned(), request_id.to_owned());
+    let cancellation_receiver = state
+        .workflow_code_cancellations
+        .lock()
+        .map_err(|_| {
+            (
+                "host_operation_failed",
+                "Workflow cancellation registry is poisoned".into(),
+            )
+        })?
+        .register(cancellation_key.clone())
+        .map_err(|message| ("invalid_workflow_code_request", message))?;
+    let _cancellation_registration = WorkflowCodeCancellationRegistration {
+        registry: &state.workflow_code_cancellations,
+        key: cancellation_key,
+    };
+    let result = crate::workflow_code_process::execute_workflow_code(
+        &authorized.node_meta,
+        inputs,
+        &authorized.params,
+        cancellation_receiver,
+    )
+    .await
+    .map_err(|message| ("workflow_code_failed", message))?;
+    Ok(json!({
+        "type": "host_response",
+        "requestId": request_id,
+        "operation": "execute_workflow_code",
+        "output": result.output,
+        "logs": result.logs,
+    }))
+}
+
+fn valid_workflow_code_request_id(value: &str) -> bool {
+    value.starts_with("host-") && value.len() <= 128
+}
+
+#[cfg(feature = "workflow-code-runner-prototype")]
+struct WorkflowCodeCancellationRegistration<'a> {
+    registry: &'a Mutex<WorkflowCodeCancellationRegistry>,
+    key: (String, String),
+}
+
+#[cfg(feature = "workflow-code-runner-prototype")]
+impl Drop for WorkflowCodeCancellationRegistration<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.remove(&self.key);
+        }
+    }
+}
+
+#[cfg(not(feature = "workflow-code-runner-prototype"))]
+async fn dispatch_workflow_code_operation(
+    _state: &HostState,
+    _client_id: &str,
+    _request_id: &str,
+    _frame: &Value,
+) -> Result<Value, (&'static str, String)> {
+    Err((
+        "workflow_code_disabled",
+        "Workflow code execution is not enabled in this build".into(),
+    ))
 }
 
 fn host_data_error(error: HostDataError) -> (&'static str, String) {
@@ -2909,7 +3555,8 @@ mod tests {
     use super::{
         extension_ui_requires_owner, is_public_http_request, messages_from_entries_response,
         runtime_request_timeout, trusted_loopback_request, HostServer,
-        RUNTIME_INTERACTIVE_REQUEST_TIMEOUT, RUNTIME_REQUEST_TIMEOUT,
+        WorkflowCodeCancellationRegistry, RUNTIME_INTERACTIVE_REQUEST_TIMEOUT,
+        RUNTIME_REQUEST_TIMEOUT,
     };
     use crate::metadata_store::MetadataStore;
     use crate::native_pi_manager::NativePiManager;
@@ -2920,6 +3567,19 @@ mod tests {
     use std::fs;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn cancels_an_active_workflow_code_request_and_remembers_early_cancellation() {
+        let mut registry = WorkflowCodeCancellationRegistry::default();
+        let key = ("desktop-window".to_owned(), "host-request".to_owned());
+        let mut active_receiver = registry.register(key.clone()).unwrap();
+        assert!(registry.cancel(key.clone()));
+        assert!(active_receiver.try_recv().is_ok());
+
+        let early_key = ("desktop-window".to_owned(), "host-next".to_owned());
+        assert!(!registry.cancel(early_key.clone()));
+        assert!(registry.register(early_key).is_err());
+    }
 
     #[test]
     fn exposes_static_assets_and_only_the_minimum_unauthenticated_protocol_routes() {
@@ -3113,7 +3773,7 @@ mod tests {
             .unwrap();
         assert!(index.contains("Picot native host"));
 
-        host.stop();
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3207,7 +3867,7 @@ mod tests {
             reqwest::StatusCode::FORBIDDEN
         );
 
-        host.stop();
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3258,7 +3918,7 @@ mod tests {
             .unwrap();
         assert_eq!(app_js, "export const marker = 1;");
 
-        host.stop();
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3288,7 +3948,7 @@ mod tests {
         assert_eq!(body["runtimeCount"], 0);
         assert!(body["runtimes"].as_array().unwrap().is_empty());
 
-        host.stop();
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3328,7 +3988,7 @@ mod tests {
         assert_eq!(body["ok"], false);
         assert!(body["error"].as_str().is_some());
 
-        host.stop();
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3361,7 +4021,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
 
-        host.stop();
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3391,7 +4051,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-        host.stop();
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3454,7 +4114,10 @@ mod tests {
         assert_eq!(event["target"]["sessionId"], "session-a");
         assert_eq!(event["sequence"], 1);
 
-        host.stop();
+        socket.close(None).await.unwrap();
+        drop(socket);
+        drop(fake);
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3628,7 +4291,141 @@ mod tests {
             None
         );
 
-        host.stop();
+        socket.close(None).await.unwrap();
+        drop(socket);
+        drop(metadata);
+        host.stop().await;
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn workflow_template_list_returns_authoritative_catalog_revision() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!("pipline-host-workflow-catalog-{nonce}"));
+        let public = temp.join("public");
+        fs::create_dir_all(&public).unwrap();
+        fs::write(public.join("index.html"), "Pipline").unwrap();
+        let metadata = Arc::new(Mutex::new(
+            MetadataStore::open(&temp.join("pipline.sqlite3")).unwrap(),
+        ));
+        let auth = Arc::new(Mutex::new(RemoteAuth::new(Arc::new(Mutex::new(
+            MetadataStore::open(&temp.join("auth.sqlite3")).unwrap(),
+        )))));
+        let host = HostServer::start_with_workspaces(
+            public,
+            NativePiManager::new(32),
+            auth,
+            std::collections::HashMap::new(),
+            None,
+            Some(metadata),
+        )
+        .await
+        .unwrap();
+        let ws_url = host.origin().replace("http://", "ws://") + "/v2/ws";
+        let (mut socket, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({
+                    "type": "hello",
+                    "protocolVersion": 2,
+                    "clientType": "desktop",
+                    "clientId": "desktop-catalog-test"
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        socket.next().await.unwrap().unwrap();
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({
+                    "type": "host_request",
+                    "requestId": "catalog-list-1",
+                    "operation": "list_workflow_node_templates",
+                    "workspaceId": "workspace-catalog-test"
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        let response = loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+                .await
+                .expect("workflow catalog response")
+                .unwrap()
+                .unwrap();
+            let frame: serde_json::Value =
+                serde_json::from_str(message.to_text().unwrap()).unwrap();
+            if frame["requestId"] == "catalog-list-1" {
+                break frame;
+            }
+        };
+        assert_eq!(response["type"], "host_response");
+        assert!(response["catalogRevision"].as_str().is_some());
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({
+                    "type": "host_request",
+                    "requestId": "catalog-create-stale",
+                    "operation": "create_workflow_node_template",
+                    "workspaceId": "workspace-catalog-test",
+                    "expectedCatalogRevision": "catalog-v1-stale",
+                    "meta": {}
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        let stale_create = loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+                .await
+                .expect("stale NodeMeta response")
+                .unwrap()
+                .unwrap();
+            let frame: serde_json::Value =
+                serde_json::from_str(message.to_text().unwrap()).unwrap();
+            if frame["requestId"] == "catalog-create-stale" {
+                break frame;
+            }
+        };
+        assert_eq!(stale_create["type"], "error");
+        assert_eq!(stale_create["error"]["code"], "workflow_catalog_conflict");
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({
+                    "type": "host_request",
+                    "requestId": "catalog-cas-stale",
+                    "operation": "compare_and_swap_workflow",
+                    "workflowId": "workflow-catalog-test",
+                    "workspaceId": "workspace-catalog-test",
+                    "expectedRevision": 0,
+                    "expectedCatalogRevision": "catalog-v1-stale",
+                    "workflow": {},
+                    "event": { "actor": "agent" }
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        let stale_cas = loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+                .await
+                .expect("stale Agent proposal response")
+                .unwrap()
+                .unwrap();
+            let frame: serde_json::Value =
+                serde_json::from_str(message.to_text().unwrap()).unwrap();
+            if frame["requestId"] == "catalog-cas-stale" {
+                break frame;
+            }
+        };
+        assert_eq!(stale_cas["type"], "error");
+        assert_eq!(stale_cas["error"]["code"], "workflow_catalog_conflict");
+        socket.close(None).await.unwrap();
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3724,7 +4521,10 @@ mod tests {
         assert_eq!(event["event"]["type"], "extension_ui_request");
         assert_eq!(event["event"]["id"], "dialog-1");
 
-        host.stop();
+        socket.close(None).await.unwrap();
+        drop(socket);
+        drop(fake);
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3814,7 +4614,10 @@ mod tests {
             })
         );
 
-        host.stop();
+        socket.close(None).await.unwrap();
+        drop(socket);
+        drop(fake);
+        host.stop().await;
         fs::remove_dir_all(temp).unwrap();
     }
 }

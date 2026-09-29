@@ -1,5 +1,6 @@
 const MUTATION_TYPES = new Set([
   "prompt",
+  "abort",
   "steer",
   "follow_up",
   "compact",
@@ -142,12 +143,20 @@ export class RuntimeGateway {
   }
 
   #connectionChanged(connected) {
-    if (connected) return;
-    this.#generation += 1;
-    for (const pending of this.#pending.values()) {
-      pending.reject(new Error("Runtime disconnected before the request completed"));
+    if (!connected) {
+      this.#generation += 1;
+      for (const pending of this.#pending.values()) {
+        pending.reject(new Error("Runtime disconnected before the request completed"));
+      }
+      this.#pending.clear();
     }
-    this.#pending.clear();
+    for (const listener of this.#listeners) {
+      try {
+        listener({ type: "runtime_connection", connected });
+      } catch (error) {
+        console.error("[RuntimeGateway] Connection listener failed:", error);
+      }
+    }
   }
 }
 

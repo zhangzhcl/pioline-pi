@@ -1,10 +1,14 @@
 // ABOUTME: Passes extra TLS CAs into the embedded Pi process so device-code
 // ABOUTME: OAuth can trust the same user-installed proxy CAs as the system browser.
 
-use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", test))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
+#[cfg(any(target_os = "macos", test))]
 use std::time::Duration;
 
+#[cfg(any(target_os = "macos", test))]
 const BUNDLE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Add `NODE_EXTRA_CA_CERTS` when the parent process did not already set it.
@@ -44,11 +48,13 @@ fn macos_keychain_ca_bundle() -> Option<PathBuf> {
     dest.exists().then_some(dest)
 }
 
+#[cfg(target_os = "macos")]
 fn bundle_dest() -> Option<PathBuf> {
     let dir = dirs::cache_dir()?.join("picot").join("tls");
     Some(dir.join("macos-keychain-cas.pem"))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn bundle_is_fresh(path: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;

@@ -97,6 +97,11 @@ export class ToolCardRenderer {
 
   createToolCard(toolExecution) {
     const { toolCallId, toolName, args, status } = toolExecution;
+    const existing = this.toolCards.get(toolCallId);
+    if (existing) {
+      this.updateToolCard(toolExecution);
+      return existing;
+    }
 
     const card = document.createElement("div");
     card.className = "tool-card";

@@ -4,6 +4,17 @@ This file contains repository-wide development rules. Product architecture,
 feature invariants, transport paths, security boundaries, and module ownership
 live in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+## Pipline project decisions
+
+This repository is a Pipline product fork based on the MIT-licensed Picot app.
+Keep the upstream `LICENSE` and attribution. Product identity is Pipline.
+Supported first-release targets are Windows 10 x64 and macOS 11.0+ on Apple
+Silicon and Intel. Ship the Pi runtime inside platform installers; do not
+require users to install Pi, Node, or Bun. Reuse `~/.pi/agent` directly for Pi
+credentials, sessions, settings, and extensions. Store Pipline workflow data in
+the application's own data directory. Apple Developer ID and notarization are
+deferred release tasks and are not development prerequisites.
+
 ## Read first
 
 - Read the applicable `ARCHITECTURE.md` section and its linked design documents
@@ -19,20 +30,20 @@ live in [`ARCHITECTURE.md`](ARCHITECTURE.md).
   contract. Changes to LAN access, cross-platform paths, or static serving also
   require the corresponding architecture update.
 
-Tauri wraps the web UI. Rust starts a native `HostServer` plus a managed `pi --mode rpc` subprocess using the embedded pi binary shipped in `src-tauri/resources/pi/` (downloaded by `scripts/fetch-pi-binary.js` from pi-mono releases at the version pinned in `scripts/pi-version.json`). The WebView talks to the Rust host over `/v2/ws`; the host bridges runtime requests to Pi over stdio RPC.
+Tauri wraps the web UI. Rust starts a native `HostServer` plus a managed `pi --mode rpc` subprocess from `src-tauri/resources/pi/`. Windows/Linux use the matching official compiled Pi binary. macOS uses the official Pi npm CLI bundle with a bundled Node.js 22 Runtime and a local `pi` shell launcher: the official compiled Pi macOS binaries require macOS 13, above Pipline's macOS 11 floor. `scripts/fetch-pi-binary.js` selects the platform runtime; Pi and Node versions/checksums are pinned in `scripts/pi-version.json` and `scripts/node-runtime-version.json`. The WebView talks to the Rust host over `/v2/ws`; the host bridges runtime requests to Pi over stdio RPC.
 
 ```
 Picot .app
   resources/
     public/                       (frontend)
     extensions/picot-bridge.mjs    (Picot-specific Pi commands)
-    pi/<bun-compiled pi binary + assets>
+    pi/<Windows compiled Pi binary, or macOS Pi npm bundle + Node runtime>
   Rust HostServer + NativePiManager
     spawn pi --mode rpc --extension picot-bridge.mjs
     WebView  →  /v2/ws  →  HostServer  →  stdio RPC  →  pi
 ```
 
-There are currently no custom Tauri IPC commands. Runtime, data, auth, and extension UI traffic goes through the native host protocol.
+The native Host protocol remains the transport for Pi runtime, data, auth, and extension UI traffic. A narrow set of Tauri IPC commands coordinates standalone workflow-window lifecycle and bounded chat/editor messages; these commands are declared in `src-tauri/permissions/default.toml` and documented in ADR 0004.
 
 ### Goals
 
@@ -309,11 +320,13 @@ Verification is scoped to the change, not a fixed checklist run on every task.
 - If you do run tests/checks, do not claim completion with failing tests or
   undocumented intentional warnings.
 
-## Embedded Pi version
+## Bundled Pi Runtime version
 
-The embedded binary is the only Pi runtime Picot launches; do not rely on a
-user-installed `pi` from `$PATH`. To upgrade it, follow the verified procedure
-in [`ARCHITECTURE.md`](ARCHITECTURE.md#如何读这个仓库): change
-`scripts/pi-version.json`, run `bun run fetch:pi`, smoke-test the embedded
-binary and `bun run dev`, then commit only the version pin—not
-`src-tauri/resources/pi/`.
+The bundled runtime is the only Pi runtime Pipline launches; do not rely on a
+user-installed `pi`, Node, or Bun from `$PATH`. To upgrade Pi, change
+`scripts/pi-version.json` and the official npm dependency-lock pin, run
+`bun run fetch:pi`, verify the Pi RPC smoke on supported build targets, then
+commit source pins and license records—not `src-tauri/resources/pi/`. To
+upgrade the macOS Node runtime, update `scripts/node-runtime-version.json` from
+the official Node release and verify both Mach-O architectures and every
+bundled native addon still support macOS 11.0.

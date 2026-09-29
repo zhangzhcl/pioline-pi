@@ -64,11 +64,17 @@ describe("subagent-store", () => {
   });
 
   it("silently no-ops when localStorage.setItem throws", () => {
-    const spy = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
-      throw new Error("quota");
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("quota");
+      },
     });
-    expect(() => writeRun(SESSION, run("a"))).not.toThrow();
-    spy.mockRestore();
-    expect(readRuns(SESSION)).toEqual([]);
+    try {
+      expect(() => writeRun(SESSION, run("a"))).not.toThrow();
+      expect(readRuns(SESSION)).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

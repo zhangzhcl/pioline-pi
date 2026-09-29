@@ -34,7 +34,6 @@ function applyRuntimeEvent(state, event) {
     case "agent_start":
       return { ...state, lifecycle: "working" };
     case "agent_settled":
-    case "agent_end":
       return { ...state, lifecycle: "idle" };
     case "queue_update":
       return {

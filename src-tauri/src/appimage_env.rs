@@ -139,7 +139,7 @@ fn is_under(value: &OsStr, appdir: &Path) -> bool {
     Path::new(value).starts_with(appdir)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{is_under, sanitize_list, EnvAction};
     use std::ffi::OsString;

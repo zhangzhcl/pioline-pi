@@ -14,7 +14,7 @@ const enMessages = {
     responseTime: "Response time",
   },
   app: {
-    welcome: "Welcome to Picot",
+    welcome: "Welcome to Pipline",
     welcomeHint: "Type a message...",
     currentWorkspace: "Current workspace:",
   },
@@ -31,7 +31,7 @@ const zhMessages = {
     collapse: "收起",
   },
   app: {
-    welcome: "欢迎使用 Picot",
+    welcome: "欢迎使用 Pipline",
     welcomeHint: "输入消息...",
     currentWorkspace: "当前工作区：",
   },
@@ -561,12 +561,12 @@ describe("MessageRenderer locale change", () => {
   it("re-renders welcome on locale change when .welcome exists", async () => {
     renderer.renderWelcome({ workspacePath: "/home/user/project" });
     expect(container.querySelector(".welcome")).not.toBeNull();
-    expect(container.textContent).toContain("Welcome to Picot");
+    expect(container.textContent).toContain("Welcome to Pipline");
 
     await setLocale("zh");
 
     expect(container.querySelector(".welcome")).not.toBeNull();
-    expect(container.textContent).toContain("欢迎使用 Picot");
+    expect(container.textContent).toContain("欢迎使用 Pipline");
   });
 
   it("does not re-render streaming content on locale change and preserves _streamingRawText", async () => {
@@ -591,7 +591,7 @@ describe("MessageRenderer teardown", () => {
     renderer.clear();
     renderer.renderWelcome({});
     await setLocale("zh");
-    expect(container.querySelector(".welcome p").textContent).toBe("欢迎使用 Picot");
+    expect(container.querySelector(".welcome p").textContent).toBe("欢迎使用 Pipline");
   });
 
   it("destroy() stops locale re-renders, removes the scroll listener, and is idempotent", async () => {
@@ -600,13 +600,13 @@ describe("MessageRenderer teardown", () => {
     const renderer = new MessageRenderer(container);
     renderer.renderWelcome({});
     const welcomeP = container.querySelector(".welcome p");
-    expect(welcomeP.textContent).toBe("Welcome to Picot");
+    expect(welcomeP.textContent).toBe("Welcome to Pipline");
 
     renderer.destroy();
     expect(() => renderer.destroy()).not.toThrow();
     expect(removeSpy).toHaveBeenCalled();
     // No re-render after destroy: the welcome stays English.
     await setLocale("zh");
-    expect(welcomeP.textContent).toBe("Welcome to Picot");
+    expect(welcomeP.textContent).toBe("Welcome to Pipline");
   });
 });

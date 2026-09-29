@@ -7,20 +7,25 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
   build-and-release:
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
         include:
           # macOS Apple Silicon (arm64) host build.
-          - os: macos-latest
-          # macOS Intel (x64) build. The macos-13 Intel runner was retired by
-          # GitHub, so we cross-compile x86_64 from an Apple Silicon runner.
-          - os: macos-14
+          - os: macos-15
+            pi_target_platform: darwin-arm64
+            cargo_target: aarch64-apple-darwin
+          # macOS Intel (x64) native build. macos-15 is Apple Silicon; use the
+          # current explicit Intel label for a native x86_64 release artifact.
+          - os: macos-15-intel
             pi_target_platform: darwin-x64
+            cargo_target: x86_64-apple-darwin
             rust_target: x86_64-apple-darwin
           # Linux x86_64 is split across two runners:
           #
@@ -38,21 +43,30 @@ jobs:
           #    trade -- older systems have apt/dnf and take the packages.
           - os: ubuntu-22.04
             pi_target_platform: linux-x64
+            cargo_target: x86_64-unknown-linux-gnu
             linux_bundles: deb,rpm
           - os: ubuntu-24.04
             pi_target_platform: linux-x64
+            cargo_target: x86_64-unknown-linux-gnu
             linux_bundles: appimage
           - os: ubuntu-24.04-arm
             pi_target_platform: linux-arm64
+            cargo_target: aarch64-unknown-linux-gnu
             linux_bundles: deb,rpm,appimage
           - os: windows-2022
             pi_target_platform: windows-x64
+            cargo_target: x86_64-pc-windows-msvc
           - os: windows-11-arm
             pi_target_platform: windows-arm64
+            cargo_target: aarch64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
 
     env:
+      PIPLINE_RELEASE_REPOSITORY: ${{ github.repository }}
+      PIPLINE_CARGO_TARGET: ${{ matrix.cargo_target }}
+      PIPLINE_UPDATER_PUBLIC_KEY: ${{ vars.PIPLINE_UPDATER_PUBLIC_KEY }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
       # Mitigate intermittent crates.io download failures on CI runners
       # ("curl failed [16] Error in the HTTP2 framing layer"). Disabling
       # HTTP/2 multiplexing forces cargo's curl downloader back to HTTP/1.1,
@@ -67,10 +81,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Configure updater for this Pipline repository
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node scripts/write-tauri-release-config.js
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -134,6 +153,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify updater signing key pair
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PIPLINE_UPDATER_PUBLIC_KEY: ${{ vars.PIPLINE_UPDATER_PUBLIC_KEY }}
+        run: node scripts/verify-tauri-updater-keypair.js
+
       # Cache embedded release assets. Lockfile changes invalidate the cache so
       # a build never silently ships a stale Pi binary or terminal font.
       - name: Cache embedded release downloads
@@ -152,7 +178,7 @@ jobs:
 
       # Sanity-check that the embedded binary actually runs. We can only do
       # this when the embedded binary's architecture matches the runner's:
-      # the macos-14 job cross-compiles an x86_64 (darwin-x64) binary on an
+      # the macos-15 job cross-compiles an x86_64 (darwin-x64) binary on an
       # Apple Silicon runner, which would SIGILL ("Illegal instruction",
       # exit 132) if executed here. That cross-built binary is exercised on
       # its own native runner instead. `matrix.rust_target` is only set for
@@ -167,6 +193,12 @@ jobs:
 
       - name: Build pi extensions bundle
         run: bun run build:extensions
+
+      - name: Smoke test embedded Pi RPC and DAG Agent workflow
+        run: bun run smoke:pi-rpc
+
+      - name: Smoke test Pi workflow proposal and NodeMeta RPC
+        run: bun run smoke:pi-workflow-rpc
 
       # linuxdeploy walks the whole AppDir and runs `ldd` on every ELF file it
       # finds, including the `pi` binary we ship under `resources/pi`. It
@@ -245,7 +277,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/patchelf-shim/patchelf"
           echo "PATCHELF=$RUNNER_TEMP/patchelf-shim/patchelf" >> "$GITHUB_ENV"
 
-      - name: Build Tauri app (Linux deb + rpm + AppImage) and publish assets
+      - name: Build Tauri app (Linux deb + rpm + AppImage) into release draft
         if: runner.os == 'Linux'
         uses: tauri-apps/tauri-action@v0
         env:
@@ -263,11 +295,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Picot ${{ github.ref_name }}"
+          releaseName: "Pipline ${{ github.ref_name }}"
           releaseBody: |
             Automated release for `${{ github.ref_name }}`.
             Download the installer for your platform from the assets below.
-          releaseDraft: false
+          # Keep every platform artifact private until all matrix builds and
+          # installer smoke gates, including the Windows MSI upgrade, succeed.
+          releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           # AppImage is the only Linux target the Tauri updater supports, so
           # it is what puts a `linux-*` entry into `latest.json`. It is also
@@ -275,11 +309,11 @@ jobs:
           # step above and `NO_STRIP` for the workarounds that keeps alive.
           # `--verbose` keeps linuxdeploy's own stderr in the log instead of
           # tauri-bundler's generic "failed to run linuxdeploy" wrapper.
-          args: --bundles ${{ matrix.linux_bundles }} --verbose
+          args: --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.linux_bundles }} --verbose
           # tauri-action will only attach `latest.json` (the updater
-          # manifest) when this is `true`. Combined with
-          # `bundle.createUpdaterArtifacts` in tauri.conf.json, the
-          # release ends up with: installers + `*.sig` files +
+          # manifest) when this is `true`. The generated release config
+          # enables `bundle.createUpdaterArtifacts` and sets this repository's
+          # the release ends up with: installers + `*.sig` files +
           # `latest.json` pinning the URL/signature of each platform
           # bundle. The Tauri updater endpoint then resolves to
           # `https://github.com/.../releases/latest/download/latest.json`.
@@ -319,7 +353,7 @@ jobs:
           fi
           echo "embedded pi is byte-identical to upstream ($actual)"
 
-      - name: Build Tauri app and publish assets
+      - name: Build Tauri app into release draft
         if: runner.os != 'Linux'
         uses: tauri-apps/tauri-action@v0
         env:
@@ -343,26 +377,158 @@ jobs:
           APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Picot ${{ github.ref_name }}"
+          releaseName: "Pipline ${{ github.ref_name }}"
           releaseBody: |
             Automated release for `${{ github.ref_name }}`.
             Download the installer for your platform from the assets below.
-          releaseDraft: false
+          # The release is made public only by publish-release after the
+          # complete platform matrix and installer gates pass.
+          releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           # When a Rust target is set (Intel cross-build on an Apple Silicon
           # runner), pass it through so the bundler emits an x86_64 app.
-          args: ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
+          args: --config src-tauri/tauri.release.conf.json ${{ matrix.rust_target && format('--target {0}', matrix.rust_target) || '' }}
           # tauri-action will only attach `latest.json` (the updater
-          # manifest) when this is `true`. Combined with
-          # `bundle.createUpdaterArtifacts` in tauri.conf.json, the
-          # release ends up with: installers + `*.sig` files +
+          # manifest) when this is `true`. The generated release config
+          # enables `bundle.createUpdaterArtifacts` and sets this repository's
+          # the release ends up with: installers + `*.sig` files +
           # `latest.json` pinning the URL/signature of each platform
           # bundle. The Tauri updater endpoint then resolves to
           # `https://github.com/.../releases/latest/download/latest.json`.
           updaterJsonPreferNsis: true
 
-  publish-beta-manifest:
+      - name: Download prior stable MSI for upgrade smoke
+        id: prior_msi
+        if: runner.os == 'Windows' && matrix.cargo_target == 'x86_64-pc-windows-msvc'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: ./scripts/download-prior-msi.ps1 -DestinationPath 'target/previous-msi'
+
+      - name: Smoke test Windows MSI upgrade
+        if: runner.os == 'Windows' && matrix.cargo_target == 'x86_64-pc-windows-msvc'
+        env:
+          PREVIOUS_MSI_PATH: ${{ steps.prior_msi.outputs.path }}
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path 'target/release/bundle/msi/*.msi' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected one current MSI installer, found $($installers.Count)."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:PREVIOUS_MSI_PATH)) {
+            ./scripts/smoke-msi-install.ps1 -MsiPath $installers[0].FullName
+          } else {
+            ./scripts/smoke-msi-install.ps1 -MsiPath $installers[0].FullName -PreviousMsiPath $env:PREVIOUS_MSI_PATH
+          }
+
+      - name: Generate release source dependency SBOM
+        if: runner.os != 'Linux'
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: pipline-${{ matrix.pi_target_platform }}-build-sbom.spdx.json
+          artifact-name: pipline-${{ matrix.pi_target_platform }}-build-sbom.spdx.json
+          upload-artifact: true
+          upload-release-assets: true
+          github-token: ${{ github.token }}
+
+      - name: Generate release embedded Pi runtime SBOM
+        if: runner.os != 'Linux'
+        uses: anchore/sbom-action@v0
+        with:
+          file: .cache/pi-runtime-sbom/${{ matrix.pi_target_platform }}/package-lock.json
+          format: spdx-json
+          output-file: pipline-pi-runtime-${{ matrix.pi_target_platform }}-sbom.spdx.json
+          artifact-name: pipline-pi-runtime-${{ matrix.pi_target_platform }}-sbom.spdx.json
+          upload-artifact: true
+          upload-release-assets: true
+          github-token: ${{ github.token }}
+
+      - name: Generate bundled Node runtime SBOM (macOS)
+        if: runner.os == 'macOS'
+        run: node scripts/node-runtime-sbom.cjs ${{ matrix.pi_target_platform }}
+
+      - name: Create release installer SHA-256 manifest
+        if: runner.os != 'Linux'
+        env:
+          PIPLINE_RELEASE_TARGET: ${{ matrix.pi_target_platform }}
+          PIPLINE_CARGO_TARGET: ${{ matrix.cargo_target }}
+          PIPLINE_CROSS_TARGET: ${{ matrix.rust_target != '' }}
+        shell: bash
+        run: node scripts/create-release-checksums.cjs "$PIPLINE_RELEASE_TARGET" "$PIPLINE_CARGO_TARGET" "$PIPLINE_CROSS_TARGET"
+
+      - name: Archive third-party licenses
+        if: runner.os == 'Windows'
+        env:
+          PIPLINE_RELEASE_TARGET: ${{ matrix.pi_target_platform }}
+        shell: pwsh
+        run: Compress-Archive -Path licenses -DestinationPath "pipline-licenses-$env:PIPLINE_RELEASE_TARGET.zip" -Force
+
+      - name: Archive third-party licenses
+        if: runner.os == 'macOS'
+        env:
+          PIPLINE_RELEASE_TARGET: ${{ matrix.pi_target_platform }}
+        shell: bash
+        run: tar -czf "pipline-licenses-${PIPLINE_RELEASE_TARGET}.tar.gz" licenses
+
+      - name: Upload release checksums and license archive
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIPLINE_RELEASE_TARGET: ${{ matrix.pi_target_platform }}
+        shell: pwsh
+        run: |
+          $assets = @(
+            "pipline-$env:PIPLINE_RELEASE_TARGET-SHA256SUMS.txt",
+            "pipline-licenses-$env:PIPLINE_RELEASE_TARGET.zip"
+          )
+          & gh release upload $env:GITHUB_REF_NAME @assets --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Failed to upload release sidecars." }
+
+      - name: Upload release checksums and license archive
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIPLINE_RELEASE_TARGET: ${{ matrix.pi_target_platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            "pipline-${PIPLINE_RELEASE_TARGET}-SHA256SUMS.txt"
+            "pipline-licenses-${PIPLINE_RELEASE_TARGET}.tar.gz"
+            "pipline-node-runtime-${PIPLINE_RELEASE_TARGET}-sbom.spdx.json"
+          )
+          gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" \
+            --repo "${GITHUB_REPOSITORY}" --clobber
+
+  publish-release:
     needs: build-and-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish validated release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          is_draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+          if [[ "$is_draft" != "true" ]]; then
+            echo "::error::expected $GITHUB_REF_NAME to remain a draft until all release gates pass"
+            exit 1
+          fi
+          gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag --repo "$GITHUB_REPOSITORY"
+          is_draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+          if [[ "$is_draft" != "false" ]]; then
+            echo "::error::GitHub did not publish $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+  publish-beta-manifest:
+    needs: publish-release
     if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-')
     runs-on: ubuntu-22.04
     steps:
@@ -383,8 +549,8 @@ jobs:
           if ! gh release view beta --repo "${{ github.repository }}" >/dev/null 2>&1; then
             gh release create beta \
               --repo "${{ github.repository }}" \
-              --title "Picot Beta Channel" \
-              --notes "Mutable updater manifest for Picot prerelease builds." \
+              --title "Pipline Beta Channel" \
+              --notes "Mutable updater manifest for Pipline prerelease builds." \
               --prerelease \
               --target "${{ github.sha }}"
           fi

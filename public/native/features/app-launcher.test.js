@@ -15,10 +15,10 @@ vi.mock("../../i18n.js", () => ({
       "launcher.title": "Projects",
       "launcher.hint": "Choose a project or saved session from the sidebar.",
       "launcher.composerHint": "Select a saved session to start chatting",
-      "launcher.accessHint": "Request access from desktop Picot.",
+      "launcher.accessHint": "Request access from desktop Pipline.",
       "launcher.requestAccess": "Request access",
       "launcher.requestingAccess": "Requesting access…",
-      "launcher.waitingApproval": "Waiting for approval in desktop Picot…",
+      "launcher.waitingApproval": "Waiting for approval in desktop Pipline…",
       "launcher.accessApproved": "Access approved.",
       "launcher.accessDenied": "Access denied.",
       "launcher.accessExpired": "Access expired.",
@@ -142,7 +142,7 @@ describe("app launcher startup", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await vi.waitFor(() => expect(mocks.claimDeviceAccess).toHaveBeenCalled());
     expect(document.querySelector(".launcher-access-status").textContent).toBe(
-      "Waiting for approval in desktop Picot…",
+      "Waiting for approval in desktop Pipline…",
     );
   });
 

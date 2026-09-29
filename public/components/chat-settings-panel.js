@@ -23,7 +23,7 @@ class ChatSettingsPanel extends HTMLElement {
           <div class="settings-row" id="setting-super-agent">
             <span class="settings-label settings-label-stack">
               <span class="settings-label-main" data-i18n="inbox.startAutomatically">Start automatically</span>
-              <span class="settings-label-sub" data-i18n="inbox.launchOnOpen">Launch Agent Inbox when Picot opens</span>
+              <span class="settings-label-sub" data-i18n="inbox.launchOnOpen">Launch Agent Inbox when Pipline opens</span>
             </span>
             <button class="settings-toggle" id="toggle-super-agent"></button>
           </div>
@@ -34,12 +34,12 @@ class ChatSettingsPanel extends HTMLElement {
           <p class="settings-help">
             <span data-i18n="inbox.tokenHelpPre">Paste a Telegram bot token from</span>
             <code>@BotFather</code>
-            <span data-i18n="inbox.tokenHelpMid">. Picot will detect your Telegram DM automatically after you send</span>
+            <span data-i18n="inbox.tokenHelpMid">. Pipline will detect your Telegram DM automatically after you send</span>
             <code>/start</code>
             <span data-i18n="inbox.tokenHelpPost">to the bot.</span>
           </p>
           <p class="settings-help telegram-safety-note" data-i18n="inbox.safety">
-            Telegram messages enter Agent Inbox first. Picot keeps project-agent dispatch
+            Telegram messages enter Agent Inbox first. Pipline keeps project-agent dispatch
             behind local approval.
           </p>
           <div class="telegram-setup-card">

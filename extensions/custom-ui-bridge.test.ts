@@ -94,7 +94,12 @@ function open(
   options?: unknown,
 ) {
   return ctx.ui.custom(
-    ((tui: { requestRender: () => void }, _theme, _keys, done: (result: unknown) => void) =>
+    ((
+      tui: { requestRender: () => void },
+      _theme: unknown,
+      _keys: unknown,
+      done: (result: unknown) => void,
+    ) =>
       component.build(tui, done)) as never,
     options,
   );

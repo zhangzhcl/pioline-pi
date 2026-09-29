@@ -1,4 +1,4 @@
-// ABOUTME: Renders user and assistant chat messages for the Picot WebView.
+// ABOUTME: Renders user and assistant chat messages for the Pipline WebView.
 // ABOUTME: Preserves renderer behavior while exposing user elements for navigation.
 /**
  * Message Renderer - Renders chat messages with markdown support
@@ -93,7 +93,7 @@ export function formatMessageTime(timestampMs) {
 
 /**
  * Format a response duration (ms) for the message footer, e.g. "3.2s" or
- * "1m 05s". Picot times generation client-side (message_start → message_end);
+ * "1m 05s". Pipline times generation client-side (message_start → message_end);
  * pi's runtime events carry no duration field of their own. Returns "" for
  * missing/invalid input so callers can render unconditionally.
  */
@@ -227,7 +227,7 @@ export class MessageRenderer {
     icon.className = "welcome-icon";
     const logo = document.createElement("img");
     logo.src = "icons/logo-dark.svg";
-    logo.alt = "Picot logo";
+    logo.alt = "Pipline logo";
     logo.className = "tau-icon-welcome";
     icon.appendChild(logo);
     welcome.appendChild(icon);

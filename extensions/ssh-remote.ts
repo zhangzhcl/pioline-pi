@@ -461,6 +461,14 @@ export function sshExec(
       stdio: [options.input ? "pipe" : "ignore", "pipe", "pipe"],
       ...(askpass ? { env: askpass.env } : {}),
     });
+    const stdout = child.stdout;
+    const stderr = child.stderr;
+    if (!stdout || !stderr) {
+      child.kill();
+      askpass?.cleanup();
+      reject(new Error("SSH process did not provide output streams"));
+      return;
+    }
     // ConnectTimeout only bounds the TCP handshake. A host that accepts the
     // connection and then stalls — sshd rate-limiting a source that failed
     // auth too often is the common case — would otherwise hang every caller
@@ -477,8 +485,8 @@ export function sshExec(
     };
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
-    child.stdout.on("data", (data) => chunks.push(data));
-    child.stderr.on("data", (data) => errChunks.push(data));
+    stdout.on("data", (data) => chunks.push(data));
+    stderr.on("data", (data) => errChunks.push(data));
     child.on("error", (error) => {
       cleanup();
       reject(error);

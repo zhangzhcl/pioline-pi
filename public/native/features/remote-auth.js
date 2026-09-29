@@ -87,7 +87,7 @@ export async function createDeviceAccessRequest({
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.requestId || !Number.isFinite(body.expiresAt)) {
-    throw new Error(body?.error?.message || "Picot could not create an access request.");
+    throw new Error(body?.error?.message || "Pipline could not create an access request.");
   }
   const pending = {
     requestId: body.requestId,
@@ -99,7 +99,7 @@ export async function createDeviceAccessRequest({
   try {
     storage.setItem(PENDING_DEVICE_REQUEST_KEY, JSON.stringify(pending));
   } catch {
-    throw new Error("Picot could not save the access request in this browser.");
+    throw new Error("Pipline could not save the access request in this browser.");
   }
   return pending;
 }

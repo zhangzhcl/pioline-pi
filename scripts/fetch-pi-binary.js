@@ -13,12 +13,13 @@
  * runtime fully self-contained: it neither requires nor consults a
  * user-installed pi.
  *
- * Source of truth: `scripts/pi-version.json` (`version`, optional `sha256`
- * per-asset). Bumping the version is an explicit, reviewable change.
+ * Source of truth: `scripts/pi-version.json` (`version`, required `sha256`
+ * for every supported asset). Bumping the version is an explicit, reviewable
+ * change and must update all platform digests from the official release.
  *
  * Output: `src-tauri/resources/pi/` containing the extracted release tree
- * (binary `pi` / `pi.exe`, theme/, assets/, node_modules/, etc.) plus a
- * `.version` marker file used for idempotency.
+ * (Windows/Linux compiled runtime; macOS uses the official Pi Node package
+ * and bundled Node runtime) plus version markers used for idempotency.
  *
  * Idempotency
  * -----------
@@ -32,8 +33,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const _os = require("node:os");
 const crypto = require("node:crypto");
-const https = require("node:https");
 const { spawnSync } = require("node:child_process");
+const { downloadPiAsset: downloadTo } = require("./download-pi-asset.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const VERSION_FILE = path.join(__dirname, "pi-version.json");
@@ -108,7 +109,7 @@ function loadLockedVersion() {
   }
   return {
     version: parsed.version.trim(),
-    // Optional: { "pi-darwin-arm64.tar.gz": "<sha256 hex>", ... }
+    // Required for every supported platform asset.
     sha256: parsed.sha256 && typeof parsed.sha256 === "object" ? parsed.sha256 : {},
   };
 }
@@ -132,33 +133,6 @@ function ensureDirEmpty(dir) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   fs.mkdirSync(dir, { recursive: true });
-}
-
-function downloadTo(url, dest) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    const cleanup = (err) => {
-      file.close();
-      fs.unlink(dest, () => {});
-      reject(err);
-    };
-    const handle = (res) => {
-      // Follow redirects (GitHub release downloads always redirect to S3).
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        res.resume();
-        downloadTo(res.headers.location, dest).then(resolve, reject);
-        return;
-      }
-      if (res.statusCode !== 200) {
-        cleanup(new Error(`HTTP ${res.statusCode} for ${url}`));
-        return;
-      }
-      res.pipe(file);
-      file.on("finish", () => file.close(() => resolve()));
-      file.on("error", cleanup);
-    };
-    https.get(url, { headers: { "User-Agent": "pi-studio-fetch" } }, handle).on("error", cleanup);
-  });
 }
 
 function sha256OfFile(filePath) {
@@ -281,6 +255,21 @@ async function main() {
   info(`locked pi version: ${version}`);
   info(`target asset: ${asset.archiveName}`);
 
+  if (asset.key.startsWith("darwin-")) {
+    const nodeRuntime = require("./pi-node-runtime.cjs");
+    if (nodeRuntime.nodeRuntimeIsUpToDate(asset.key)) {
+      info(`Pi Node runtime already up to date at ${OUT_DIR}; skipping.`);
+      return;
+    }
+    await nodeRuntime.fetchPiNodeRuntime(asset.key);
+    return;
+  }
+
+  const expectedSha = sha256[asset.archiveName];
+  if (typeof expectedSha !== "string" || !/^[a-f0-9]{64}$/i.test(expectedSha)) {
+    fail(`missing valid SHA-256 pin for ${asset.archiveName} in scripts/pi-version.json`);
+  }
+
   if (isUpToDate(version, asset.binaryName)) {
     info(`already up to date at ${OUT_DIR}; skipping.`);
     return;
@@ -288,7 +277,6 @@ async function main() {
 
   fs.mkdirSync(CACHE_DIR, { recursive: true });
   const cachedArchive = path.join(CACHE_DIR, `${version}-${asset.archiveName}`);
-  const expectedSha = sha256[asset.archiveName];
 
   if (fs.existsSync(cachedArchive)) {
     if (expectedSha) {
@@ -301,8 +289,6 @@ async function main() {
       } else {
         info(`using cached archive: ${cachedArchive}`);
       }
-    } else {
-      info(`using cached archive: ${cachedArchive}`);
     }
   }
 
@@ -321,23 +307,17 @@ async function main() {
     }
   }
 
-  if (expectedSha) {
-    const actual = sha256OfFile(cachedArchive);
-    if (actual !== expectedSha) {
-      try {
-        fs.unlinkSync(cachedArchive);
-      } catch {}
-      fail(
-        `sha256 mismatch for ${asset.archiveName}: expected ${expectedSha}, got ${actual}. ` +
-          `Cached archive removed.`,
-      );
-    }
-    info(`sha256 verified.`);
-  } else {
-    warn(
-      `no sha256 pin for ${asset.archiveName} in scripts/pi-version.json — skipping checksum verification.`,
+  const actualSha = sha256OfFile(cachedArchive);
+  if (actualSha !== expectedSha) {
+    try {
+      fs.unlinkSync(cachedArchive);
+    } catch {}
+    fail(
+      `sha256 mismatch for ${asset.archiveName}: expected ${expectedSha}, got ${actualSha}. ` +
+        `Cached archive removed.`,
     );
   }
+  info(`sha256 verified.`);
 
   info(`extracting to ${OUT_DIR}`);
   ensureDirEmpty(OUT_DIR);

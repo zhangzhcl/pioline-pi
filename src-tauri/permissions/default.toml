@@ -45,9 +45,49 @@ description = "Allow checking the prerelease Picot updater channel."
 commands.allow = ["check_beta_update"]
 
 [[permission]]
+identifier = "allow-stable-updates-available"
+description = "Allow checking whether the stable updater channel is configured for this build."
+commands.allow = ["stable_updates_available"]
+
+[[permission]]
 identifier = "allow-install-beta-update"
 description = "Allow installing an available prerelease Picot update."
 commands.allow = ["install_beta_update"]
+
+[[permission]]
+identifier = "allow-export-app-logs"
+description = "Allow exporting Pipline application logs through a native save dialog."
+commands.allow = ["export_app_logs"]
+
+[[permission]]
+identifier = "allow-open-workflow-window"
+description = "Allow opening or focusing the workspace's standalone workflow editor window."
+commands.allow = ["open_workflow_window"]
+
+[[permission]]
+identifier = "allow-close-workflow-window"
+description = "Allow hiding a standalone workflow editor window while preserving its runtime."
+commands.allow = ["close_workflow_window"]
+
+[[permission]]
+identifier = "allow-set-workflow-window-title"
+description = "Allow setting the title of a standalone workflow editor window."
+commands.allow = ["set_workflow_window_title"]
+
+[[permission]]
+identifier = "allow-send-workflow-context"
+description = "Allow sending a bounded workflow summary to its matching conversation window."
+commands.allow = ["send_workflow_context"]
+
+[[permission]]
+identifier = "allow-set-workflow-run-lock"
+description = "Allow notifying a workspace conversation when a workflow run locks its composer."
+commands.allow = ["set_workflow_run_lock"]
+
+[[permission]]
+identifier = "allow-update-workflow-window-target"
+description = "Allow updating the Pi session target observed by a workflow editor window."
+commands.allow = ["update_workflow_window_target"]
 
 [default]
 description = "Default set of Picot app command permissions."
@@ -59,6 +99,14 @@ permissions = [
   "allow-show-task-completion-notification",
   "allow-ensure-agent-inbox-session",
   "allow-retry-startup",
+  "allow-stable-updates-available",
   "allow-check-beta-update",
   "allow-install-beta-update",
+  "allow-export-app-logs",
+  "allow-open-workflow-window",
+  "allow-close-workflow-window",
+  "allow-set-workflow-window-title",
+  "allow-send-workflow-context",
+  "allow-set-workflow-run-lock",
+  "allow-update-workflow-window-target",
 ]

@@ -2,6 +2,8 @@ function createEmptyAssistantMessage() {
   return { role: "assistant", content: [] };
 }
 
+const MAX_TOOL_CALL_ARGUMENT_BYTES = 1024 * 1024;
+
 function cloneMessage(message) {
   if (message?.role !== "assistant") return createEmptyAssistantMessage();
   return {
@@ -26,7 +28,7 @@ function ensureBlock(content, index, type) {
   return block;
 }
 
-function applyDelta(message, event) {
+function applyDelta(message, event, toolCallArgumentBuffers) {
   const delta = event?.assistantMessageEvent;
   if (!delta || !Number.isInteger(delta.contentIndex) || delta.contentIndex < 0) return message;
 
@@ -58,11 +60,35 @@ function applyDelta(message, event) {
       if (typeof delta.content === "string") block.thinking = delta.content;
       break;
     }
-    case "toolcall_start":
-      ensureBlock(content, delta.contentIndex, "toolCall");
+    case "toolcall_start": {
+      const block = ensureBlock(content, delta.contentIndex, "toolCall");
+      if (typeof delta.id === "string") block.id = delta.id;
+      if (typeof delta.toolName === "string") block.name = delta.toolName;
+      toolCallArgumentBuffers.set(delta.contentIndex, "");
       break;
+    }
+    case "toolcall_delta": {
+      const block = ensureBlock(content, delta.contentIndex, "toolCall");
+      if (typeof delta.delta !== "string" || toolCallArgumentBuffers.get(delta.contentIndex) === null)
+        break;
+      const partial = `${toolCallArgumentBuffers.get(delta.contentIndex) ?? ""}${delta.delta}`;
+      if (new TextEncoder().encode(partial).byteLength > MAX_TOOL_CALL_ARGUMENT_BYTES) {
+        toolCallArgumentBuffers.set(delta.contentIndex, null);
+        break;
+      }
+      toolCallArgumentBuffers.set(delta.contentIndex, partial);
+      try {
+        const args = JSON.parse(partial);
+        if (args && typeof args === "object" && !Array.isArray(args)) block.arguments = args;
+      } catch {
+        // Provider chunks can end in the middle of a JSON token. Keep the last
+        // complete object until another chunk makes the buffer parseable.
+      }
+      break;
+    }
     case "toolcall_end":
       if (delta.toolCall) content[delta.contentIndex] = structuredClone(delta.toolCall);
+      toolCallArgumentBuffers.delete(delta.contentIndex);
       break;
   }
   if (event.usage) message.usage = structuredClone(event.usage);
@@ -72,23 +98,31 @@ function applyDelta(message, event) {
 /** Assemble Pi's delta-only message_update protocol into a live assistant message. */
 export function createAssistantMessageStream() {
   let message = null;
+  const toolCallArgumentBuffers = new Map();
 
   return {
     start(initialMessage) {
+      toolCallArgumentBuffers.clear();
       message = cloneMessage(initialMessage);
       return structuredClone(message);
     },
     update(event) {
-      message = applyDelta(message ?? createEmptyAssistantMessage(), event);
+      message = applyDelta(
+        message ?? createEmptyAssistantMessage(),
+        event,
+        toolCallArgumentBuffers,
+      );
       return structuredClone(message);
     },
     finish(finalMessage) {
       const completed = cloneMessage(finalMessage ?? message);
       message = null;
+      toolCallArgumentBuffers.clear();
       return completed;
     },
     reset() {
       message = null;
+      toolCallArgumentBuffers.clear();
     },
     current() {
       return message ? structuredClone(message) : null;

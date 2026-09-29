@@ -80,7 +80,7 @@ test("installs the mention popup and controller on the native main composer", as
   const input = document.getElementById("message-input");
 
   expect(menu).not.toBeNull();
-  expect(input.getAttribute("aria-autocomplete")).toBe("list");
+  await vi.waitFor(() => expect(input.getAttribute("aria-autocomplete")).toBe("list"));
 
   input.value = "@ind";
   input.setSelectionRange(input.value.length, input.value.length);

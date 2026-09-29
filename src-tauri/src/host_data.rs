@@ -1089,7 +1089,9 @@ impl HostDataPlane {
         // Collect all JSONL entries: (id, parentId, message_value_if_type_message)
         let mut all_entries: Vec<(String, Option<String>, Option<serde_json::Value>)> = Vec::new();
         for line in BufReader::new(file).lines() {
-            let Ok(line) = line else { continue };
+            let line = line.map_err(|error| {
+                HostDataError::Io(format!("Cannot read session history: {error}"))
+            })?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -1124,10 +1126,10 @@ impl HostDataPlane {
         }
 
         // Build id -> index map for parentId traversal
-        let id_to_idx: HashMap<&str, usize> = all_entries
+        let id_to_idx: HashMap<String, usize> = all_entries
             .iter()
             .enumerate()
-            .map(|(i, (id, _, _))| (id.as_str(), i))
+            .map(|(i, (id, _, _))| (id.clone(), i))
             .collect();
 
         // Find the last message entry — the tip of the current branch
@@ -1151,8 +1153,8 @@ impl HostDataPlane {
             if !visited.insert(current) {
                 break; // cycle guard
             }
-            if let Some(msg) = &all_entries[current].2 {
-                chain.push(msg.clone());
+            if let Some(message) = all_entries[current].2.take() {
+                chain.push(message);
             }
             match all_entries[current].1.as_deref() {
                 None => break,
@@ -1186,7 +1188,8 @@ impl HostDataPlane {
         // Parallel (id, parentId, is-message) index for the tip walk.
         let mut index: Vec<(String, Option<String>, bool)> = Vec::new();
         for line in BufReader::new(file).lines() {
-            let Ok(line) = line else { continue };
+            let line = line
+                .map_err(|error| HostDataError::Io(format!("Cannot read session tree: {error}")))?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -1531,19 +1534,6 @@ impl HostDataPlane {
         }
         let metrics = self.scan_cost_metrics(session_root)?;
         Ok(build_cost_dashboard(metrics))
-    }
-
-    /// Scan the shared session tree once to warm the parsed-metrics cache.
-    /// Best-effort: used at startup so the first Usage open answers from cache
-    /// instead of parsing hundreds of MB of session jsonl on the request path.
-    pub fn prewarm_cost_metrics(&self) {
-        let Some(session_root) = &self.session_root else {
-            return;
-        };
-        if !session_root.is_dir() {
-            return;
-        }
-        let _ = self.scan_cost_metrics(session_root);
     }
 
     fn scan_cost_metrics(&self, session_root: &Path) -> Result<Vec<SessionMetrics>, HostDataError> {
@@ -2664,7 +2654,10 @@ mod tests {
             format!(
                 "{{\"type\":\"session\",\"id\":\"session-a\",\"timestamp\":\"2026-01-01\",\"cwd\":{}}}\n\
                  {{\"type\":\"message\",\"id\":\"user-1\",\"parentId\":null,\"message\":{{\"role\":\"user\",\"content\":\"hello\"}}}}\n\
-                 {{\"type\":\"message\",\"id\":\"assistant-1\",\"parentId\":\"user-1\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"hi\"}}]}}}}\n",
+                 {{\"type\":\"message\",\"id\":\"assistant-1\",\"parentId\":\"user-1\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"hi\"}}]}}}}\n\
+                 {{\"type\":\"message\",\"id\":\"inactive-user\",\"parentId\":\"assistant-1\",\"message\":{{\"role\":\"user\",\"content\":\"inactive\"}}}}\n\
+                 {{\"type\":\"message\",\"id\":\"active-user\",\"parentId\":\"assistant-1\",\"message\":{{\"role\":\"user\",\"content\":\"active\"}}}}\n\
+                 {{\"type\":\"message\",\"id\":\"active-assistant\",\"parentId\":\"active-user\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"current branch\"}}]}}}}\n",
                 serde_json::to_string(&workspace.to_string_lossy()).unwrap()
             ),
         )
@@ -2682,6 +2675,8 @@ mod tests {
             vec![
                 json!({ "role": "user", "content": "hello", "entryId": "user-1" }),
                 json!({ "role": "assistant", "content": [{ "type": "text", "text": "hi" }], "entryId": "assistant-1" }),
+                json!({ "role": "user", "content": "active", "entryId": "active-user" }),
+                json!({ "role": "assistant", "content": [{ "type": "text", "text": "current branch" }], "entryId": "active-assistant" }),
             ]
         );
         fs::remove_dir_all(temp).unwrap();

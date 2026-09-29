@@ -156,6 +156,20 @@ export class ExtensionUiHost {
       case "set_editor_text":
         this.#hooks.editorText?.(request);
         break;
+      case "workflow":
+        if (typeof this.#hooks.workflow === "function") {
+          let result;
+          try {
+            result = await this.#hooks.workflow(request);
+          } catch (error) {
+            result = { cancelled: true, error: error?.message || String(error) };
+          }
+          await this.#runtime.request(
+            { type: "extension_ui_response", id: request.id, ...result },
+            target,
+          );
+        }
+        break;
       default:
         await this.#runtime.request(
           {

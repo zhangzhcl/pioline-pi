@@ -5,10 +5,11 @@
 //
 // Requests are correlated by a `host-` prefixed requestId; frames that don't
 // match a pending request are ignored (other gateways share the same adapter).
+import { randomId } from "../utils/random-id.js";
+
 export class HostControlGateway {
   #adapter;
   #generation = 0;
-  #nextRequestId = 1;
   #pending = new Map();
 
   constructor(adapter) {
@@ -19,11 +20,36 @@ export class HostControlGateway {
     });
   }
 
-  #request(operation, parameters = {}) {
-    const requestId = `host-${this.#nextRequestId++}`;
+  #request(operation, parameters = {}, { signal } = {}) {
+    const requestId = `host-${randomId()}`;
     const generation = this.#generation;
     return new Promise((resolve, reject) => {
-      this.#pending.set(requestId, { resolve, reject, generation });
+      if (signal?.aborted) {
+        reject(new DOMException("Host request was cancelled", "AbortError"));
+        return;
+      }
+      const pending = { resolve, reject, generation, signal, onAbort: null };
+      if (signal) {
+        pending.onAbort = () => {
+          if (!this.#pending.delete(requestId)) return;
+          signal.removeEventListener("abort", pending.onAbort);
+          try {
+            this.#adapter.send({
+              type: "host_request",
+              requestId: `host-${randomId()}`,
+              operation: "cancel_workflow_code",
+              executionRequestId: requestId,
+            });
+          } catch {
+            // The socket may already be closing; host-side process lifetime is
+            // still bounded and tied to the connection task.
+          }
+          reject(new DOMException("Host request was cancelled", "AbortError"));
+        };
+        signal.addEventListener("abort", pending.onAbort, { once: true });
+      }
+      this.#pending.set(requestId, pending);
+      if (!this.#pending.has(requestId)) return;
       try {
         this.#adapter.send({
           type: "host_request",
@@ -33,6 +59,7 @@ export class HostControlGateway {
         });
       } catch (error) {
         this.#pending.delete(requestId);
+        if (pending.onAbort) signal.removeEventListener("abort", pending.onAbort);
         reject(error);
       }
     });
@@ -111,6 +138,101 @@ export class HostControlGateway {
     return frame.workspaceId;
   }
 
+  async loadWorkflow(workflowId, workspaceId) {
+    const frame = await this.#request("load_workflow", { workflowId, workspaceId });
+    return frame?.record ?? null;
+  }
+
+  async createWorkflow(workflow) {
+    const frame = await this.#request("create_workflow", { workflow });
+    return Boolean(frame?.created);
+  }
+
+  async compareAndSwapWorkflow({
+    workflowId,
+    workspaceId,
+    expectedRevision,
+    workflow,
+    event,
+    expectedCatalogRevision,
+  }) {
+    const frame = await this.#request("compare_and_swap_workflow", {
+      workflowId,
+      workspaceId,
+      expectedRevision,
+      workflow,
+      event,
+      ...(expectedCatalogRevision ? { expectedCatalogRevision } : {}),
+    });
+    return Boolean(frame?.saved);
+  }
+
+  async createWorkflowRun(run) {
+    const frame = await this.#request("create_workflow_run", { run });
+    return Boolean(frame?.created);
+  }
+
+  async loadWorkflowRun(runId, workspaceId) {
+    const frame = await this.#request("load_workflow_run", { workflowId: runId, workspaceId });
+    return frame?.record ?? null;
+  }
+
+  async listWorkflowRuns(workflowId, workspaceId) {
+    const frame = await this.#request("list_workflow_runs", { workflowId, workspaceId });
+    return Array.isArray(frame?.runs) ? frame.runs : [];
+  }
+
+  async appendWorkflowRunEvent({ runId, workspaceId, expectedSequence, run, event }) {
+    const frame = await this.#request("append_workflow_run_event", {
+      workflowId: runId,
+      workspaceId,
+      expectedSequence,
+      run,
+      event,
+    });
+    return Boolean(frame?.saved);
+  }
+
+  async getWorkflowExecutionCapabilities() {
+    const frame = await this.#request("get_workflow_execution_capabilities");
+    return { codeExecution: frame?.codeExecution === true };
+  }
+
+  async executeWorkflowCode({ runId, workspaceId, nodeId, inputs, signal }) {
+    const frame = await this.#request(
+      "execute_workflow_code",
+      {
+        runId,
+        workspaceId,
+        nodeId,
+        inputs,
+      },
+      { signal },
+    );
+    if (!frame || !Array.isArray(frame.logs) || !Object.hasOwn(frame, "output"))
+      throw new Error("Host returned an invalid workflow code result");
+    return { output: frame.output, logs: frame.logs };
+  }
+
+  async listWorkflowNodeTemplates(workspaceId) {
+    const frame = await this.#request("list_workflow_node_templates", { workspaceId });
+    if (!Array.isArray(frame?.templates) || typeof frame.catalogRevision !== "string")
+      throw new Error("Host returned an invalid workflow node catalog");
+    return {
+      templates: frame.templates,
+      catalogRevision: frame.catalogRevision,
+    };
+  }
+
+  async createWorkflowNodeTemplate(workspaceId, meta, expectedCatalogRevision) {
+    const frame = await this.#request("create_workflow_node_template", {
+      workspaceId,
+      meta,
+      expectedCatalogRevision,
+    });
+    return { created: Boolean(frame?.created), catalogRevision: frame?.catalogRevision ?? null };
+  }
+
   async listInstalledApps() {
     const frame = await this.#request("list_installed_apps");
     return Array.isArray(frame?.apps) ? frame.apps : [];
@@ -153,6 +275,7 @@ export class HostControlGateway {
     const pending = this.#pending.get(frame?.requestId);
     if (!pending || pending.generation !== this.#generation) return;
     this.#pending.delete(frame.requestId);
+    if (pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort);
     if (frame.error) pending.reject(new Error(frame.error.message ?? String(frame.error)));
     else pending.resolve(frame);
   }
@@ -160,6 +283,7 @@ export class HostControlGateway {
   #disconnect() {
     this.#generation += 1;
     for (const pending of this.#pending.values()) {
+      if (pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort);
       pending.reject(new Error("Host disconnected before the control request completed"));
     }
     this.#pending.clear();

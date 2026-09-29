@@ -9,6 +9,7 @@ use crate::runtime_coordinator::{
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -32,13 +33,15 @@ pub struct NativeLaunchSpec {
     /// rpc mode otherwise leaves the project untrusted even when a saved
     /// decision exists in ~/.pi/agent/trust.json.
     pub approve: bool,
+    /// Switch to Pi's native PowerShell tool only when Windows has no usable Bash.
+    pub windows_powershell_fallback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchDescription {
     pub program: PathBuf,
-    pub args: Vec<String>,
-    pub environment: BTreeMap<String, String>,
+    pub args: Vec<OsString>,
+    pub environment: BTreeMap<String, OsString>,
 }
 
 impl NativeLaunchSpec {
@@ -46,7 +49,7 @@ impl NativeLaunchSpec {
         let mut args = Vec::new();
         for extension in &self.extensions {
             args.push("--extension".into());
-            args.push(extension.to_string_lossy().into_owned());
+            args.push(extension.as_os_str().to_owned());
         }
         args.extend(["--mode".into(), "rpc".into()]);
         if self.approve {
@@ -54,17 +57,32 @@ impl NativeLaunchSpec {
         }
         if let Some(session_path) = &self.session_path {
             args.push("--session".into());
-            args.push(session_path.to_string_lossy().into_owned());
+            args.push(session_path.as_os_str().to_owned());
         }
         let mut environment = BTreeMap::from([
-            ("PATH".into(), self.path_env.clone()),
-            ("PI_STUDIO_PI_VERSION".into(), self.pi_version.clone()),
+            ("PATH".into(), self.path_env.clone().into()),
+            (
+                "PI_STUDIO_PI_VERSION".into(),
+                self.pi_version.clone().into(),
+            ),
         ]);
+        if let Some(agent_dir) = crate::pi_agent_dir::agent_dir() {
+            environment.insert(
+                crate::pi_agent_dir::PI_AGENT_DIR_ENV.into(),
+                agent_dir.into_os_string(),
+            );
+        }
         // Dev-only signal for extensions (e.g. picot-config's model-load
         // perf tracing): only `cargo tauri dev` / debug builds set this, so
         // a release install never writes perf logs to disk.
         if cfg!(debug_assertions) {
             environment.insert("PICOT_DEV".into(), "1".into());
+        }
+        if self.windows_powershell_fallback {
+            environment.insert(
+                crate::pi_shell_compat::WINDOWS_POWERSHELL_FALLBACK_ENV.into(),
+                "1".into(),
+            );
         }
         // A remote workspace opened with an SSH password: hand it to the pi
         // process that will actually run the SSH calls. Injecting it here
@@ -74,7 +92,7 @@ impl NativeLaunchSpec {
         // Memory only: the vault is never written to disk, so the password is
         // gone when Picot exits.
         if let Some(password) = crate::remote_workspace::peek_password(&self.cwd) {
-            environment.insert("PICOT_SSH_PASSWORD".into(), password);
+            environment.insert("PICOT_SSH_PASSWORD".into(), password.into());
         }
         LaunchDescription {
             program: self.binary.clone(),
@@ -183,12 +201,21 @@ impl NativePiManager {
         &self,
         target: RuntimeTarget,
     ) -> Result<InMemoryPiProcess, String> {
+        self.register_in_memory_with_state(target, RuntimeState::Ready)
+    }
+
+    #[cfg(test)]
+    fn register_in_memory_with_state(
+        &self,
+        target: RuntimeTarget,
+        initial_state: RuntimeState,
+    ) -> Result<InMemoryPiProcess, String> {
         let (bridge, process) = PiRpcBridge::in_memory(1024 * 1024);
         self.inner
             .coordinator
             .lock()
             .map_err(|_| "Runtime coordinator lock poisoned".to_string())?
-            .register(target.clone(), RuntimeState::Ready)
+            .register(target.clone(), initial_state)
             .map_err(|error| format!("Cannot register test runtime: {error:?}"))?;
         self.inner
             .runtimes
@@ -238,7 +265,7 @@ impl NativePiManager {
                         Some("agent_start") => {
                             let _ = coordinator.set_state(&target, RuntimeState::Working);
                         }
-                        Some("agent_settled") | Some("agent_end") => {
+                        Some("agent_settled") => {
                             let _ = coordinator.set_state(&target, RuntimeState::Idle);
                         }
                         _ => {}
@@ -350,6 +377,14 @@ impl NativePiManager {
                 return Err(message);
             }
         };
+        if let Ok(mut coordinator) = self.inner.coordinator.lock() {
+            if coordinator
+                .snapshot(target)
+                .is_ok_and(|snapshot| snapshot.state == RuntimeState::Starting)
+            {
+                let _ = coordinator.set_state(target, RuntimeState::Ready);
+            }
+        }
         if let Some(key) = mutation_key {
             self.inner
                 .coordinator
@@ -707,6 +742,7 @@ mod tests {
             pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
             path_env: "/usr/bin".into(),
             approve: false,
+            windows_powershell_fallback: false,
         };
         let launch = spec.command_description();
         assert_eq!(launch.program, PathBuf::from("/embedded/pi"));
@@ -716,10 +752,35 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--session", "/sessions/a.jsonl"]));
         assert!(!launch.environment.contains_key("PI_STUDIO_PORT"));
+        assert!(launch.environment.contains_key("PI_CODING_AGENT_DIR"));
         assert!(!launch
             .args
             .iter()
-            .any(|argument| argument.parse::<u16>().is_ok()));
+            .any(|argument| argument.to_string_lossy().parse::<u16>().is_ok()));
+        assert!(!launch
+            .environment
+            .contains_key(crate::pi_shell_compat::WINDOWS_POWERSHELL_FALLBACK_ENV));
+    }
+
+    #[test]
+    fn launch_spec_emits_power_shell_fallback_only_when_enabled() {
+        let spec = NativeLaunchSpec {
+            binary: PathBuf::from("/embedded/pi"),
+            cwd: PathBuf::from("/workspace"),
+            session_path: None,
+            extensions: vec![],
+            pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
+            path_env: "/usr/bin".into(),
+            approve: false,
+            windows_powershell_fallback: true,
+        };
+        assert_eq!(
+            spec.command_description()
+                .environment
+                .get(crate::pi_shell_compat::WINDOWS_POWERSHELL_FALLBACK_ENV)
+                .and_then(|value| value.to_str()),
+            Some("1")
+        );
     }
 
     #[test]
@@ -734,13 +795,14 @@ mod tests {
             pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
             path_env: "/usr/bin".into(),
             approve: false,
+            windows_powershell_fallback: false,
         };
         assert_eq!(
             spec(anchor)
                 .command_description()
                 .environment
                 .get("PICOT_SSH_PASSWORD")
-                .map(String::as_str),
+                .and_then(|value| value.to_str()),
             Some("not-a-real-secret")
         );
         // An ordinary local workspace must not inherit some other host's password.
@@ -760,11 +822,13 @@ mod tests {
             pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
             path_env: "/usr/bin".into(),
             approve: true,
+            windows_powershell_fallback: false,
         };
         assert!(spec
             .command_description()
             .args
-            .contains(&"--approve".to_string()));
+            .iter()
+            .any(|argument| argument == "--approve"));
     }
 
     #[tokio::test]
@@ -858,6 +922,74 @@ mod tests {
             .is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn launch_spec_preserves_unpaired_windows_utf16_session_path_units() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let mut session = r"C:\Users\".encode_utf16().collect::<Vec<_>>();
+        session.push(0xD800);
+        session.extend(r"\.pi\agent\sessions\session.jsonl".encode_utf16());
+        let spec = NativeLaunchSpec {
+            binary: PathBuf::from(r"C:\Pipline\resources\pi.exe"),
+            cwd: PathBuf::from(r"C:\workspace"),
+            session_path: Some(PathBuf::from(std::ffi::OsString::from_wide(&session))),
+            extensions: vec![],
+            pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
+            path_env: r"C:\Windows\System32".into(),
+            approve: false,
+            windows_powershell_fallback: false,
+        };
+        let launch = spec.command_description();
+        let session_argument = launch
+            .args
+            .windows(2)
+            .find(|pair| pair[0] == "--session")
+            .map(|pair| &pair[1])
+            .expect("session path argument should exist");
+        assert_eq!(session_argument.encode_wide().collect::<Vec<_>>(), session);
+    }
+
+    #[tokio::test]
+    async fn marks_starting_runtime_ready_after_first_successful_rpc_response() {
+        let manager = NativePiManager::in_memory(8);
+        let target = RuntimeTarget::new("workspace-a", "session-a", "instance-starting");
+        let mut fake = manager
+            .register_in_memory_with_state(target.clone(), super::RuntimeState::Starting)
+            .unwrap();
+        let request = tokio::spawn({
+            let manager = manager.clone();
+            let target = target.clone();
+            async move {
+                manager
+                    .request(
+                        &target,
+                        json!({ "type": "get_state" }),
+                        None,
+                        Duration::from_secs(1),
+                    )
+                    .await
+            }
+        });
+        let outbound = fake.read_request().await.unwrap();
+        let id = outbound["id"].as_str().unwrap();
+        fake.write_frame(json!({
+            "id": id,
+            "type": "response",
+            "command": "get_state",
+            "success": true,
+            "data": { "sessionId": "session-a" }
+        }))
+        .await
+        .unwrap();
+
+        assert!(request.await.unwrap().is_ok());
+        assert_eq!(
+            manager.snapshot(&target).unwrap().state,
+            super::RuntimeState::Ready
+        );
+    }
+
     #[tokio::test]
     async fn unregisters_runtime_when_the_rpc_stream_closes_unexpectedly() {
         let manager = NativePiManager::in_memory(8);
@@ -868,7 +1000,9 @@ mod tests {
         drop(fake);
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while manager.target_for_session_id("session-a").is_some() {
+            while manager.target_for_session_id("session-a").is_some()
+                || !manager.statuses().unwrap().is_empty()
+            {
                 tokio::task::yield_now().await;
             }
         })

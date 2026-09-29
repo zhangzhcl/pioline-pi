@@ -42,8 +42,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-          - os: macos-14
+          - os: macos-15
+            pi_target_platform: darwin-arm64
+          - os: macos-15-intel
             pi_target_platform: darwin-x64
             rust_target: x86_64-apple-darwin
           # Two x86_64 Linux rows to match release.yml: deb/rpm build on

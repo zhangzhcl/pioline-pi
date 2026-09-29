@@ -570,7 +570,7 @@ async fn handle_agent_frame(
         (Some(_), true) => {
             let id = event.get("id").cloned().unwrap_or(Value::Null);
             let _ = bridge
-                .send_frame(jsonrpc_error(id, -32601, "Method not supported by Picot"))
+                .send_frame(jsonrpc_error(id, -32601, "Method not supported by Pipline"))
                 .await;
         }
         _ => {}

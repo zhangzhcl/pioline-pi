@@ -1,16 +1,19 @@
 [package]
-name = "picot"
-version = "0.5.7-10000"
+name = "pipline"
+version = "0.1.0"
+default-run = "pipline"
+autobins = false
 description = "Pi Agent Desktop - session manager for pi coding agent"
 authors = ["Pi Desktop"]
 edition = "2021"
 
 [[bin]]
-name = "picot"
+name = "pipline"
 path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1"
 
 [dependencies]
 tauri = { version = "2", features = [
@@ -51,6 +54,10 @@ subtle = "2"
 tempfile = "3"
 portable-pty = "0.9"
 libc = "0.2"
+rquickjs = { version = "=0.14.0", features = ["futures"], optional = true }
+
+[features]
+workflow-code-runner-prototype = ["dep:rquickjs"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6" }
@@ -63,6 +70,9 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Threading",
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Security_Isolation",
+  "Win32_System_Console",
 ] }
 
 [profile.dev]

@@ -121,7 +121,7 @@ export class HostRuntimeAdapter {
   send(frame) {
     if (!this.#connected || !this.#isSocketOpen()) {
       this.#scheduleReconnect();
-      throw new Error("Picot Host runtime is disconnected");
+      throw new Error("Pipline Host runtime is disconnected");
     }
     this.#socket.send(JSON.stringify(frame));
   }

@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-/// Hard guarantee: a Picot release build CANNOT be produced without the
+/// Hard guarantee: a Pipline release build CANNOT be produced without the
 /// embedded pi binary inside `src-tauri/resources/pi/`.
 ///
 /// Why this lives in build.rs
@@ -22,6 +22,18 @@ fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let extension_dist_dir = manifest_dir.join("..").join("extensions").join("dist");
 
+    println!("cargo:rerun-if-changed=src/workflow_xpc_client.m");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+        && std::env::var_os("CARGO_FEATURE_WORKFLOW_CODE_RUNNER_PROTOTYPE").is_some()
+    {
+        cc::Build::new()
+            .file("src/workflow_xpc_client.m")
+            .flag("-fobjc-arc")
+            .compile("pipline_workflow_xpc_client");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=Security");
+    }
+
     // Tauri validates every configured bundle resource while running the build
     // script, even for debug `cargo check` / clippy flows. The extension bundle
     // is generated, so a clean checkout may not have this directory yet.
@@ -34,6 +46,25 @@ fn main() {
     });
 
     tauri_build::build();
+
+    // Bind updater builds to the repository producing this binary. Local
+    // builds deliberately omit this value; do not infer it from git remotes,
+    // since Pipline may retain Picot as an upstream remote.
+    println!("cargo:rerun-if-env-changed=PIPLINE_RELEASE_REPOSITORY");
+    if let Ok(repository) = std::env::var("PIPLINE_RELEASE_REPOSITORY") {
+        let valid = repository.split_once('/').is_some_and(|(owner, name)| {
+            !owner.is_empty()
+                && !name.is_empty()
+                && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        });
+        if !valid {
+            panic!("PIPLINE_RELEASE_REPOSITORY must be an owner/repository slug");
+        }
+        println!("cargo:rustc-env=PIPLINE_RELEASE_REPOSITORY={repository}");
+    }
 
     // Expose the locked pi version as a compile-time env var so Rust code can
     // reference it via env!("PI_STUDIO_PI_VERSION_BUNDLED") instead of
@@ -82,9 +113,9 @@ fn main() {
     if !bin_path.is_file() {
         panic!(
             "\n\n\
-             Picot release build aborted: embedded pi binary is missing.\n\
+             Pipline release build aborted: embedded pi binary is missing.\n\
              Expected: {}\n\n\
-             Picot bundles the pi runtime inside the .app so end users do\n\
+             Pipline bundles the pi runtime inside the app so end users do\n\
              not need to fetch anything. Release builds therefore refuse to\n\
              produce a .app without it.\n\n\
              Fix: run `bun run fetch:pi` from the repo root before building.\n\
@@ -98,7 +129,7 @@ fn main() {
     if !extension_bundle_path.is_file() {
         panic!(
             "\n\n\
-             Picot release build aborted: picot-bridge extension bundle is missing.\n\
+             Pipline release build aborted: picot-bridge extension bundle is missing.\n\
              Expected: {}\n\n\
              Release builds ship the bundled extension instead of relying on\n\
              repo-local TypeScript sources or node_modules.\n\n\

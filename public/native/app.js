@@ -32,12 +32,12 @@ import { setupComposerImageAttachments } from "./composer/composer-images.js";
 import { setupComposerPasteOffload } from "./composer/composer-paste-offload.js";
 import { setupComposerSlashMenu } from "./composer/composer-slash-menu.js";
 import { setupComposerSubmitHandling } from "./composer/composer-submit.js";
+import { getLastModel, setLastModel } from "./composer/last-model-store.js";
 import {
   profileForNewSession,
   profileForSnapshotRebind,
   restoreSessionModel,
 } from "./composer/model-restoration.js";
-import { getLastModel, setLastModel } from "./composer/last-model-store.js";
 import { isSelectedModel, splitModelsByScope } from "./composer/model-selection.js";
 import { renderQueuedMessages } from "./composer/queued-messages.js";
 import {
@@ -52,6 +52,7 @@ import { ExtensionCommandCompatibility } from "./extensions/extension-command-co
 import { ExtensionUiHost } from "./extensions/extension-ui-host.js";
 import { ExtensionWidgets } from "./extensions/extension-widgets.js";
 import { showInlineExtensionPrompt } from "./extensions/inline-extension-prompt.js";
+import { createWorkflowExtensionDialogHandler } from "./extensions/workflow-extension-dialog.js";
 import { setupAppUpdater } from "./features/app-updater.js";
 import { createFilePreviewFollow } from "./features/file-preview-follow.js";
 import { setupGitPanel } from "./features/git-panel-integration.js";
@@ -72,6 +73,7 @@ import {
 import { extractAssistantError, extractRuntimeEventError } from "./session/assistant-error.js";
 import { createAssistantMessageStream } from "./session/assistant-message-stream.js";
 import { InfoPanel } from "./session/info-panel.js";
+import { shouldApplyInitialDiskHistory } from "./session/initial-session-history.js";
 import { buildAnalysisPrompt, runAiAnalysis } from "./session/session-ai-runner.js";
 import { activeSession, setupSessionInfo } from "./session/session-info.js";
 import { createSessionSelectionHandler } from "./session/session-navigation.js";
@@ -98,6 +100,8 @@ import { RuntimeGateway } from "./transport/runtime-gateway.js";
 import { setupAppKeyboardShortcuts } from "./utils/keyboard-shortcuts.js";
 import { randomId, sessionScopedClientId } from "./utils/random-id.js";
 import { appRoutePath, parseAppRoute, replaceTemporarySessionRoute } from "./utils/router.js";
+import { formatWorkflowChatContext } from "./workflow/workflow-chat-context.js";
+import { explicitlyRequestsWorkflow } from "./workflow/workflow-intent.js";
 import { createWorkspaceAppActions } from "./workspace/app-actions.js";
 import { findLatestAssistantUsage, setupContextUsage } from "./workspace/context-usage.js";
 import {
@@ -125,2619 +129,3009 @@ import {
   spawnSessionViaHost,
 } from "./workspace/workspace-actions.js";
 
-// Declared before the first `await` in this module: `hydrateSnapshotOnce()`
-// is called both from the runtime-event subscriber and from the startup
-// try-block, either of which can run while the module is paused at a later
-// `await`. Declaring this variable after those awaits would leave it in the
-// TDZ and cause "Cannot access 'snapshotInFlight' before initialization" when
-// the handler fires before module evaluation reaches the `let` line.
-let snapshotInFlight = false;
-// Status lives in its own module so hooks can fire while this file is paused
-// on a later `await` without hitting TDZ on `let statusKind`.
-const sessionStatus = createSessionStatus({ t });
-const { applyHostStatus, renderStatus, setStatus } = sessionStatus;
-const route = parseAppRoute(window.location.pathname);
-if (route.name !== "session") throw new Error("Native Picot requires a session route");
+async function initializeApp() {
+  // Declared before the first `await` in this module: `hydrateSnapshotOnce()`
+  // is called both from the runtime-event subscriber and from the startup
+  // try-block, either of which can run while the module is paused at a later
+  // `await`. Declaring this variable after those awaits would leave it in the
+  // TDZ and cause "Cannot access 'snapshotInFlight' before initialization" when
+  // the handler fires before module evaluation reaches the `let` line.
+  let snapshotInFlight = false;
+  // Status lives in its own module so hooks can fire while this file is paused
+  // on a later `await` without hitting TDZ on `let statusKind`.
+  const sessionStatus = createSessionStatus({ t });
+  const { applyHostStatus, renderStatus, setStatus } = sessionStatus;
+  const route = parseAppRoute(window.location.pathname);
+  if (route.name !== "session") throw new Error("Pipline requires a session route");
 
-applyTheme(getCurrentTheme());
-await initI18n();
-document.body.dataset.runtime = "native";
+  applyTheme(getCurrentTheme());
+  await initI18n();
+  document.body.dataset.runtime = "native";
 
-const messagesElement = document.getElementById("messages");
-const headerElement = document.querySelector(".header");
-const scrollBottomBadge = document.getElementById("scroll-bottom-badge");
-const convNav = new ConvNav({
-  messagesEl: messagesElement,
-  headerEl: headerElement,
-  badgeEl: scrollBottomBadge,
-  // v3 parity: jumping the chat to a turn highlights and scrolls the Info
-  // panel's session-history node for the same entry (panel-hidden latch is
-  // handled inside the panel).
-  onJumpToEntry: (entryId) => {
-    if (!infoPanel) return;
-    infoPanel.selectEntry(entryId);
-    infoPanel.scrollToSelectedEntry();
-  },
-});
-const notifications = createNotificationCenter();
-const sendNativeTaskNotification = createNativeTaskNotificationSender({
-  invoke: globalThis.__TAURI__?.core?.invoke,
-});
-const taskCompletionNotifications = createTaskCompletionNotifications({
-  resolveTask: (notificationTarget) =>
-    sidebar?.sessions?.find(
-      (session) =>
-        session.id === notificationTarget?.sessionId &&
-        session.workspaceId === notificationTarget?.workspaceId,
-    ) ?? null,
-  title: (task, error) =>
-    task?.name ||
-    task?.firstMessage ||
-    (error ? t("settings.taskFailedTitle") : t("settings.taskCompleteTitle")),
-  body: (_task, error) => error || t("settings.taskCompleteMessage"),
-  showNotification: sendNativeTaskNotification,
-});
-
-// Per-turn timing/failure trace behind the task analysis section. Recording is
-// passive (it only reads the runtime frames the app already receives) so the
-// panel can explain a slow or failed task without re-running anything.
-const turnTrace = createTurnTraceRecorder();
-
-setupMessagesInsets({
-  main: document.querySelector(".main"),
-  messages: messagesElement,
-  header: document.querySelector(".header"),
-  inputArea: document.querySelector(".input-area"),
-  workspaceContent: document.querySelector(".workspace-content"),
-});
-const messageRenderer = new MessageRenderer(messagesElement, { sessionTreeActions: true });
-const toolRenderer = new ToolCardRenderer(messagesElement);
-const input = document.getElementById("message-input");
-const form = document.getElementById("chat-form");
-const abortButton = document.getElementById("abort-btn");
-const sendButton = document.getElementById("send-btn");
-const statusText = document.getElementById("status-text");
-const statusIndicator = document.getElementById("status-indicator");
-const composerCard = document.getElementById("composer-card");
-const commandButton = document.getElementById("command-btn");
-const commandPalette = document.getElementById("command-palette");
-const commandPaletteOverlay = document.getElementById("command-palette-overlay");
-const commandList = document.getElementById("command-list");
-const attachButton = document.getElementById("attach-btn");
-const imageInput = document.getElementById("image-input");
-const imagePreviews = document.getElementById("image-previews");
-const skillSlashMenu = document.getElementById("skill-slash-menu");
-const atFileMentionMenu = document.getElementById("at-file-mention-menu");
-let atFileMention = null;
-const composerAutoResize = setupComposerAutoResize({ input });
-const queuedMessages = document.getElementById("queued-messages");
-const todoMirrorPanel = new RpivTodoMirrorPanel({
-  container: document.querySelector(".input-area"),
-});
-
-// ── Composer model dropdown & thinking button ─────────────────────────────────
-const modelDropdown = document.getElementById("model-dropdown");
-const modelDropdownBtn = document.getElementById("model-dropdown-btn");
-const modelDropdownLabel = document.getElementById("model-dropdown-label");
-const modelDropdownMenu = document.getElementById("model-dropdown-menu");
-const modelDropdownToolbar = modelDropdown?.closest(".composer-toolbar");
-const thinkingBtn = document.getElementById("thinking-btn");
-
-function formatThinkingLevelLabel(level) {
-  const normalizedLevel = level || "off";
-  const key = `settings.thinkingLevels.${normalizedLevel}`;
-  const label = t(key);
-  return label === key ? normalizedLevel : label;
-}
-let currentThinkingLevel = "off";
-let currentModelProvider = null;
-let currentModelId = null;
-let pendingModelRestore = null;
-
-// Session UI state: persists per-session model + thinking level so switching
-// between sessions restores the composer's model/thinking selection. Profiles
-// live in the native host (SessionUiProfileStore) keyed by the runtime session
-// id. Unsent composer text is intentionally NOT session-scoped: it follows the
-// user across session switches instead of being saved/restored per session.
-const sessionUiState = new SessionUiStateStore({
-  waitUntilReady: () => adapter.ready(),
-  profileClient: {
-    load: () => {
-      const sessionId = target.sessionId;
-      if (!sessionId || sessionId === "pending-bootstrap") return Promise.resolve(null);
-      return runtime.sendHostRequest
-        ? runtime
-            .sendHostRequest({
-              operation: "session_ui_profile_load",
-              expectedSessionId: sessionId,
-              fallbackToLatest: sessionId.startsWith("temporary-"),
-            })
-            .then((response) => response?.profile ?? null)
-        : fetch("/v2/host", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              operation: "session_ui_profile_load",
-              expectedSessionId: sessionId,
-              fallbackToLatest: sessionId.startsWith("temporary-"),
-            }),
-          })
-            .then(async (response) => {
-              if (!response.ok) return null;
-              const data = await response.json();
-              return data?.profile ?? null;
-            })
-            .catch(() => null);
+  const messagesElement = document.getElementById("messages");
+  const headerElement = document.querySelector(".header");
+  const scrollBottomBadge = document.getElementById("scroll-bottom-badge");
+  const convNav = new ConvNav({
+    messagesEl: messagesElement,
+    headerEl: headerElement,
+    badgeEl: scrollBottomBadge,
+    // v3 parity: jumping the chat to a turn highlights and scrolls the Info
+    // panel's session-history node for the same entry (panel-hidden latch is
+    // handled inside the panel).
+    onJumpToEntry: (entryId) => {
+      if (!infoPanel) return;
+      infoPanel.selectEntry(entryId);
+      infoPanel.scrollToSelectedEntry();
     },
-    save: (profile) => {
-      const sessionId = target.sessionId;
-      if (!sessionId || sessionId === "pending-bootstrap") return Promise.resolve(null);
-      const payload = {
-        operation: "session_ui_profile_save",
-        expectedSessionId: sessionId,
-        ...profile,
-      };
-      return runtime.sendHostRequest
-        ? runtime.sendHostRequest(payload).then((response) => response?.profile ?? profile)
-        : fetch("/v2/host", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(payload),
-          })
-            .then(async (response) => {
-              if (!response.ok) return profile;
-              const data = await response.json();
-              return data?.profile ?? profile;
-            })
-            .catch(() => profile);
-    },
-  },
-});
-let currentModelContextWindow = 0;
-let availableModels = [];
-// True once get_available_models + the visibility catalog have resolved once.
-// The dropdown reuses this cache on every open; only a model-configuration
-// change (auth/visibility edits) forces a refetch. Avoids the per-open reload.
-let availableModelsLoaded = false;
-// Ordered provider/model ids from Pi's global enabledModels (composer
-// favorites). Rendered as the dropdown's first section when available.
-let scopedModelIds = [];
-// Cache the scoped list too so opening the dropdown no longer round-trips the
-// config bridge each time (the previous source of the visible reload/reflow).
-let scopedModelsLoaded = false;
-let target = provisionalTargetFromRoute(route);
-let configGatewayTargetReady = false;
-let resolveConfigGatewayReady;
-const configGatewayReady = new Promise((resolve) => {
-  resolveConfigGatewayReady = resolve;
-});
-let store = createSessionStore(target);
-let navigationGeneration = 0;
-let commandCatalog = buildCommandCatalog({});
-const assistantMessageStream = createAssistantMessageStream();
-let streamingElement = null;
-let streamingStartedAt = null;
-let liveProcessGroup = null;
-let lastShownProviderError = null;
-let sidebar = null;
-let agentInboxNavSelectSession = null;
-// Sidebar loading starts before bootstrap/runtime awaits complete. Keep every
-// state slot used by its callbacks initialized above that startup boundary so
-// a fast session-list response cannot hit a temporal dead zone.
-let agentInboxNavSession = null;
-const sessionInfo = setupSessionInfo({
-  toggle: document.getElementById("session-info-toggle"),
-  panel: document.getElementById("session-info-panel"),
-  fileValue: document.getElementById("session-info-file"),
-  idValue: document.getElementById("session-info-id"),
-  getTarget: () => target,
-  getSessions: () => sidebar?.sessions ?? [],
-});
-function syncSessionInfo() {
-  sessionInfo.refresh();
-  const { id, session } = activeSession(
-    () => target,
-    () => sidebar?.sessions ?? [],
-  );
-  infoPanel?.updateSessionInfo({ filePath: session?.filePath || "", sessionId: id });
-}
-let activeSearchQuery = "";
-// Auto-launch guard. Stored in sessionStorage (not a module variable) so it
-// survives same-window `window.navigate()` reloads: when the user selects
-// another project's session the inbox window reloads at the new URL, and
-// without a durable guard auto-launch would immediately yank the window back
-// to the Agent Inbox. sessionStorage is per-window/tab, so a genuinely new
-// window still auto-launches once.
-const SUPER_AGENT_LAUNCHED_KEY = "pi-studio-super-agent-launched";
-function wasSuperAgentLaunched() {
-  try {
-    return sessionStorage.getItem(SUPER_AGENT_LAUNCHED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-function markSuperAgentLaunched() {
-  try {
-    sessionStorage.setItem(SUPER_AGENT_LAUNCHED_KEY, "1");
-  } catch {
-    // sessionStorage may be unavailable; auto-launch simply repeats.
-  }
-}
-let pendingBoundSessionFirstMessage = null;
-let superAgentEnsureInFlight = null;
-let diskHistoryFallback = null;
+  });
+  const notifications = createNotificationCenter();
+  const sendNativeTaskNotification = createNativeTaskNotificationSender({
+    invoke: globalThis.__TAURI__?.core?.invoke,
+  });
+  const taskCompletionNotifications = createTaskCompletionNotifications({
+    resolveTask: (notificationTarget) =>
+      sidebar?.sessions?.find(
+        (session) =>
+          session.id === notificationTarget?.sessionId &&
+          session.workspaceId === notificationTarget?.workspaceId,
+      ) ?? null,
+    title: (task, error) =>
+      task?.name ||
+      task?.firstMessage ||
+      (error ? t("settings.taskFailedTitle") : t("settings.taskCompleteTitle")),
+    body: (_task, error) => error || t("settings.taskCompleteMessage"),
+    showNotification: sendNativeTaskNotification,
+  });
 
-// Maps a dispatched child runtime instanceId -> Agent Inbox task id, so
-// `session_bound` events from the background child can upgrade the task's
-// temporary child session id to the persisted one.
-//
-// Declared before the first `await` below: once `adapter.connect()` runs,
-// background runtime events can arrive and call `bindDispatchedChildSession`
-// (which reads this map) any time later top-level `await`s yield control
-// back to the event loop — before the rest of this module's top-level code
-// has finished executing. Declaring it late (as a later top-level `const`)
-// caused a "Cannot access 'dispatchedInstances' before initialization" TDZ
-// crash that could abort session creation on fresh installs.
-const dispatchedInstances = new Map();
+  // Per-turn timing/failure trace behind the task analysis section. Recording is
+  // passive (it only reads the runtime frames the app already receives) so the
+  // panel can explain a slow or failed task without re-running anything.
+  const turnTrace = createTurnTraceRecorder();
 
-const remoteAuth = await resolveRemoteAuth();
-installRemoteAuthFetch(remoteAuth.deviceToken);
-if (remoteAuth.clientType === "desktop") setupRemoteAccessApproval();
-
-const adapter = new HostRuntimeAdapter({
-  url: resolveHostWebSocketUrl(window),
-  clientId: sessionScopedClientId(remoteAuth.clientType),
-  clientType: remoteAuth.clientType,
-  deviceToken: remoteAuth.deviceToken,
-});
-const terminalIntegration = setupTerminalPanel({
-  adapter,
-  getWorkspaceId: () => target.workspaceId,
-});
-const runtime = new RuntimeGateway(adapter);
-const data = new HostDataGateway(adapter, {
-  fetchImpl: window.fetch.bind(window),
-  deviceToken: remoteAuth.deviceToken,
-});
-const control = new HostControlGateway(adapter);
-const preferences = new PreferenceGateway(adapter);
-const config = new ConfigGateway({
-  runtime,
-  getTarget: () => target,
-  waitUntilReady: () => (configGatewayTargetReady ? Promise.resolve() : configGatewayReady),
-});
-// OAuth login flows share the config transport; their __picotOauth frames
-// must be consumed before the config gateway sees them (design §5 M3).
-const oauthGateway = createOauthGateway({ runtime, getTarget: () => target });
-window.__picotConfigCall = (op, params, options) => config.call(op, params, options);
-const customUiPanel = new CustomUiPanel({
-  runtime,
-  getTarget: () => target,
-  onError: showError,
-});
-// `#`-picker agents that can be delegated a scoped task. Selecting one inserts
-// a `#<token> ` token; the rest of the composer line becomes the subagent's
-// task (see sendComposerInput). The picker only offers the ones whose CLI the
-// host detects locally (`control.listAcpAgents()`); adding one here plus a
-// matching preset in acp_launch.rs is enough to surface it.
-const SUBAGENTS = [
-  {
-    id: "claude-code",
-    token: "claude",
-    label: "Claude Code",
-    description: "Delegate a task via ACP",
-  },
-  { id: "gemini", token: "gemini", label: "Gemini CLI", description: "Delegate a task via ACP" },
-  { id: "codex", token: "codex", label: "Codex", description: "Delegate a task via ACP" },
-  { id: "cursor", token: "cursor", label: "Cursor", description: "Delegate a task via ACP" },
-  { id: "qwen", token: "qwen", label: "Qwen Code", description: "Delegate a task via ACP" },
-];
-const SUBAGENT_LINE = /^[#/]([a-z][a-z0-9-]*)[ \t]+([\s\S]+)$/;
-const SUBAGENT_TOKEN_ONLY = /^[#/]([a-z][a-z0-9-]*)\s*$/;
-// null until the host reports which agents' CLIs are installed; the probe is
-// kicked off lazily the first time the `#` menu asks for the list (never during
-// the disconnected startup window), and until it resolves the full list shows.
-let detectedSubagentIds = null;
-let detectingSubagents = false;
-function ensureSubagentDetection() {
-  if (detectedSubagentIds || detectingSubagents) return;
-  detectingSubagents = true;
-  control
-    .listAcpAgents()
-    .then((agents) => {
-      detectedSubagentIds = new Set(agents.map((agent) => agent.id));
-    })
-    .catch(() => {
-      // Detection failed — keep the full list; a run whose CLI is missing still
-      // surfaces the reason on its card.
-    })
-    .finally(() => {
-      detectingSubagents = false;
-    });
-}
-
-// Claude Code subagent runs — each renders as a collapsible card inside the Pi
-// message list; the Pi backend keeps owning the conversation.
-const subagentRuns = createSubagentRunManager({
-  runtime,
-  control,
-  getTarget: () => target,
-  adapter,
-  mount: (element) => {
-    messagesElement?.appendChild(element);
-    element.scrollIntoView({ block: "nearest" });
-  },
-  sendToPi: (message) => {
-    runtime
-      .request({ type: "prompt", message }, target, { idempotencyKey: randomId() })
-      .catch(showError);
-  },
-  onError: showError,
-});
-
-setupComposerAgentMenu({
-  input,
-  container: document.getElementById("agent-picker-menu"),
-  getAgents: () => {
-    // ACP subagents are local CLIs run against this workspace's local
-    // checkout; a remote workspace has no local checkout for them to see, so
-    // there is nothing valid to offer here (see sendComposerInput's matching
-    // guard, which is what actually stops a hand-typed `#claude ...`).
-    if (isSshRemoteActive()) return [];
-    ensureSubagentDetection();
-    return detectedSubagentIds
-      ? SUBAGENTS.filter((agent) => detectedSubagentIds.has(agent.id))
-      : SUBAGENTS;
-  },
-});
-// Remembers which extension commands rely on terminal-only `ctx.ui` surfaces,
-// so the slash menu can badge them instead of leaving the user with a command
-// that silently does nothing.
-const commandCompatibility = new ExtensionCommandCompatibility({
-  workspaceId: target.workspaceId,
-  onLearn: (record) => messageRenderer.renderSystemMessage(record.message),
-});
-const extensionWidgets = new ExtensionWidgets({
-  aboveEditor: document.getElementById("extension-widgets-above"),
-  belowEditor: document.getElementById("extension-widgets-below"),
-});
-const contextUsage = setupContextUsage();
-const compactContextButton = document.getElementById("compact-context-btn");
-const filePreviewPanel = setupFilePreviewPanel();
-// Written-file paths collected during the current turn (via the preview
-// follow's onWriteApplied signal); rendered as chips when the turn settles.
-let turnWrittenPaths = [];
-const filePreviewFollow = createFilePreviewFollow({
-  panel: filePreviewPanel,
-  getWorkspacePath: async () => {
-    try {
-      const response = await data.workspaceInfo(target.workspaceId);
-      return response?.info?.path ?? "";
-    } catch {
-      return "";
-    }
-  },
-  onWriteApplied: (_rawPath, previewPath) => {
-    if (!turnWrittenPaths.includes(previewPath)) turnWrittenPaths.push(previewPath);
-  },
-});
-const gitPanel = setupGitPanel({
-  runtime,
-  getTarget: () => target,
-  container: document.getElementById("git-panel"),
-  fileSidebar: document.getElementById("file-sidebar"),
-  fileList: document.getElementById("file-list"),
-  filePreviewPanel,
-  onError: showError,
-});
-
-// ── Info panel (session tree + workspace actions) ─────────────────────
-const infoSidebar = document.getElementById("info-sidebar");
-const infoAppActions = createWorkspaceAppActions({
-  control,
-  getWorkspacePath: () => infoPanel?.workspacePath || "",
-});
-// Built before the panel that mounts it: the section owns the task-analysis
-// state and turn sources, the Info panel only decides where it sits.
-const taskAnalysis = createSessionTaskAnalysis({
-  getTurns: () => turnTrace.getTurns(target),
-  loadHistoryTurns: loadHistoryTurnsForTarget,
-  resolveTurns: resolveSessionTurns,
-  analyzeWithAi: analyzeSessionTurnsWithAi,
-  t,
-});
-const infoPanel = infoSidebar
-  ? new InfoPanel({
-      panel: document.getElementById("info-panel"),
-      actions: infoAppActions,
-      t,
-      onNavigateLeaf: (entryId) => navigateActiveTree(entryId),
-      isStreaming: () => store.lifecycle === "working",
-      taskAnalysis,
-    })
-  : null;
-
-let infoTreeSeq = 0;
-async function refreshInfoPanel({ refreshWorkspace = false } = {}) {
-  if (!infoPanel || !infoSidebar || infoSidebar.classList.contains("collapsed")) return;
-  // Sequence guard: a session switch while a fetch is in flight must not let
-  // the stale response repaint the new session's tree.
-  const seq = ++infoTreeSeq;
-  // A turn that ended since the last look is exactly the one the user came to
-  // see, so the task analysis re-reads the saved log on every open too.
-  void taskAnalysis?.refresh();
-  if (refreshWorkspace) {
-    try {
-      const response = await data.workspaceInfo(target.workspaceId);
-      infoPanel.updateWorkspace(response?.info?.path ?? "");
-    } catch {
-      // Workspace path stays at the last known value; the tree still loads.
-    }
-  }
-  syncSessionInfo();
-  try {
-    // Pi owns active leaf state. Prefer its live get_entries snapshot over the
-    // disk fallback so Resume reflects branch navigation immediately.
-    const runtimeResponse = await runtime.request({ type: "get_entries" }, target);
-    const tree = runtimeResponse?.response?.data;
-    if (Array.isArray(tree?.entries)) {
-      if (seq !== infoTreeSeq) return;
-      infoPanel.updateTree({ entries: tree.entries, leafId: tree.leafId ?? null });
+  setupMessagesInsets({
+    main: document.querySelector(".main"),
+    messages: messagesElement,
+    header: document.querySelector(".header"),
+    inputArea: document.querySelector(".input-area"),
+    workspaceContent: document.querySelector(".workspace-content"),
+  });
+  const messageRenderer = new MessageRenderer(messagesElement, { sessionTreeActions: true });
+  const toolRenderer = new ToolCardRenderer(messagesElement);
+  const input = document.getElementById("message-input");
+  const form = document.getElementById("chat-form");
+  const abortButton = document.getElementById("abort-btn");
+  const sendButton = document.getElementById("send-btn");
+  const statusText = document.getElementById("status-text");
+  const statusIndicator = document.getElementById("status-indicator");
+  const composerCard = document.getElementById("composer-card");
+  const commandButton = document.getElementById("command-btn");
+  const commandPalette = document.getElementById("command-palette");
+  const commandPaletteOverlay = document.getElementById("command-palette-overlay");
+  const commandList = document.getElementById("command-list");
+  const attachButton = document.getElementById("attach-btn");
+  const imageInput = document.getElementById("image-input");
+  const imagePreviews = document.getElementById("image-previews");
+  const skillSlashMenu = document.getElementById("skill-slash-menu");
+  const atFileMentionMenu = document.getElementById("at-file-mention-menu");
+  let atFileMention = null;
+  const composerAutoResize = setupComposerAutoResize({ input });
+  let workflowLockSnapshot = null;
+  window.addEventListener("pipline:workflow-run-lock", (event) => {
+    if (event.detail?.running === true) {
+      if (workflowLockSnapshot) return;
+      workflowLockSnapshot = { input: input.disabled, sendButton: sendButton.disabled };
+      input.disabled = true;
+      sendButton.disabled = true;
       return;
     }
-    throw new Error("Runtime get_entries returned no entries");
-  } catch (runtimeError) {
+    if (!workflowLockSnapshot) return;
+    input.disabled = workflowLockSnapshot.input;
+    sendButton.disabled = workflowLockSnapshot.sendButton;
+    workflowLockSnapshot = null;
+  });
+  window.addEventListener("pipline:workflow-context", (event) => {
+    const summary = event.detail?.summary;
+    if (!summary || !input) return;
+    const context = formatWorkflowChatContext(summary, t);
+    input.value = input.value.trim() ? `${input.value.trim()}\n\n${context}` : context;
+    composerAutoResize.sync();
+    input.focus();
+  });
+  window.addEventListener("pipline:workflow-context-request", async (event) => {
+    const invoke = globalThis.__TAURI__?.core?.invoke;
+    if (typeof invoke !== "function" || !target?.workspaceId) return;
     try {
-      const response = await data.readSessionTree(target.workspaceId, target.sessionId);
-      if (seq !== infoTreeSeq) return;
-      infoPanel.updateTree({
-        entries: response?.tree?.entries ?? [],
-        leafId: response?.tree?.leafId ?? null,
+      await invoke("send_workflow_context", {
+        workspaceId: target.workspaceId,
+        summary: event.detail?.summary,
       });
     } catch (error) {
-      console.warn("[InfoPanel] tree refresh failed:", runtimeError, error);
+      showError(error);
     }
-  }
-}
-
-/**
- * Rebuild this session's earlier turns for the task debugger.
- *
- * Same two sources as the Info panel tree, for the same reason: Pi owns the
- * live entry list (including the branch the user navigated to), and the saved
- * file answers when the runtime cannot. A temporary session has no file yet,
- * so a failed runtime read there simply means "nothing recorded".
- */
-async function loadHistoryTurnsForTarget() {
-  const sessionId = target.sessionId;
-  const options = { target, leafId: null };
-  try {
-    const runtimeResponse = await runtime.request({ type: "get_entries" }, target);
-    const tree = runtimeResponse?.response?.data;
-    if (Array.isArray(tree?.entries)) {
-      if (target.sessionId !== sessionId) return [];
-      return buildTurnsFromEntries(tree.entries, { ...options, leafId: tree.leafId ?? null });
-    }
-  } catch (error) {
-    console.warn("[TaskDebugger] runtime entries unavailable, falling back to disk:", error);
-  }
-  if (sessionId.startsWith("temporary-")) return [];
-  const response = await data.readSessionTree(target.workspaceId, sessionId);
-  if (target.sessionId !== sessionId) return [];
-  return buildTurnsFromEntries(response?.tree?.entries ?? [], {
-    ...options,
-    leafId: response?.tree?.leafId ?? null,
   });
-}
+  window.addEventListener("pipline:workflow-window-opened", () => {
+    document.getElementById("workflow-panel")?.classList.add("is-detached");
+  });
+  window.addEventListener("pipline:workflow-window-closed", () => {
+    const panel = document.getElementById("workflow-panel");
+    if (!panel?.classList.contains("is-detached")) return;
+    panel.classList.remove("is-detached");
+    document.getElementById("workflow-mode-toggle")?.setAttribute("aria-expanded", "true");
+  });
+  window.addEventListener("pipline:workflow-window-hidden", () => {
+    const panel = document.getElementById("workflow-panel");
+    if (!panel?.classList.contains("is-detached")) return;
+    panel.classList.remove("is-detached");
+    document.getElementById("workflow-mode-toggle")?.setAttribute("aria-expanded", "true");
+  });
+  document.getElementById("workflow-open-window")?.addEventListener("click", async () => {
+    const workflowId = await preferences.get(`ui.workflow.active.${target.workspaceId}`);
+    const invoke = globalThis.__TAURI__?.core?.invoke;
+    if (!workflowId || typeof invoke !== "function") {
+      showError(new Error(t("workflow.openWindowFailed")));
+      return;
+    }
+    try {
+      await invoke("open_workflow_window", { workspaceId: target.workspaceId, workflowId, target });
+      window.dispatchEvent(new CustomEvent("pipline:workflow-window-opened"));
+    } catch (error) {
+      showError(error);
+    }
+  });
+  const queuedMessages = document.getElementById("queued-messages");
+  const todoMirrorPanel = new RpivTodoMirrorPanel({
+    container: document.querySelector(".input-area"),
+  });
 
-/**
- * Collect every turn of the current session for the Info panel's AI analysis.
- *
- * Same two sources as the Info panel tree, for the same reason: the live
- * recorder covers what this window watched, the saved log covers everything
- * before that, and live wins wherever the two overlap (see `mergeTurnSources`).
- * A failed log read degrades to live-only rather than aborting the run.
- */
-async function resolveSessionTurns() {
-  let history = [];
-  try {
-    history = await loadHistoryTurnsForTarget();
-  } catch (error) {
-    console.warn("[InfoPanel] AI analysis history read failed:", error);
+  // ── Composer model dropdown & thinking button ─────────────────────────────────
+  const modelDropdown = document.getElementById("model-dropdown");
+  const modelDropdownBtn = document.getElementById("model-dropdown-btn");
+  const modelDropdownLabel = document.getElementById("model-dropdown-label");
+  const modelDropdownMenu = document.getElementById("model-dropdown-menu");
+  const modelDropdownToolbar = modelDropdown?.closest(".composer-toolbar");
+  const thinkingBtn = document.getElementById("thinking-btn");
+
+  function formatThinkingLevelLabel(level) {
+    const normalizedLevel = level || "off";
+    const key = `settings.thinkingLevels.${normalizedLevel}`;
+    const label = t(key);
+    return label === key ? normalizedLevel : label;
   }
-  return mergeTurnSources(history, turnTrace.getTurns(target));
-}
+  let currentThinkingLevel = "off";
+  let currentModelProvider = null;
+  let currentModelId = null;
+  let pendingModelRestore = null;
 
-/**
- * Hand the session's turns to the model itself, asking it to read the run
- * log for risk points, blockers and failures -- signal a mechanical timing
- * report can't surface. Runs against a throwaway background session (same
- * workspace, same model as the one active here) so the analysis never
- * touches the user's own conversation; session-ai-runner.js discards that
- * session once the reply is in.
- */
-async function analyzeSessionTurnsWithAi(turns) {
-  return runAiAnalysis({
+  // Session UI state: persists per-session model + thinking level so switching
+  // between sessions restores the composer's model/thinking selection. Profiles
+  // live in the native host (SessionUiProfileStore) keyed by the runtime session
+  // id. Unsent composer text is intentionally NOT session-scoped: it follows the
+  // user across session switches instead of being saved/restored per session.
+  const sessionUiState = new SessionUiStateStore({
+    waitUntilReady: () => adapter.ready(),
+    profileClient: {
+      load: () => {
+        const sessionId = target.sessionId;
+        if (!sessionId || sessionId === "pending-bootstrap") return Promise.resolve(null);
+        return runtime.sendHostRequest
+          ? runtime
+              .sendHostRequest({
+                operation: "session_ui_profile_load",
+                expectedSessionId: sessionId,
+                fallbackToLatest: sessionId.startsWith("temporary-"),
+              })
+              .then((response) => response?.profile ?? null)
+          : fetch("/v2/host", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                operation: "session_ui_profile_load",
+                expectedSessionId: sessionId,
+                fallbackToLatest: sessionId.startsWith("temporary-"),
+              }),
+            })
+              .then(async (response) => {
+                if (!response.ok) return null;
+                const data = await response.json();
+                return data?.profile ?? null;
+              })
+              .catch(() => null);
+      },
+      save: (profile) => {
+        const sessionId = target.sessionId;
+        if (!sessionId || sessionId === "pending-bootstrap") return Promise.resolve(null);
+        const payload = {
+          operation: "session_ui_profile_save",
+          expectedSessionId: sessionId,
+          ...profile,
+        };
+        return runtime.sendHostRequest
+          ? runtime.sendHostRequest(payload).then((response) => response?.profile ?? profile)
+          : fetch("/v2/host", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+            })
+              .then(async (response) => {
+                if (!response.ok) return profile;
+                const data = await response.json();
+                return data?.profile ?? profile;
+              })
+              .catch(() => profile);
+      },
+    },
+  });
+  let currentModelContextWindow = 0;
+  let availableModels = [];
+  // True once get_available_models + the visibility catalog have resolved once.
+  // The dropdown reuses this cache on every open; only a model-configuration
+  // change (auth/visibility edits) forces a refetch. Avoids the per-open reload.
+  let availableModelsLoaded = false;
+  // Ordered provider/model ids from Pi's global enabledModels (composer
+  // favorites). Rendered as the dropdown's first section when available.
+  let scopedModelIds = [];
+  // Cache the scoped list too so opening the dropdown no longer round-trips the
+  // config bridge each time (the previous source of the visible reload/reflow).
+  let scopedModelsLoaded = false;
+  let target = provisionalTargetFromRoute(route);
+  let configGatewayTargetReady = false;
+  let resolveConfigGatewayReady;
+  const configGatewayReady = new Promise((resolve) => {
+    resolveConfigGatewayReady = resolve;
+  });
+  let store = createSessionStore(target);
+  let navigationGeneration = 0;
+  let commandCatalog = buildCommandCatalog({});
+  const assistantMessageStream = createAssistantMessageStream();
+  let streamingElement = null;
+  let streamingStartedAt = null;
+  let liveProcessGroup = null;
+  let lastShownProviderError = null;
+  let sidebar = null;
+  let agentInboxNavSelectSession = null;
+  // Sidebar loading starts before bootstrap/runtime awaits complete. Keep every
+  // state slot used by its callbacks initialized above that startup boundary so
+  // a fast session-list response cannot hit a temporal dead zone.
+  let agentInboxNavSession = null;
+  const sessionInfo = setupSessionInfo({
+    toggle: document.getElementById("session-info-toggle"),
+    panel: document.getElementById("session-info-panel"),
+    fileValue: document.getElementById("session-info-file"),
+    idValue: document.getElementById("session-info-id"),
+    getTarget: () => target,
+    getSessions: () => sidebar?.sessions ?? [],
+  });
+  function syncSessionInfo() {
+    sessionInfo.refresh();
+    const { id, session } = activeSession(
+      () => target,
+      () => sidebar?.sessions ?? [],
+    );
+    infoPanel?.updateSessionInfo({ filePath: session?.filePath || "", sessionId: id });
+  }
+  let activeSearchQuery = "";
+  // Auto-launch guard. Stored in sessionStorage (not a module variable) so it
+  // survives same-window `window.navigate()` reloads: when the user selects
+  // another project's session the inbox window reloads at the new URL, and
+  // without a durable guard auto-launch would immediately yank the window back
+  // to the Agent Inbox. sessionStorage is per-window/tab, so a genuinely new
+  // window still auto-launches once.
+  const SUPER_AGENT_LAUNCHED_KEY = "pi-studio-super-agent-launched";
+  function wasSuperAgentLaunched() {
+    try {
+      return sessionStorage.getItem(SUPER_AGENT_LAUNCHED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function markSuperAgentLaunched() {
+    try {
+      sessionStorage.setItem(SUPER_AGENT_LAUNCHED_KEY, "1");
+    } catch {
+      // sessionStorage may be unavailable; auto-launch simply repeats.
+    }
+  }
+  let pendingBoundSessionFirstMessage = null;
+  let superAgentEnsureInFlight = null;
+  let diskHistoryFallback = null;
+  let initialHistoryContext = null;
+
+  // Maps a dispatched child runtime instanceId -> Agent Inbox task id, so
+  // `session_bound` events from the background child can upgrade the task's
+  // temporary child session id to the persisted one.
+  //
+  // Declared before the first `await` below: once `adapter.connect()` runs,
+  // background runtime events can arrive and call `bindDispatchedChildSession`
+  // (which reads this map) any time later top-level `await`s yield control
+  // back to the event loop — before the rest of this module's top-level code
+  // has finished executing. Declaring it late (as a later top-level `const`)
+  // caused a "Cannot access 'dispatchedInstances' before initialization" TDZ
+  // crash that could abort session creation on fresh installs.
+  const dispatchedInstances = new Map();
+
+  const remoteAuth = await resolveRemoteAuth();
+  installRemoteAuthFetch(remoteAuth.deviceToken);
+  if (remoteAuth.clientType === "desktop") setupRemoteAccessApproval();
+
+  const adapter = new HostRuntimeAdapter({
+    url: resolveHostWebSocketUrl(window),
+    clientId: sessionScopedClientId(remoteAuth.clientType),
+    clientType: remoteAuth.clientType,
+    deviceToken: remoteAuth.deviceToken,
+  });
+  const terminalIntegration = setupTerminalPanel({
+    adapter,
+    getWorkspaceId: () => target.workspaceId,
+  });
+  const runtime = new RuntimeGateway(adapter);
+  const data = new HostDataGateway(adapter, {
+    fetchImpl: window.fetch.bind(window),
+    deviceToken: remoteAuth.deviceToken,
+  });
+  const control = new HostControlGateway(adapter);
+  const preferences = new PreferenceGateway(adapter);
+  let workflowComposerDisabledState = null;
+  const workflowModeButton = document.getElementById("workflow-mode-toggle");
+  let workflowModeOpening = null;
+  async function openWorkflowMode() {
+    if (!workflowModeButton) return;
+    if (workflowModeOpening) return workflowModeOpening;
+    workflowModeButton.disabled = true;
+    const opening = (async () => {
+      try {
+        const existingPanel = document.getElementById("workflow-panel");
+        if (!existingPanel || existingPanel.classList.contains("hidden")) {
+          const { toggleWorkflowPanel } = await import("./workflow/workflow-panel.js");
+          await toggleWorkflowPanel({
+            control,
+            preferences,
+            workspaceId: target.workspaceId,
+            runtime,
+            getTarget: () => target,
+            getPiBusy: () => store.lifecycle === "working",
+            getModel: () =>
+              currentModelProvider && currentModelId
+                ? { provider: currentModelProvider, id: currentModelId }
+                : null,
+            onPiRunningChange: (running) => {
+              if (running) {
+                if (workflowComposerDisabledState) return;
+                workflowComposerDisabledState = {
+                  input: input.disabled,
+                  sendButton: sendButton.disabled,
+                };
+                input.disabled = true;
+                sendButton.disabled = true;
+                return;
+              }
+              if (!workflowComposerDisabledState) return;
+              input.disabled = workflowComposerDisabledState.input;
+              sendButton.disabled = workflowComposerDisabledState.sendButton;
+              workflowComposerDisabledState = null;
+            },
+            setAgentToolsEnabled: (enabled, modeTarget) =>
+              runtime.request(
+                { type: "prompt", message: `/pipline-workflow-mode ${enabled ? "on" : "off"}` },
+                modeTarget ?? target,
+                { idempotencyKey: randomId() },
+              ),
+            requestAgentApproval: ({
+              workflow,
+              preview,
+              operations,
+              dismissSignal,
+              title,
+              message,
+            }) =>
+              showNativeDialog(
+                {
+                  method: "confirm",
+                  title: title ?? t("workflow.proposalTitle"),
+                  message:
+                    message ??
+                    t("workflow.proposalMessage", {
+                      fromRevision: workflow.revision,
+                      toRevision: workflow.revision + 1,
+                      operations: JSON.stringify(operations, null, 2),
+                      nodeCount: preview.nodes.length,
+                      edgeCount: preview.edges.length,
+                    }),
+                },
+                undefined,
+                { dismissSignal },
+              ).then((result) => result?.confirmed === true),
+          });
+        }
+        const workflowId = await preferences.get(`ui.workflow.active.${target.workspaceId}`);
+        const invoke = globalThis.__TAURI__?.core?.invoke;
+        if (!workflowId || typeof invoke !== "function")
+          throw new Error(t("workflow.openWindowFailed"));
+        await invoke("open_workflow_window", {
+          workspaceId: target.workspaceId,
+          workflowId,
+          target,
+        });
+        window.dispatchEvent(new CustomEvent("pipline:workflow-window-opened"));
+      } catch (error) {
+        console.error("[Workflow] Failed to open workflow mode:", error);
+        const body = document.getElementById("workflow-panel-body");
+        if (body) body.textContent = error?.message || String(error);
+        throw error;
+      } finally {
+        workflowModeButton.disabled = false;
+      }
+    })();
+    workflowModeOpening = opening;
+    try {
+      await opening;
+    } finally {
+      if (workflowModeOpening === opening) workflowModeOpening = null;
+    }
+  }
+  workflowModeButton?.addEventListener("click", () => openWorkflowMode().catch(showError));
+
+  async function ensureWorkflowModeForPrompt(message) {
+    if (!explicitlyRequestsWorkflow(message)) return;
+    if (workflowModeOpening) await workflowModeOpening;
+    const panel = document.getElementById("workflow-panel");
+    if (panel && !panel.classList.contains("hidden")) return;
+    await openWorkflowMode();
+  }
+  const config = new ConfigGateway({
+    runtime,
+    getTarget: () => target,
+    waitUntilReady: () => (configGatewayTargetReady ? Promise.resolve() : configGatewayReady),
+  });
+  // OAuth login flows share the config transport; their __picotOauth frames
+  // must be consumed before the config gateway sees them (design §5 M3).
+  const oauthGateway = createOauthGateway({ runtime, getTarget: () => target });
+  window.__picotConfigCall = (op, params, options) => config.call(op, params, options);
+  const customUiPanel = new CustomUiPanel({
+    runtime,
+    getTarget: () => target,
+    onError: showError,
+  });
+  // `#`-picker agents that can be delegated a scoped task. Selecting one inserts
+  // a `#<token> ` token; the rest of the composer line becomes the subagent's
+  // task (see sendComposerInput). The picker only offers the ones whose CLI the
+  // host detects locally (`control.listAcpAgents()`); adding one here plus a
+  // matching preset in acp_launch.rs is enough to surface it.
+  const SUBAGENTS = [
+    {
+      id: "claude-code",
+      token: "claude",
+      label: "Claude Code",
+      description: "Delegate a task via ACP",
+    },
+    { id: "gemini", token: "gemini", label: "Gemini CLI", description: "Delegate a task via ACP" },
+    { id: "codex", token: "codex", label: "Codex", description: "Delegate a task via ACP" },
+    { id: "cursor", token: "cursor", label: "Cursor", description: "Delegate a task via ACP" },
+    { id: "qwen", token: "qwen", label: "Qwen Code", description: "Delegate a task via ACP" },
+  ];
+  const SUBAGENT_LINE = /^[#/]([a-z][a-z0-9-]*)[ \t]+([\s\S]+)$/;
+  const SUBAGENT_TOKEN_ONLY = /^[#/]([a-z][a-z0-9-]*)\s*$/;
+  // null until the host reports which agents' CLIs are installed; the probe is
+  // kicked off lazily the first time the `#` menu asks for the list (never during
+  // the disconnected startup window), and until it resolves the full list shows.
+  let detectedSubagentIds = null;
+  let detectingSubagents = false;
+  function ensureSubagentDetection() {
+    if (detectedSubagentIds || detectingSubagents) return;
+    detectingSubagents = true;
+    control
+      .listAcpAgents()
+      .then((agents) => {
+        detectedSubagentIds = new Set(agents.map((agent) => agent.id));
+      })
+      .catch(() => {
+        // Detection failed — keep the full list; a run whose CLI is missing still
+        // surfaces the reason on its card.
+      })
+      .finally(() => {
+        detectingSubagents = false;
+      });
+  }
+
+  // Claude Code subagent runs — each renders as a collapsible card inside the Pi
+  // message list; the Pi backend keeps owning the conversation.
+  const subagentRuns = createSubagentRunManager({
     runtime,
     control,
-    spawnSession: spawnSessionViaHost,
+    getTarget: () => target,
+    adapter,
+    mount: (element) => {
+      messagesElement?.appendChild(element);
+      element.scrollIntoView({ block: "nearest" });
+    },
+    sendToPi: (message) => {
+      runtime
+        .request({ type: "prompt", message }, target, { idempotencyKey: randomId() })
+        .catch(showError);
+    },
+    onError: showError,
+  });
+
+  setupComposerAgentMenu({
+    input,
+    container: document.getElementById("agent-picker-menu"),
+    getAgents: () => {
+      // ACP subagents are local CLIs run against this workspace's local
+      // checkout; a remote workspace has no local checkout for them to see, so
+      // there is nothing valid to offer here (see sendComposerInput's matching
+      // guard, which is what actually stops a hand-typed `#claude ...`).
+      if (isSshRemoteActive()) return [];
+      ensureSubagentDetection();
+      return detectedSubagentIds
+        ? SUBAGENTS.filter((agent) => detectedSubagentIds.has(agent.id))
+        : SUBAGENTS;
+    },
+  });
+  // Remembers which extension commands rely on terminal-only `ctx.ui` surfaces,
+  // so the slash menu can badge them instead of leaving the user with a command
+  // that silently does nothing.
+  const commandCompatibility = new ExtensionCommandCompatibility({
     workspaceId: target.workspaceId,
-    model:
-      currentModelProvider && currentModelId
-        ? { provider: currentModelProvider, id: currentModelId }
-        : null,
-    prompt: buildAnalysisPrompt(turns),
+    onLearn: (record) => messageRenderer.renderSystemMessage(record.message),
   });
-}
-
-async function navigateActiveTree(entryId) {
-  if (!entryId || store.lifecycle === "working") return;
-  const result = await config.call("navigate_tree", {
-    targetId: entryId,
-    summarize: false,
-    label: t("infoPanel.resumeBranch"),
+  const extensionWidgets = new ExtensionWidgets({
+    aboveEditor: document.getElementById("extension-widgets-above"),
+    belowEditor: document.getElementById("extension-widgets-below"),
   });
-  if (!result?.ok) throw new Error(result?.error || "Session tree navigation failed");
-  await hydrateSnapshotOnce();
-  if (infoSidebar && !infoSidebar.classList.contains("collapsed")) {
-    await refreshInfoPanel();
-  }
-}
-
-function openInfoPanel() {
-  const opened = toggleExclusiveSidePanel(infoSidebar, [
-    document.getElementById("file-sidebar"),
-    document.getElementById("diff-sidebar"),
-  ]);
-  if (opened) void refreshInfoPanel({ refreshWorkspace: true });
-}
-
-document.getElementById("info-sidebar-toggle")?.addEventListener("click", openInfoPanel);
-document.getElementById("info-sidebar-close")?.addEventListener("click", () => {
-  infoSidebar?.classList.add("collapsed");
-});
-document.getElementById("info-sidebar-refresh")?.addEventListener("click", () => {
-  void refreshInfoPanel({ refreshWorkspace: true });
-});
-
-// Owned by setupFileBrowser() once the sidebar DOM is ready. Kept at module
-// scope so openFilesPanel() can refresh it after expanding the sidebar.
-let fileBrowser = null;
-
-/**
- * Header Files / Git own one view each. Opening the active view closes the
- * panel; opening the other view switches content without an in-panel tab bar.
- */
-function openWorkspacePanel(view) {
-  const sidebar = document.getElementById("file-sidebar");
-  const result = toggleExclusiveSideView(sidebar, {
-    // Files / Git / Info are one exclusive group: opening any view collapses
-    // BOTH other side panels (Info shares the right rail, not a tab bar).
-    otherPanels: [document.getElementById("diff-sidebar"), infoSidebar],
-    currentView: gitPanel?.getTab?.() ?? "files",
-    nextView: view,
+  const contextUsage = setupContextUsage();
+  const compactContextButton = document.getElementById("compact-context-btn");
+  const filePreviewPanel = setupFilePreviewPanel();
+  // Written-file paths collected during the current turn (via the preview
+  // follow's onWriteApplied signal); rendered as chips when the turn settles.
+  let turnWrittenPaths = [];
+  const filePreviewFollow = createFilePreviewFollow({
+    panel: filePreviewPanel,
+    getWorkspacePath: async () => {
+      try {
+        const response = await data.workspaceInfo(target.workspaceId);
+        return response?.info?.path ?? "";
+      } catch {
+        return "";
+      }
+    },
+    onWriteApplied: (_rawPath, previewPath) => {
+      if (!turnWrittenPaths.includes(previewPath)) turnWrittenPaths.push(previewPath);
+    },
   });
-  if (!result.open) return false;
-  gitPanel?.setTab(view);
-  return true;
-}
+  const gitPanel = setupGitPanel({
+    runtime,
+    getTarget: () => target,
+    container: document.getElementById("git-panel"),
+    fileSidebar: document.getElementById("file-sidebar"),
+    fileList: document.getElementById("file-list"),
+    filePreviewPanel,
+    onError: showError,
+  });
 
-function openFilesPanel() {
-  const opened = openWorkspacePanel("files");
-  if (opened && fileBrowser?.currentPath === null) fileBrowser.load().catch(showError);
-}
-
-function openGitPanel() {
-  openWorkspacePanel("git");
-}
-
-const sessionCostEl = document.getElementById("session-cost");
-
-// Header status bar: aggregates session token/cost totals from session
-// stats + live completions. Token in/out render on the combined
-// token-usage pill; this bar only owns cost and publishes totals.
-let headerStatusBar = null;
-if (sessionCostEl) {
-  headerStatusBar = createHeaderStatusBar({
-    sessionCostEl,
+  // ── Info panel (session tree + workspace actions) ─────────────────────
+  const infoSidebar = document.getElementById("info-sidebar");
+  const infoAppActions = createWorkspaceAppActions({
+    control,
+    getWorkspacePath: () => infoPanel?.workspacePath || "",
+  });
+  // Built before the panel that mounts it: the section owns the task-analysis
+  // state and turn sources, the Info panel only decides where it sits.
+  const taskAnalysis = createSessionTaskAnalysis({
+    getTurns: () => turnTrace.getTurns(target),
+    loadHistoryTurns: loadHistoryTurnsForTarget,
+    resolveTurns: resolveSessionTurns,
+    analyzeWithAi: analyzeSessionTurnsWithAi,
     t,
-    onTotalsChange: (totals) => contextUsage.setSessionTotals(totals),
   });
-}
+  const infoPanel = infoSidebar
+    ? new InfoPanel({
+        panel: document.getElementById("info-panel"),
+        actions: infoAppActions,
+        t,
+        onNavigateLeaf: (entryId) => navigateActiveTree(entryId),
+        isStreaming: () => store.lifecycle === "working",
+        taskAnalysis,
+      })
+    : null;
 
-let sessionTotalCost = 0;
-
-// Hydrate the header status bar from authoritative get_session_stats.
-// The aggregate (output/cost) comes only from the server's tally, not
-// from client-side message walking — repeated mirror syncs and history
-// replay would otherwise inflate the totals.
-let statsHydrationGeneration = 0;
-function activeSessionFileForStatusBar() {
-  const sessions = sidebar?.sessions ?? [];
-  return (
-    sessions.find((s) => s.id === target.sessionId)?.filePath ??
-    sessions.find((s) => s.projectPath === store.cwd)?.filePath ??
-    null
-  );
-}
-async function hydrateHeaderSessionStats() {
-  if (!headerStatusBar) return;
-  const generation = ++statsHydrationGeneration;
-  try {
-    const frame = await runtime.request({ type: "get_session_stats" }, target);
-    // runtime.request resolves with the full runtime_response frame; the pi
-    // result lives in frame.response.
-    const result = frame?.response ?? frame;
-    if (!result?.success || !result?.data) return;
-    if (generation !== statsHydrationGeneration) return;
-    if (!result.data.sessionFile) return;
-    const activeSessionFile = activeSessionFileForStatusBar();
-    if (activeSessionFile && result.data.sessionFile !== activeSessionFile) return;
-    headerStatusBar.hydrateSessionStats({
-      sessionFile: result.data.sessionFile,
-      tokens: result.data.tokens,
-      cost: result.data.cost,
-    });
-  } catch {
-    // Aggregate hydration is best-effort; the current-context path still works.
-  }
-}
-
-function computeTotalCostFromMessages(messages) {
-  if (!Array.isArray(messages)) return 0;
-  let total = 0;
-  for (const msg of messages) {
-    if (msg?.usage?.cost?.total) total += Number(msg.usage.cost.total) || 0;
-  }
-  return total;
-}
-
-function setSessionCost(cost) {
-  sessionTotalCost = cost;
-  if (!sessionCostEl) return;
-  if (!cost || cost <= 0) {
-    sessionCostEl.classList.remove("visible");
-    sessionCostEl.textContent = "";
-    return;
-  }
-  sessionCostEl.classList.add("visible");
-  sessionCostEl.textContent = `$${cost.toFixed(4)}`;
-  sessionCostEl.title = `Session cost: $${cost.toFixed(6)}`;
-}
-
-// Compact coordinator: a single state machine that distinguishes the RPC
-// acknowledgement from Pi's actual compaction_start/compaction_end lifecycle
-// events. This prevents duplicate requests and ensures the UI only returns to
-// idle when compaction truly completes (or fails).
-const compactCoordinator = createCompactCoordinator({
-  send: async () => {
-    const frame = await runtime.request({ type: "compact" }, target, {
-      idempotencyKey: randomId(),
-    });
-    // runtime.request resolves with the full runtime_response frame; the pi
-    // compact result lives in frame.response. Extract it so the coordinator
-    // sees { success, data } rather than the transport envelope.
-    return frame?.response ?? { success: false };
-  },
-  onState: (state) => {
-    contextUsage.setCompacting(state === "requested" || state === "running");
-  },
-  onTimeout: () => {
-    // store.compaction is a second, independent "running" flag (set by the
-    // compaction_start event, see session-store.js) that requestManualCompaction
-    // also guards on. Giving up locally must clear it too, or every future
-    // click silently no-ops forever with no error shown.
-    if (store.compaction?.status === "running") store = { ...store, compaction: null };
-    showError(new Error(t("errors.compactionTimedOut")));
-  },
-});
-
-async function requestManualCompaction() {
-  if (
-    !contextUsage.canCompact ||
-    store.lifecycle === "working" ||
-    store.compaction?.status === "running" ||
-    compactCoordinator.busy
-  )
-    return;
-  await compactCoordinator.request();
-}
-
-compactContextButton?.addEventListener("click", () => requestManualCompaction().catch(showError));
-// Built ahead of ExtensionUiHost (rather than alongside setupSshRemoteIndicator
-// further down) so its `notify` hook below can reopen this on an auth failure.
-const remoteWorkspaceDialog = setupRemoteWorkspaceDialog({
-  buttonEl: document.getElementById("open-remote-btn"),
-  onError: showError,
-});
-const handleSshReauthNotify = createSshAuthFailureHandler({
-  call: window.__picotConfigCall,
-  dialog: remoteWorkspaceDialog,
-  getProjectPath: () => target.workspaceId,
-  reauthMessage: () => t("remoteWorkspace.reauthRequired"),
-});
-const extensionUi = new ExtensionUiHost({
-  runtime,
-  showDialog: (request, opts) => showNativeDialog(request, undefined, opts),
-  showInlinePrompt: (request, opts) =>
-    showInlineExtensionPrompt(request, { container: messagesElement, ...opts }),
-  hooks: {
-    notify: (request) => {
-      // Configuration data-plane responses arrive as notify events; swallow
-      // them so they don't render as chat messages.
-      if (config.consumeNotify(request)) return;
-      // ssh-remote reports a dead password/connection as a notify at session
-      // start; when it does, reopen the connect dialog on this project's
-      // binding instead of leaving the raw message (and its marker) in chat.
-      if (handleSshReauthNotify(request)) return;
-      // Custom extension UI panels (ctx.ui.custom) are bridged over notify too;
-      // they render as an overlay rather than a transcript entry.
-      if (customUiPanel.consumeNotify(request)) return;
-      // Terminal-only capability reports are a data plane as well; the store
-      // renders its own one-line explanation through onLearn.
-      if (commandCompatibility.consumeNotify(request)) return;
-      // rpiv-todo's /todos command emits a centered notify transcript. Picot
-      // already mirrors the same state natively, so expand the panel instead
-      // of rendering a duplicate system message. When nothing is mirrored (the
-      // panel stays hidden, e.g. "No todos yet"), fall through and render the
-      // message so /todos is never a silent no-op.
-      if (isRpivTodoCommandNotify(request.message) && todoMirrorPanel.hasVisibleTasks) {
-        todoMirrorPanel.expand();
+  let infoTreeSeq = 0;
+  async function refreshInfoPanel({ refreshWorkspace = false } = {}) {
+    if (!infoPanel || !infoSidebar || infoSidebar.classList.contains("collapsed")) return;
+    // Sequence guard: a session switch while a fetch is in flight must not let
+    // the stale response repaint the new session's tree.
+    const seq = ++infoTreeSeq;
+    // A turn that ended since the last look is exactly the one the user came to
+    // see, so the task analysis re-reads the saved log on every open too.
+    void taskAnalysis?.refresh();
+    if (refreshWorkspace) {
+      try {
+        const response = await data.workspaceInfo(target.workspaceId);
+        infoPanel.updateWorkspace(response?.info?.path ?? "");
+      } catch {
+        // Workspace path stays at the last known value; the tree still loads.
+      }
+    }
+    syncSessionInfo();
+    try {
+      // Pi owns active leaf state. Prefer its live get_entries snapshot over the
+      // disk fallback so Resume reflects branch navigation immediately.
+      const runtimeResponse = await runtime.request({ type: "get_entries" }, target);
+      const tree = runtimeResponse?.response?.data;
+      if (Array.isArray(tree?.entries)) {
+        if (seq !== infoTreeSeq) return;
+        infoPanel.updateTree({ entries: tree.entries, leafId: tree.leafId ?? null });
         return;
       }
-      messageRenderer.renderSystemMessage(request.message || "");
-    },
-    status: (request) => applyHostStatus(request.statusText),
-    title: (request) => {
-      if (request.title) document.title = request.title;
-    },
-    editorText: (request) => {
-      input.value = request.text || "";
-      composerAutoResize.sync();
-      input.focus();
-    },
-    widget: (request) => {
-      // rpiv-todo owns the tool/reducer; Picot renders a native mirror from
-      // the persisted todo tool-result snapshots instead of the TUI widget.
-      if (isRpivTodoWidgetRequest(request)) return;
-      // Everything else falls back to the generic renderer, so an extension
-      // that publishes a status panel is not silently dropped.
-      extensionWidgets.apply(request);
-    },
-  },
-});
-sessionStatus.bind({
-  abortButton,
-  composerCard,
-  getSessionId: () => target.sessionId,
-  hasPending: (sessionId) => extensionUi.hasPending(sessionId),
-  sendButton,
-  statusIndicator,
-  statusText,
-});
-await extensionUi.setForegroundSession(target.sessionId, { flush: false });
-await extensionUi.flushForegroundQueue();
-
-function summarizeMessageRoles(messages) {
-  const counts = {};
-  for (const message of Array.isArray(messages) ? messages : []) {
-    const role = message?.role || "unknown";
-    counts[role] = (counts[role] || 0) + 1;
-  }
-  return counts;
-}
-
-function summarizeElementBox(element) {
-  if (!element) return null;
-  const rect = element.getBoundingClientRect();
-  const style = getComputedStyle(element);
-  return {
-    tag: element.tagName?.toLowerCase() ?? null,
-    id: element.id || null,
-    className: String(element.className || ""),
-    display: style.display,
-    visibility: style.visibility,
-    opacity: style.opacity,
-    position: style.position,
-    zIndex: style.zIndex,
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
-    top: Math.round(rect.top),
-    left: Math.round(rect.left),
-  };
-}
-
-function summarizeMessagesDom() {
-  if (!messagesElement) return null;
-  const style = getComputedStyle(messagesElement);
-  const rect = messagesElement.getBoundingClientRect();
-  const firstChildren = Array.from(messagesElement.children)
-    .slice(0, 5)
-    .map((child) => ({
-      className: String(child.className || ""),
-      textLength: child.textContent?.trim().length ?? 0,
-      textPreview: (child.textContent || "").trim().slice(0, 80),
-      box: summarizeElementBox(child),
-    }));
-  const centerX = Math.round(rect.left + rect.width / 2);
-  const centerY = Math.round(rect.top + Math.min(rect.height / 2, 160));
-  const elementAtCenter = document.elementFromPoint(centerX, centerY);
-  return {
-    bodyClass: document.body.className || null,
-    bodyRuntime: document.body.dataset.runtime || null,
-    url: window.location.href,
-    messages: summarizeElementBox(messagesElement),
-    main: summarizeElementBox(document.querySelector(".main")),
-    workspaceContent: summarizeElementBox(document.querySelector(".workspace-content")),
-    inputArea: summarizeElementBox(document.querySelector(".input-area")),
-    superAgentRuntime: summarizeElementBox(document.querySelector("super-agent-runtime")),
-    childCount: messagesElement.children.length,
-    firstChildClass: messagesElement.firstElementChild?.className ?? null,
-    userCount: messagesElement.querySelectorAll(".message.user, .user").length,
-    assistantCount: messagesElement.querySelectorAll(".message.assistant, .assistant").length,
-    toolCardCount: messagesElement.querySelectorAll(".tool-card").length,
-    processGroupCount: messagesElement.querySelectorAll(".process-details").length,
-    hasWelcome: Boolean(messagesElement.querySelector(".welcome")),
-    scrollTop: Math.round(messagesElement.scrollTop),
-    scrollHeight: messagesElement.scrollHeight,
-    clientHeight: messagesElement.clientHeight,
-    display: style.display,
-    visibility: style.visibility,
-    opacity: style.opacity,
-    overflowY: style.overflowY,
-    elementAtCenter: summarizeElementBox(elementAtCenter),
-    firstChildren,
-  };
-}
-
-function logMessagesDom(label, extra = {}) {
-  console.info(`[SESSION-LOAD] ${label}`, extra);
-  console.info(`[SESSION-LOAD] ${label} dom-json`, JSON.stringify(summarizeMessagesDom()));
-}
-
-function chooseHydrationMessages(snapshotMessages, reason) {
-  const messages = Array.isArray(snapshotMessages) ? snapshotMessages : [];
-  const fallbackMatches = diskHistoryFallback?.sessionId === target.sessionId;
-  const fallbackCount = fallbackMatches ? diskHistoryFallback.messages.length : 0;
-  const source = fallbackMatches && messages.length < fallbackCount ? "disk-fallback" : "snapshot";
-  console.info("[SESSION-LOAD] hydrate message source", {
-    reason,
-    currentSessionId: target.sessionId,
-    snapshotCount: messages.length,
-    snapshotRoles: summarizeMessageRoles(messages),
-    fallbackSessionId: diskHistoryFallback?.sessionId ?? null,
-    fallbackCount,
-    fallbackMatches,
-    source,
-  });
-  return source === "disk-fallback" ? diskHistoryFallback.messages : messages;
-}
-
-const hydrateFromSnapshot = async (snapshot) => {
-  console.info("[SESSION-LOAD] hydrate snapshot received", {
-    currentSessionId: target.sessionId,
-    snapshotTarget: snapshot?.target ?? null,
-    snapshotCount: Array.isArray(snapshot?.state?.messages) ? snapshot.state.messages.length : null,
-  });
-  await adoptTarget(reconcileSnapshotTarget(target, snapshot.target));
-  store = reduceSessionState(store, snapshot);
-  const messages = chooseHydrationMessages(snapshot.state.messages, "snapshot");
-  renderHistory(messages);
-  todoMirrorPanel.hydrateFromMessages(messages);
-  renderQueuedMessages(queuedMessages, store.queue);
-  convNav.rebuild();
-  const pi = snapshot.state.pi ?? {};
-  setStatus(pi.isStreaming ? "working" : "connected");
-  contextUsage.setWorking(Boolean(pi.isStreaming));
-  taskAnalysis?.setStreaming(Boolean(pi.isStreaming));
-  if (pi.isStreaming) showLiveProcessIndicator();
-  contextUsage.setCompacting(snapshot.state.compaction?.status === "running");
-  const restoredProfile = pendingModelRestore;
-  pendingModelRestore = null;
-  const selection = await restoreSessionModel({
-    runtime,
-    target,
-    profile: restoredProfile,
-    state: pi,
-    idempotencyKey: randomId,
-  });
-  updateComposerModel(selection.model, { persist: false });
-  updateComposerThinking(selection.thinkingLevel, { persist: false });
-  if (!restoredProfile && messages.length === 0) {
-    const storedModel = getLastModel();
-    if (storedModel) {
-      updateComposerModel({ provider: storedModel.provider, id: storedModel.modelId }, { persist: false });
-      void maybeInheritLastModel({ messages, piModel: pi.model ?? null });
+      throw new Error("Runtime get_entries returned no entries");
+    } catch (runtimeError) {
+      try {
+        const response = await data.readSessionTree(target.workspaceId, target.sessionId);
+        if (seq !== infoTreeSeq) return;
+        infoPanel.updateTree({
+          entries: response?.tree?.entries ?? [],
+          leafId: response?.tree?.leafId ?? null,
+        });
+      } catch (error) {
+        console.warn("[InfoPanel] tree refresh failed:", runtimeError, error);
+      }
     }
   }
-  contextUsage.setUsage(findLatestAssistantUsage(messages), currentModelContextWindow);
-  setSessionCost(computeTotalCostFromMessages(messages));
-  // Hydrate header status bar from authoritative get_session_stats
-  hydrateHeaderSessionStats();
-  // Flush queued extension prompts after rendering is settled so inline cards
-  // are not immediately destroyed by a subsequent renderHistory() clear.
-  await extensionUi.flushForegroundQueue();
-  logMessagesDom("hydrate snapshot rendered", {
-    sessionId: target.sessionId,
-    renderedCount: messages.length,
+
+  /**
+   * Rebuild this session's earlier turns for the task debugger.
+   *
+   * Same two sources as the Info panel tree, for the same reason: Pi owns the
+   * live entry list (including the branch the user navigated to), and the saved
+   * file answers when the runtime cannot. A temporary session has no file yet,
+   * so a failed runtime read there simply means "nothing recorded".
+   */
+  async function loadHistoryTurnsForTarget() {
+    const sessionId = target.sessionId;
+    const options = { target, leafId: null };
+    try {
+      const runtimeResponse = await runtime.request({ type: "get_entries" }, target);
+      const tree = runtimeResponse?.response?.data;
+      if (Array.isArray(tree?.entries)) {
+        if (target.sessionId !== sessionId) return [];
+        return buildTurnsFromEntries(tree.entries, { ...options, leafId: tree.leafId ?? null });
+      }
+    } catch (error) {
+      console.warn("[TaskDebugger] runtime entries unavailable, falling back to disk:", error);
+    }
+    if (sessionId.startsWith("temporary-")) return [];
+    const response = await data.readSessionTree(target.workspaceId, sessionId);
+    if (target.sessionId !== sessionId) return [];
+    return buildTurnsFromEntries(response?.tree?.entries ?? [], {
+      ...options,
+      leafId: response?.tree?.leafId ?? null,
+    });
+  }
+
+  /**
+   * Collect every turn of the current session for the Info panel's AI analysis.
+   *
+   * Same two sources as the Info panel tree, for the same reason: the live
+   * recorder covers what this window watched, the saved log covers everything
+   * before that, and live wins wherever the two overlap (see `mergeTurnSources`).
+   * A failed log read degrades to live-only rather than aborting the run.
+   */
+  async function resolveSessionTurns() {
+    let history = [];
+    try {
+      history = await loadHistoryTurnsForTarget();
+    } catch (error) {
+      console.warn("[InfoPanel] AI analysis history read failed:", error);
+    }
+    return mergeTurnSources(history, turnTrace.getTurns(target));
+  }
+
+  /**
+   * Hand the session's turns to the model itself, asking it to read the run
+   * log for risk points, blockers and failures -- signal a mechanical timing
+   * report can't surface. Runs against a throwaway background session (same
+   * workspace, same model as the one active here) so the analysis never
+   * touches the user's own conversation; session-ai-runner.js discards that
+   * session once the reply is in.
+   */
+  async function analyzeSessionTurnsWithAi(turns) {
+    return runAiAnalysis({
+      runtime,
+      control,
+      spawnSession: spawnSessionViaHost,
+      workspaceId: target.workspaceId,
+      model:
+        currentModelProvider && currentModelId
+          ? { provider: currentModelProvider, id: currentModelId }
+          : null,
+      prompt: buildAnalysisPrompt(turns),
+    });
+  }
+
+  async function navigateActiveTree(entryId) {
+    if (!entryId || store.lifecycle === "working") return;
+    const result = await config.call("navigate_tree", {
+      targetId: entryId,
+      summarize: false,
+      label: t("infoPanel.resumeBranch"),
+    });
+    if (!result?.ok) throw new Error(result?.error || "Session tree navigation failed");
+    await hydrateSnapshotOnce();
+    if (infoSidebar && !infoSidebar.classList.contains("collapsed")) {
+      await refreshInfoPanel();
+    }
+  }
+
+  function openInfoPanel() {
+    const opened = toggleExclusiveSidePanel(infoSidebar, [
+      document.getElementById("file-sidebar"),
+      document.getElementById("diff-sidebar"),
+    ]);
+    if (opened) void refreshInfoPanel({ refreshWorkspace: true });
+  }
+
+  document.getElementById("info-sidebar-toggle")?.addEventListener("click", openInfoPanel);
+  document.getElementById("info-sidebar-close")?.addEventListener("click", () => {
+    infoSidebar?.classList.add("collapsed");
   });
-  requestAnimationFrame(() => {
-    logMessagesDom("hydrate snapshot rendered after frame", {
+  document.getElementById("info-sidebar-refresh")?.addEventListener("click", () => {
+    void refreshInfoPanel({ refreshWorkspace: true });
+  });
+
+  // Owned by setupFileBrowser() once the sidebar DOM is ready. Kept at module
+  // scope so openFilesPanel() can refresh it after expanding the sidebar.
+  let fileBrowser = null;
+
+  /**
+   * Header Files / Git own one view each. Opening the active view closes the
+   * panel; opening the other view switches content without an in-panel tab bar.
+   */
+  function openWorkspacePanel(view) {
+    const sidebar = document.getElementById("file-sidebar");
+    const result = toggleExclusiveSideView(sidebar, {
+      // Files / Git / Info are one exclusive group: opening any view collapses
+      // BOTH other side panels (Info shares the right rail, not a tab bar).
+      otherPanels: [document.getElementById("diff-sidebar"), infoSidebar],
+      currentView: gitPanel?.getTab?.() ?? "files",
+      nextView: view,
+    });
+    if (!result.open) return false;
+    gitPanel?.setTab(view);
+    return true;
+  }
+
+  function openFilesPanel() {
+    const opened = openWorkspacePanel("files");
+    if (opened && fileBrowser?.currentPath === null) fileBrowser.load().catch(showError);
+  }
+
+  function openGitPanel() {
+    openWorkspacePanel("git");
+  }
+
+  const sessionCostEl = document.getElementById("session-cost");
+
+  // Header status bar: aggregates session token/cost totals from session
+  // stats + live completions. Token in/out render on the combined
+  // token-usage pill; this bar only owns cost and publishes totals.
+  let headerStatusBar = null;
+  if (sessionCostEl) {
+    headerStatusBar = createHeaderStatusBar({
+      sessionCostEl,
+      t,
+      onTotalsChange: (totals) => contextUsage.setSessionTotals(totals),
+    });
+  }
+
+  let sessionTotalCost = 0;
+
+  // Hydrate the header status bar from authoritative get_session_stats.
+  // The aggregate (output/cost) comes only from the server's tally, not
+  // from client-side message walking — repeated mirror syncs and history
+  // replay would otherwise inflate the totals.
+  let statsHydrationGeneration = 0;
+  function activeSessionFileForStatusBar() {
+    const sessions = sidebar?.sessions ?? [];
+    return (
+      sessions.find((s) => s.id === target.sessionId)?.filePath ??
+      sessions.find((s) => s.projectPath === store.cwd)?.filePath ??
+      null
+    );
+  }
+  async function hydrateHeaderSessionStats() {
+    if (!headerStatusBar) return;
+    const generation = ++statsHydrationGeneration;
+    try {
+      const frame = await runtime.request({ type: "get_session_stats" }, target);
+      // runtime.request resolves with the full runtime_response frame; the pi
+      // result lives in frame.response.
+      const result = frame?.response ?? frame;
+      if (!result?.success || !result?.data) return;
+      if (generation !== statsHydrationGeneration) return;
+      if (!result.data.sessionFile) return;
+      const activeSessionFile = activeSessionFileForStatusBar();
+      if (activeSessionFile && result.data.sessionFile !== activeSessionFile) return;
+      headerStatusBar.hydrateSessionStats({
+        sessionFile: result.data.sessionFile,
+        tokens: result.data.tokens,
+        cost: result.data.cost,
+      });
+    } catch {
+      // Aggregate hydration is best-effort; the current-context path still works.
+    }
+  }
+
+  function computeTotalCostFromMessages(messages) {
+    if (!Array.isArray(messages)) return 0;
+    let total = 0;
+    for (const msg of messages) {
+      if (msg?.usage?.cost?.total) total += Number(msg.usage.cost.total) || 0;
+    }
+    return total;
+  }
+
+  function setSessionCost(cost) {
+    sessionTotalCost = cost;
+    if (!sessionCostEl) return;
+    if (!cost || cost <= 0) {
+      sessionCostEl.classList.remove("visible");
+      sessionCostEl.textContent = "";
+      return;
+    }
+    sessionCostEl.classList.add("visible");
+    sessionCostEl.textContent = `$${cost.toFixed(4)}`;
+    sessionCostEl.title = `Session cost: $${cost.toFixed(6)}`;
+  }
+
+  // Compact coordinator: a single state machine that distinguishes the RPC
+  // acknowledgement from Pi's actual compaction_start/compaction_end lifecycle
+  // events. This prevents duplicate requests and ensures the UI only returns to
+  // idle when compaction truly completes (or fails).
+  const compactCoordinator = createCompactCoordinator({
+    send: async () => {
+      const frame = await runtime.request({ type: "compact" }, target, {
+        idempotencyKey: randomId(),
+      });
+      // runtime.request resolves with the full runtime_response frame; the pi
+      // compact result lives in frame.response. Extract it so the coordinator
+      // sees { success, data } rather than the transport envelope.
+      return frame?.response ?? { success: false };
+    },
+    onState: (state) => {
+      contextUsage.setCompacting(state === "requested" || state === "running");
+    },
+    onTimeout: () => {
+      // store.compaction is a second, independent "running" flag (set by the
+      // compaction_start event, see session-store.js) that requestManualCompaction
+      // also guards on. Giving up locally must clear it too, or every future
+      // click silently no-ops forever with no error shown.
+      if (store.compaction?.status === "running") store = { ...store, compaction: null };
+      showError(new Error(t("errors.compactionTimedOut")));
+    },
+  });
+
+  async function requestManualCompaction() {
+    if (
+      !contextUsage.canCompact ||
+      store.lifecycle === "working" ||
+      store.compaction?.status === "running" ||
+      compactCoordinator.busy
+    )
+      return;
+    await compactCoordinator.request();
+  }
+
+  compactContextButton?.addEventListener("click", () => requestManualCompaction().catch(showError));
+  // Built ahead of ExtensionUiHost (rather than alongside setupSshRemoteIndicator
+  // further down) so its `notify` hook below can reopen this on an auth failure.
+  const remoteWorkspaceDialog = setupRemoteWorkspaceDialog({
+    buttonEl: document.getElementById("open-remote-btn"),
+    onError: showError,
+  });
+  const handleSshReauthNotify = createSshAuthFailureHandler({
+    call: window.__picotConfigCall,
+    dialog: remoteWorkspaceDialog,
+    getProjectPath: () => target.workspaceId,
+    reauthMessage: () => t("remoteWorkspace.reauthRequired"),
+  });
+  const extensionUi = new ExtensionUiHost({
+    runtime,
+    showDialog: createWorkflowExtensionDialogHandler({
+      showNativeDialog,
+      handleWorkflowRequest: async (toolRequest, options) => {
+        const { handleAgentWorkflowRequest } = await import("./workflow/workflow-panel.js");
+        return handleAgentWorkflowRequest(toolRequest, options);
+      },
+    }),
+    showInlinePrompt: (request, opts) =>
+      showInlineExtensionPrompt(request, { container: messagesElement, ...opts }),
+    hooks: {
+      notify: (request) => {
+        // Configuration data-plane responses arrive as notify events; swallow
+        // them so they don't render as chat messages.
+        if (config.consumeNotify(request)) return;
+        // ssh-remote reports a dead password/connection as a notify at session
+        // start; when it does, reopen the connect dialog on this project's
+        // binding instead of leaving the raw message (and its marker) in chat.
+        if (handleSshReauthNotify(request)) return;
+        // Custom extension UI panels (ctx.ui.custom) are bridged over notify too;
+        // they render as an overlay rather than a transcript entry.
+        if (customUiPanel.consumeNotify(request)) return;
+        // Terminal-only capability reports are a data plane as well; the store
+        // renders its own one-line explanation through onLearn.
+        if (commandCompatibility.consumeNotify(request)) return;
+        // rpiv-todo's /todos command emits a centered notify transcript. Picot
+        // already mirrors the same state natively, so expand the panel instead
+        // of rendering a duplicate system message. When nothing is mirrored (the
+        // panel stays hidden, e.g. "No todos yet"), fall through and render the
+        // message so /todos is never a silent no-op.
+        if (isRpivTodoCommandNotify(request.message) && todoMirrorPanel.hasVisibleTasks) {
+          todoMirrorPanel.expand();
+          return;
+        }
+        messageRenderer.renderSystemMessage(request.message || "");
+      },
+      status: (request) => applyHostStatus(request.statusText),
+      title: (request) => {
+        if (request.title) document.title = request.title;
+      },
+      editorText: (request) => {
+        input.value = request.text || "";
+        composerAutoResize.sync();
+        input.focus();
+      },
+      widget: (request) => {
+        // rpiv-todo owns the tool/reducer; Picot renders a native mirror from
+        // the persisted todo tool-result snapshots instead of the TUI widget.
+        if (isRpivTodoWidgetRequest(request)) return;
+        // Everything else falls back to the generic renderer, so an extension
+        // that publishes a status panel is not silently dropped.
+        extensionWidgets.apply(request);
+      },
+    },
+  });
+  sessionStatus.bind({
+    abortButton,
+    composerCard,
+    getSessionId: () => target.sessionId,
+    hasPending: (sessionId) => extensionUi.hasPending(sessionId),
+    sendButton,
+    statusIndicator,
+    statusText,
+  });
+  await extensionUi.setForegroundSession(target.sessionId, { flush: false });
+  await extensionUi.flushForegroundQueue();
+
+  function summarizeMessageRoles(messages) {
+    const counts = {};
+    for (const message of Array.isArray(messages) ? messages : []) {
+      const role = message?.role || "unknown";
+      counts[role] = (counts[role] || 0) + 1;
+    }
+    return counts;
+  }
+
+  function summarizeElementBox(element) {
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return {
+      tag: element.tagName?.toLowerCase() ?? null,
+      id: element.id || null,
+      className: String(element.className || ""),
+      display: style.display,
+      visibility: style.visibility,
+      opacity: style.opacity,
+      position: style.position,
+      zIndex: style.zIndex,
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      top: Math.round(rect.top),
+      left: Math.round(rect.left),
+    };
+  }
+
+  function summarizeMessagesDom() {
+    if (!messagesElement) return null;
+    const style = getComputedStyle(messagesElement);
+    const rect = messagesElement.getBoundingClientRect();
+    const firstChildren = Array.from(messagesElement.children)
+      .slice(0, 5)
+      .map((child) => ({
+        className: String(child.className || ""),
+        textLength: child.textContent?.trim().length ?? 0,
+        textPreview: (child.textContent || "").trim().slice(0, 80),
+        box: summarizeElementBox(child),
+      }));
+    const centerX = Math.round(rect.left + rect.width / 2);
+    const centerY = Math.round(rect.top + Math.min(rect.height / 2, 160));
+    const elementAtCenter = document.elementFromPoint(centerX, centerY);
+    return {
+      bodyClass: document.body.className || null,
+      bodyRuntime: document.body.dataset.runtime || null,
+      url: window.location.href,
+      messages: summarizeElementBox(messagesElement),
+      main: summarizeElementBox(document.querySelector(".main")),
+      workspaceContent: summarizeElementBox(document.querySelector(".workspace-content")),
+      inputArea: summarizeElementBox(document.querySelector(".input-area")),
+      superAgentRuntime: summarizeElementBox(document.querySelector("super-agent-runtime")),
+      childCount: messagesElement.children.length,
+      firstChildClass: messagesElement.firstElementChild?.className ?? null,
+      userCount: messagesElement.querySelectorAll(".message.user, .user").length,
+      assistantCount: messagesElement.querySelectorAll(".message.assistant, .assistant").length,
+      toolCardCount: messagesElement.querySelectorAll(".tool-card").length,
+      processGroupCount: messagesElement.querySelectorAll(".process-details").length,
+      hasWelcome: Boolean(messagesElement.querySelector(".welcome")),
+      scrollTop: Math.round(messagesElement.scrollTop),
+      scrollHeight: messagesElement.scrollHeight,
+      clientHeight: messagesElement.clientHeight,
+      display: style.display,
+      visibility: style.visibility,
+      opacity: style.opacity,
+      overflowY: style.overflowY,
+      elementAtCenter: summarizeElementBox(elementAtCenter),
+      firstChildren,
+    };
+  }
+
+  function logMessagesDom(label, extra = {}) {
+    console.info(`[SESSION-LOAD] ${label}`, extra);
+    console.info(`[SESSION-LOAD] ${label} dom-json`, JSON.stringify(summarizeMessagesDom()));
+  }
+
+  function chooseHydrationMessages(snapshotMessages, reason) {
+    const messages = Array.isArray(snapshotMessages) ? snapshotMessages : [];
+    const fallbackMatches = diskHistoryFallback?.sessionId === target.sessionId;
+    const fallbackCount = fallbackMatches ? diskHistoryFallback.messages.length : 0;
+    const source =
+      fallbackMatches && messages.length < fallbackCount ? "disk-fallback" : "snapshot";
+    console.info("[SESSION-LOAD] hydrate message source", {
+      reason,
+      currentSessionId: target.sessionId,
+      snapshotCount: messages.length,
+      snapshotRoles: summarizeMessageRoles(messages),
+      fallbackSessionId: diskHistoryFallback?.sessionId ?? null,
+      fallbackCount,
+      fallbackMatches,
+      source,
+    });
+    return source === "disk-fallback" ? diskHistoryFallback.messages : messages;
+  }
+
+  async function applyInitialDiskHistory(sessionId, generation, diskMessages) {
+    const context = initialHistoryContext;
+    if (
+      !context ||
+      context.sessionId !== sessionId ||
+      context.generation !== generation ||
+      target.sessionId !== sessionId ||
+      navigationGeneration !== generation ||
+      (!context.snapshot && context.diskRendered) ||
+      !shouldApplyInitialDiskHistory({
+        diskMessages,
+        expectedSessionId: sessionId,
+        currentSessionId: target.sessionId,
+        snapshot: context.snapshot,
+        snapshotStarted: context.snapshotStarted,
+        currentSequence: store.sequence,
+        currentLifecycle: store.lifecycle,
+      })
+    ) {
+      return false;
+    }
+
+    const renderStartedAt = performance.now();
+    const hadInFlightPrompt = renderHistory(diskMessages);
+    todoMirrorPanel.hydrateFromMessages(diskMessages);
+    convNav.rebuild();
+    contextUsage.setUsage(findLatestAssistantUsage(diskMessages), currentModelContextWindow);
+    setSessionCost(computeTotalCostFromMessages(diskMessages));
+    console.info("[SESSION-LOAD] initial disk history rendered", {
+      sessionId,
+      messageCount: diskMessages.length,
+      elapsedMs: Math.round(performance.now() - renderStartedAt),
+      totalElapsedMs: Math.round(performance.now() - context.startedAt),
+      afterSnapshot: Boolean(context.snapshot),
+    });
+    if (context.snapshot) {
+      context.snapshot.messageCount = diskMessages.length;
+    } else {
+      context.diskRendered = true;
+      setStatus("connected");
+    }
+    if (hadInFlightPrompt) await extensionUi.flushForegroundQueue();
+    return true;
+  }
+
+  async function applyPendingInitialDiskHistory() {
+    const context = initialHistoryContext;
+    const fallback = diskHistoryFallback;
+    if (
+      !context?.snapshotStarted ||
+      fallback?.sessionId !== context.sessionId ||
+      fallback.messages.length === 0
+    ) {
+      return;
+    }
+    context.snapshotStarted = false;
+    try {
+      await applyInitialDiskHistory(context.sessionId, context.generation, fallback.messages);
+    } catch (error) {
+      console.warn("[SESSION-LOAD] failed to render disk history after Pi snapshot error", error);
+    }
+  }
+
+  const hydrateFromSnapshot = async (snapshot) => {
+    console.info("[SESSION-LOAD] hydrate snapshot received", {
+      currentSessionId: target.sessionId,
+      snapshotTarget: snapshot?.target ?? null,
+      snapshotCount: Array.isArray(snapshot?.state?.messages)
+        ? snapshot.state.messages.length
+        : null,
+    });
+    const startupContext =
+      initialHistoryContext?.sessionId === target.sessionId &&
+      initialHistoryContext.generation === navigationGeneration
+        ? initialHistoryContext
+        : null;
+    if (startupContext) startupContext.snapshotStarted = true;
+    await adoptTarget(reconcileSnapshotTarget(target, snapshot.target));
+    store = reduceSessionState(store, snapshot);
+    const messages = chooseHydrationMessages(snapshot.state.messages, "snapshot");
+    renderHistory(messages);
+    todoMirrorPanel.hydrateFromMessages(messages);
+    renderQueuedMessages(queuedMessages, store.queue);
+    convNav.rebuild();
+    const pi = snapshot.state.pi ?? {};
+    setStatus(pi.isStreaming ? "working" : "connected");
+    contextUsage.setWorking(Boolean(pi.isStreaming));
+    taskAnalysis?.setStreaming(Boolean(pi.isStreaming));
+    if (pi.isStreaming) showLiveProcessIndicator();
+    contextUsage.setCompacting(snapshot.state.compaction?.status === "running");
+    const restoredProfile = pendingModelRestore;
+    pendingModelRestore = null;
+    const selection = await restoreSessionModel({
+      runtime,
+      target,
+      profile: restoredProfile,
+      state: pi,
+      idempotencyKey: randomId,
+    });
+    updateComposerModel(selection.model, { persist: false });
+    updateComposerThinking(selection.thinkingLevel, { persist: false });
+    if (!restoredProfile && messages.length === 0) {
+      const storedModel = getLastModel();
+      if (storedModel) {
+        updateComposerModel(
+          { provider: storedModel.provider, id: storedModel.modelId },
+          { persist: false },
+        );
+        void maybeInheritLastModel({ messages, piModel: pi.model ?? null });
+      }
+    }
+    contextUsage.setUsage(findLatestAssistantUsage(messages), currentModelContextWindow);
+    setSessionCost(computeTotalCostFromMessages(messages));
+    // Hydrate header status bar from authoritative get_session_stats
+    hydrateHeaderSessionStats();
+    // Flush queued extension prompts after rendering is settled so inline cards
+    // are not immediately destroyed by a subsequent renderHistory() clear.
+    await extensionUi.flushForegroundQueue();
+    logMessagesDom("hydrate snapshot rendered", {
       sessionId: target.sessionId,
       renderedCount: messages.length,
     });
-  });
-};
-
-runtime.subscribe((frame) => {
-  if (frame.type !== "runtime_event") return;
-  // Claude Code subagent task runtimes carry a synthetic sessionId/instanceId;
-  // their events feed a card in the message list, not the Pi session state.
-  if (subagentRuns.applyEvent(frame)) return;
-  taskCompletionNotifications.handleRuntimeFrame(frame);
-  turnTrace.handleRuntimeFrame(frame);
-  const previous = store;
-  const routed = routeRuntimeFrame({
-    frame,
-    target,
-    store,
-    consumeConfigResponse: (candidate) => {
-      // M3 mutual exclusion: OAuth envelopes are consumed first and never
-      // reach the config gateway or chat rendering.
-      if (oauthGateway.consumeFrame(candidate)) return true;
-      return consumeConfigResponseFrame(config, candidate);
-    },
-    reduceForeground: reduceSessionState,
-  });
-  if (routed.kind === "background" || routed.kind === "consumed-background") {
-    if (routed.kind === "background") handleBackgroundRuntimeEvent(frame).catch(showError);
-    return;
-  }
-  store = routed.store;
-  if (!previous.snapshotRequired && store.snapshotRequired) {
-    // Use hydrateSnapshotOnce to deduplicate concurrent calls (e.g. when the
-    // subscriber fires at the same time as the startup try-block) and to
-    // silently retry on brief WebSocket disconnections that can occur during
-    // project switches, instead of rendering error messages that are quickly
-    // overwritten once the connection stabilises.
-    hydrateSnapshotOnce().catch(showError);
-    return;
-  }
-  if (previous.queue !== store.queue) renderQueuedMessages(queuedMessages, store.queue);
-  if (routed.kind === "consumed-foreground") return;
-  handleRuntimeEvent(frame.event).catch(showError);
-});
-setupConfigGatewayConnectionListener({
-  adapter,
-  isReady: () => configGatewayTargetReady,
-  onDisconnected: () => {
-    setStatus("disconnected");
-    // The pi connection dropped mid-compaction — compaction_end will never
-    // arrive, so don't leave the button spinning until the next timeout.
-    compactCoordinator.reset();
-    // Same reasoning applies to the independent store.compaction "running"
-    // flag requestManualCompaction guards on; see the onTimeout handler above.
-    if (store.compaction?.status === "running") store = { ...store, compaction: null };
-  },
-});
-adapter.connect();
-
-// Wire DOM-only event handlers immediately, before any network awaits, so the
-// UI (settings overlay, file browser, composer, abort) stays responsive even
-// when the runtime connection is slow, hangs, or fails. Previously these were
-// attached after `await adapter.ready()/hydrateSnapshot()/loadCommands()`, so a
-// stalled runtime left the settings button dead ("can't open settings").
-setupSessionSidebar();
-sidebar?.load().catch(showError);
-setupSidebarToggle();
-if (atFileMentionMenu) {
-  // @-file mention completion must be wired before the Enter-to-send listener
-  // so it can intercept Enter/Tab/Escape while its listbox is open.
-  atFileMention = setupAtFileMention({
-    input,
-    container: atFileMentionMenu,
-    getWorkspaceRoot: () => target.workspaceId,
-    searchFiles: async (workspaceId, query, signal) => {
-      const url = new URL("/api/file-mentions", window.location.origin);
-      url.searchParams.set("workspaceId", workspaceId);
-      url.searchParams.set("query", query);
-      const response = await fetch(url, { signal });
-      if (!response.ok) throw new Error(`File mention search failed: ${response.status}`);
-      return response.json();
-    },
-  });
-}
-const pasteOffload = setupComposerPasteOffload({
-  textarea: input,
-  container: document.getElementById("composer-card"),
-  offload: async (content) => {
-    const result = await config.call("write_paste_offload", { content });
-    if (!result?.ok || typeof result.data?.path !== "string") {
-      throw new Error(result?.error || "Paste offload failed");
-    }
-    return result.data.path;
-  },
-  t,
-});
-setupComposerSubmitHandling({
-  input,
-  form,
-  onSubmit: ({ altKey }) => {
-    sendComposerInput({ altKey }).catch(showError);
-  },
-});
-abortButton?.addEventListener("click", abortCurrentRun);
-messagesElement.addEventListener("previewfile", (event) => {
-  const path = event.detail?.path;
-  if (path) void filePreviewFollow.openPath(path).catch(showError);
-});
-messagesElement.addEventListener("messagefork", async (event) => {
-  let { entryId } = event.detail;
-  if (store.lifecycle === "working") {
-    showError(new Error(t("infoPanel.actionWhileStreaming")));
-    return;
-  }
-  try {
-    if (!entryId) {
-      // Root cause of "fork does nothing": live-rendered messages (this
-      // turn's `message_start` event) never carry an entryId — that field
-      // only exists on entries from get_entries/get_tree, and AgentMessage
-      // objects streamed during a run don't include it, so the DOM node's
-      // [data-entry-id] is simply absent until the session is reloaded from
-      // disk. Recover it by asking Pi for the ordered list of forkable user
-      // messages and matching by the clicked message's position among all
-      // rendered user messages (get_fork_messages returns exactly the user
-      // turns on the active branch, in the same order they're rendered).
-      const messageEl = event.target?.closest?.(".message.user") ?? null;
-      const index = messageEl
-        ? [...messagesElement.querySelectorAll(".message.user")].indexOf(messageEl)
-        : -1;
-      if (index >= 0) {
-        const forkMessages = await runtime.request({ type: "get_fork_messages" }, target);
-        entryId = forkMessages?.response?.data?.messages?.[index]?.entryId ?? null;
-      }
-      if (!entryId) {
-        showError(
-          new Error(t("errors.treeNavigateFailed", { error: "Invalid entry ID for forking" })),
+    if (
+      startupContext &&
+      initialHistoryContext === startupContext &&
+      target.sessionId === startupContext.sessionId &&
+      navigationGeneration === startupContext.generation
+    ) {
+      startupContext.snapshot = {
+        messageCount: messages.length,
+        sequence: snapshot.sequence ?? store.sequence,
+      };
+      startupContext.snapshotStarted = false;
+      if (
+        diskHistoryFallback?.sessionId === startupContext.sessionId &&
+        diskHistoryFallback.messages.length > messages.length
+      ) {
+        await applyInitialDiskHistory(
+          startupContext.sessionId,
+          startupContext.generation,
+          diskHistoryFallback.messages,
         );
-        return;
       }
     }
-    const result = await runtime.request({ type: "fork", entryId }, target, {
-      idempotencyKey: randomId(),
-    });
-    const data = result?.response?.data;
-    if (data?.cancelled) return;
-    // `fork` moves Pi's active branch pointer in memory immediately (the new
-    // session *file* isn't written until the forked message is actually
-    // sent — see pendingForkSwitchCheck below for that part). But the active
-    // branch itself already changed, so — exactly like navigateActiveTree
-    // does for edit — re-hydrating now re-renders the message list truncated
-    // to the fork point right away, instead of leaving the old conversation
-    // visible until after the next send.
-    //
-    // chooseHydrationMessages() deliberately falls back to the cached disk
-    // history when it has *more* messages than a fresh snapshot, to protect
-    // a normal session switch from a transient race where the snapshot
-    // arrives before the full disk read. That protection actively fights
-    // fork, which *legitimately* shrinks the visible history — so the stale,
-    // longer disk-read cached from before this fork would otherwise win and
-    // the panel would silently stay on the old conversation. Drop it first.
-    if (diskHistoryFallback?.sessionId === target.sessionId) diskHistoryFallback = null;
-    await hydrateSnapshotOnce();
-    // Remember exactly which target this fork applies to. Consuming this
-    // purely as a boolean let it leak across an unrelated session: if the
-    // user forked here but then switched sessions and sent an ordinary first
-    // message elsewhere — the temporary-id-to-formal-id rebind every brand
-    // new session goes through on its first message looks, superficially,
-    // just like a fork's session-id change — the leaked flag would fire
-    // checkAndAdoptForkedSession for that unrelated send, forcing a spurious
-    // full re-render that reads as "the page refreshed".
-    pendingForkSwitchCheck = { ...target };
-    if (data?.text != null) {
-      input.value = data.text;
-      composerAutoResize.sync();
-      input.focus();
-    }
-  } catch (error) {
-    showError(error);
-  }
-});
-
-// Set by the messagefork handler above; consumed once the forked prompt's
-// turn fully settles (see the "agent_settled" case in handleRuntimeEvent).
-// Persisting the new session file happens as part of that turn, not at
-// `prompt` acceptance time, so checking any earlier still sees the old
-// session. Waiting for settle (rather than agent_start) also avoids
-// adoptTarget's mid-stream reset of assistantMessageStream/streamingElement,
-// which would otherwise wipe the in-progress reply out from under the user.
-let pendingForkSwitchCheck = null;
-async function checkAndAdoptForkedSession() {
-  try {
-    const statsResult = await runtime.request({ type: "get_session_stats" }, target);
-    const statsData = statsResult?.response?.data;
-    if (!statsData?.sessionId || statsData.sessionId === target.sessionId) return;
-    // Tell the host registry about the identity change *before* adopting it
-    // locally. adoptTarget resubscribes to events for the new target tuple;
-    // if the registry still thinks this instance is on the old session id,
-    // the resubscription won't match the events this instance actually
-    // emits (tagged with whatever the registry believes), and this client
-    // silently stops receiving any runtime events at all.
-    const rebound = await runtime.rebindSession(target, statsData.sessionId);
-    if (!rebound) return;
-    await sidebar?.load({ quiet: true });
-    await adoptTarget(rebound, { updateRoute: true });
-    await hydrateSnapshotOnce();
-  } catch (error) {
-    showError(error);
-  }
-}
-messagesElement.addEventListener("messageedit", async (event) => {
-  const { entryId, text } = event.detail || {};
-  if (!entryId) return;
-  if (store.lifecycle === "working") {
-    showError(new Error(t("infoPanel.actionWhileStreaming")));
-    return;
-  }
-  try {
-    // Same Pi bridge navigate as the Info panel Resume: leaf moves to the
-    // user entry, then the original prompt is prefilled for a new branch.
-    await navigateActiveTree(entryId);
-    if (typeof text === "string" && text) {
-      input.value = text;
-      composerAutoResize.sync();
-      input.focus();
-    }
-  } catch (error) {
-    showError(
-      new Error(t("errors.treeNavigateFailed", { error: String(error?.message ?? error) })),
-    );
-  }
-});
-document.getElementById("refresh-sessions-btn")?.addEventListener("click", (e) => {
-  const btn = /** @type {HTMLButtonElement} */ (e.currentTarget);
-  btn.classList.remove("spinning");
-  // Force reflow so re-adding the class restarts the animation
-  void btn.offsetWidth;
-  btn.classList.add("spinning");
-  ensureSuperAgentStartupSession({ reloadAfterEnsure: false }).catch(showError);
-  sidebar?.load().catch(showError);
-});
-window.addEventListener("picot-super-agent-autostart-changed", (event) => {
-  if (event.detail?.enabled) {
-    sidebar?.syncAgentInboxNav();
-    ensureSuperAgentStartupSession().catch(showError);
-    return;
-  }
-  setAgentInboxNavSession(null);
-  updateSuperAgentActiveState(null);
-});
-setupFileBrowser();
-const imageAttachments = setupComposerImageAttachments({
-  input,
-  attachButton,
-  imageInput,
-  previewContainer: imagePreviews,
-  dropTarget: composerCard,
-  onError: showError,
-});
-const slashMenu = setupComposerSlashMenu({
-  input,
-  container: skillSlashMenu,
-  getCommands: () => commandCompatibility.decorate(commandCatalog.values()),
-});
-setupCommandPalette({
-  button: commandButton,
-  palette: commandPalette,
-  overlay: commandPaletteOverlay,
-  list: commandList,
-  commands: () => [
-    {
-      icon: "⬇️",
-      label: "Expand All Tools",
-      desc: "Expand all tool cards",
-      action: () => toolRenderer.expandAll(),
-    },
-    {
-      icon: "⬆️",
-      label: "Collapse All Tools",
-      desc: "Collapse all tool cards",
-      action: () => toolRenderer.collapseAll(),
-    },
-    {
-      icon: "⚙️",
-      label: "Settings",
-      desc: "Open Picot settings",
-      action: () => document.getElementById("settings-btn")?.click(),
-    },
-    {
-      icon: "?",
-      label: "Help",
-      desc: "Show composer shortcuts",
-      action: () => runBuiltin("show_help"),
-    },
-  ],
-  onError: showError,
-});
-const settingsPanel = setupSettingsPanel({
-  data,
-  control,
-  preferences,
-  terminal: terminalIntegration,
-  getWorkspaceId: () => target.workspaceId,
-  configGateway: config,
-  oauthGateway,
-  onModelConfigurationChanged: () => {
-    // Auth or visibility edits invalidate both caches; refetch authoritatively.
-    scopedModelsLoaded = false;
-    loadScopedModelIds({ force: true });
-    loadAvailableModels({ force: true });
-  },
-  runtime,
-  getTarget: () => target,
-  onError: showError,
-  notify: notifications.notify,
-  onRestarted: () => window.location.reload(),
-  onThinkingLevelChanged: (level, changedTarget) => {
-    if (changedTarget?.sessionId === target.sessionId) updateComposerThinking(level);
-  },
-  desktopClient: remoteAuth.clientType === "desktop",
-});
-setupAppUpdater({ settingsPanel });
-setupNewSessionButton({ workspaceId: target.workspaceId, onError: showError });
-
-// SPA session creation: when workspace-actions creates a new session via the
-// HTTP API, it emits picot:session-created with the new target. Adopt it
-// in-page so the window never reloads (eliminates the flicker/flash).
-window.addEventListener("picot:session-created", (event) => {
-  const detail = event.detail;
-  if (!detail?.sessionId || !detail?.workspaceId) return;
-  const nextTarget = {
-    workspaceId: detail.workspaceId,
-    sessionId: detail.sessionId,
-    instanceId: detail.instanceId || `pending-${detail.sessionId.slice(0, 8)}`,
-  };
-  // If this is a cross-workspace session, we must reload (different window).
-  // Same-workspace sessions adopt in-page.
-  if (nextTarget.workspaceId !== target.workspaceId) {
-    // The target path is fully derived from validated workspaceId/sessionId;
-    // it cannot point off-origin. Build with explicit origin and verify before
-    // assigning to window.location.href.
-    const target = new URL(
-      "/app/workspaces/" +
-        encodeURIComponent(nextTarget.workspaceId) +
-        "/sessions/" +
-        encodeURIComponent(nextTarget.sessionId),
-      window.location.origin,
-    );
-    // pi-lens ignores this branch: target.origin === window.location.origin
-    // is statically provable (URL was built against window.location.origin),
-    // so this assignment is always safe.
-    if (target.origin === window.location.origin) {
-      window.location.assign(target.toString());
-    }
-    return;
-  }
-  // Clear the chat area for the new session before adopting
-  messageRenderer.clear();
-  toolRenderer.clear();
-  const profileOverride = nextTarget.sessionId.startsWith("temporary-")
-    ? profileForNewSession(
-        { provider: currentModelProvider, id: currentModelId },
-        currentThinkingLevel,
-      )
-    : undefined;
-  void adoptTarget(nextTarget, { profileOverride }).then(() => {
-    input.value = "";
-    composerAutoResize.sync();
-    input.focus();
-    // Hydrate the new session's state from Pi
-    hydrateSnapshotOnce().catch(showError);
-  });
-});
-
-setupOpenFolderButton({ onError: showError });
-// The connect dialog (built above, alongside the ssh-reauth notify hook) is the
-// only place a remote workspace is configured, so the header pill reopens it
-// on this workspace's binding rather than a settings tab.
-setupSshRemoteIndicator({
-  onEdit: (binding) => remoteWorkspaceDialog.open({ prefill: binding }),
-});
-setupAppKeyboardShortcuts({
-  input,
-  abort: abortCurrentRun,
-  isWorking: () => store.lifecycle === "working",
-});
-convNav.mount();
-
-try {
-  const initialLoadStartedAt = performance.now();
-  console.info("[SESSION-LOAD] initial load started", { sessionId: route.sessionId });
-  const bootstrapStartedAt = performance.now();
-  const bootstrappedTarget = await loadBootstrapTarget(route);
-  console.info("[SESSION-LOAD] initial bootstrap completed", {
-    sessionId: bootstrappedTarget.sessionId,
-    elapsedMs: Math.round(performance.now() - bootstrapStartedAt),
-  });
-  await adoptTarget(bootstrappedTarget, { updateRoute: false });
-  // The eager sidebar request above can race bootstrap and observe a
-  // temporarily empty host session index. Re-check once registration is
-  // complete so startup and cross-project navigation converge without a
-  // manual refresh.
-  sidebar?.load({ quiet: true }).catch(showError);
-  if (route.sessionId.startsWith("temporary-") && target.sessionId !== route.sessionId) {
-    replaceTemporarySessionRoute(history, route.workspaceId, route.sessionId, target.sessionId);
-  }
-  const hostReadyStartedAt = performance.now();
-  await adapter.ready();
-  console.info("[SESSION-LOAD] initial Host connection ready", {
-    elapsedMs: Math.round(performance.now() - hostReadyStartedAt),
-    totalElapsedMs: Math.round(performance.now() - initialLoadStartedAt),
-  });
-
-  // Two-phase load: render session history from disk immediately while Pi
-  // warms up, then overlay the authoritative Pi snapshot when it arrives.
-  // Skip the fast path for brand-new (temporary) sessions — they have no
-  // saved JSONL file yet and go straight to the Pi snapshot.
-  if (!target.sessionId.startsWith("temporary-")) {
-    const diskResult = await data
-      .readSessionMessages(target.workspaceId, target.sessionId)
-      .catch((error) => {
-        console.warn("[SESSION-LOAD] initial disk history failed", error);
-        return null;
-      });
-    const diskMessages = diskResult?.messages ?? [];
-    diskHistoryFallback =
-      diskMessages.length > 0 ? { sessionId: target.sessionId, messages: diskMessages } : null;
-    console.info("[SESSION-LOAD] initial disk fallback updated", {
-      sessionId: target.sessionId,
-      messageCount: diskMessages.length,
-      roles: summarizeMessageRoles(diskMessages),
-    });
-    if (diskMessages.length > 0) {
-      const renderStartedAt = performance.now();
-      const hadInFlightPrompt = renderHistory(diskMessages);
-      convNav.rebuild();
-      console.info("[SESSION-LOAD] initial disk history rendered", {
+    requestAnimationFrame(() => {
+      logMessagesDom("hydrate snapshot rendered after frame", {
         sessionId: target.sessionId,
-        messageCount: diskMessages.length,
-        elapsedMs: Math.round(performance.now() - renderStartedAt),
-        totalElapsedMs: Math.round(performance.now() - initialLoadStartedAt),
+        renderedCount: messages.length,
       });
-      setStatus("connected");
-      if (hadInFlightPrompt) await extensionUi.flushForegroundQueue();
-    }
-  } else {
-    diskHistoryFallback = null;
-    console.info("[SESSION-LOAD] initial disk fallback skipped for temporary session", {
-      sessionId: target.sessionId,
     });
-  }
-  // Focus the composer for every session, not just brand-new ones, so the user
-  // can start typing as soon as the page opens.
-  input.focus();
-
-  const snapshotStartedAt = performance.now();
-  await hydrateSnapshotOnce();
-  console.info("[SESSION-LOAD] initial Pi snapshot hydrated", {
-    sessionId: target.sessionId,
-    elapsedMs: Math.round(performance.now() - snapshotStartedAt),
-    totalElapsedMs: Math.round(performance.now() - initialLoadStartedAt),
-  });
-  // Deliberately not awaited (and not part of the Promise.all below): the pill
-  // probe waits for the config gateway to become ready, which must never gate
-  // session adoption. A stale probe cannot win, so a late answer is harmless.
-  refreshSshRemoteIndicator({ call: window.__picotConfigCall }).catch((error) => {
-    console.warn("[Native] Failed to probe the remote workspace binding:", error);
-  });
-  await Promise.all([
-    loadCommands()
-      .then(() => slashMenu.update())
-      .catch((error) => {
-        console.warn("[Native] Failed to load slash commands:", error);
-      }),
-    setupProjectHeader({
-      data,
-      workspaceId: target.workspaceId,
-    }).catch((error) => {
-      console.warn("[Native] Failed to load project header info:", error);
-    }),
-    Promise.resolve(
-      setupHeaderOpenApp({ data, control, workspaceId: target.workspaceId, onError: showError }),
-    ).catch((error) => {
-      console.warn("[Native] Failed to set up app launcher:", error);
-    }),
-    loadAvailableModels().catch((error) => {
-      console.warn("[Native] Failed to load available models:", error);
-    }),
-  ]);
-} catch (error) {
-  showError(error);
-}
-
-function provisionalTargetFromRoute(currentRoute) {
-  return {
-    workspaceId: currentRoute.workspaceId,
-    sessionId: currentRoute.sessionId,
-    instanceId: "pending-bootstrap",
   };
-}
 
-async function loadBootstrapTarget(currentRoute) {
-  return resolveBootstrapTarget({
-    route: currentRoute,
-    requestTarget: requestBootstrapTarget,
-    spawnTemporarySession: spawnSessionViaHost,
-  });
-}
-
-async function requestBootstrapTarget(currentRoute) {
-  const query = new URLSearchParams({
-    workspaceId: currentRoute.workspaceId,
-    sessionId: currentRoute.sessionId,
-  });
-  const response = await fetch(`/v2/bootstrap?${query}`);
-  if (!response.ok) {
-    const error = new Error("This Picot runtime is stopped or unavailable");
-    error.status = response.status;
-    throw error;
-  }
-  return response.json();
-}
-
-async function hydrateSnapshot() {
-  const expectedSessionId = target.sessionId;
-  const snapshot = await runtime.snapshot(expectedSessionId);
-  if (target.sessionId !== expectedSessionId) return; // stale: session switched while snapshot was in-flight
-  await hydrateFromSnapshot(snapshot);
-  configGatewayTargetReady = true;
-  resolveConfigGatewayReady();
-  signalConfigGatewayReady();
-}
-
-/**
- * Returns true for errors that indicate a transient WebSocket disconnection
- * rather than a permanent failure. These errors resolve on their own once the
- * adapter reconnects, so they should not be surfaced as visible messages.
- */
-function isTransientConnectionError(error) {
-  const msg = error?.message ?? "";
-  return (
-    msg.includes("Picot Host runtime is disconnected") ||
-    msg.includes("Runtime disconnected before the request completed") ||
-    msg.includes("Host disconnected before the")
-  );
-}
-
-/**
- * Hydrate the session snapshot with deduplication and automatic retry on
- * transient connection errors.
- *
- * - Deduplication: if a hydration is already in progress, the new call joins
- *   it and returns without starting a second request.
- * - Retry: if the adapter briefly disconnects (race during project switch),
- *   wait for it to reconnect and try once more before giving up.
- * - Errors: non-transient failures are re-thrown so callers can decide how to
- *   handle them; transient failures on the retry are also re-thrown.
- */
-async function hydrateSnapshotOnce() {
-  if (snapshotInFlight) return;
-  snapshotInFlight = true;
-  try {
-    await hydrateSnapshot();
-  } catch (error) {
-    if (isTransientConnectionError(error)) {
-      console.warn(
-        "[Session] Transient connection error during snapshot; retrying after reconnect:",
-        error.message,
-      );
-      await adapter.ready();
-      await hydrateSnapshot();
-    } else {
-      throw error;
+  runtime.subscribe((frame) => {
+    if (
+      frame.type === "workflow_changed" ||
+      frame.type === "workflow_node_templates_changed" ||
+      frame.type === "workflow_run_changed"
+    ) {
+      window.dispatchEvent(new CustomEvent("pipline:workflow-host-event", { detail: frame }));
+      return;
     }
-  } finally {
-    snapshotInFlight = false;
-  }
-}
-
-async function loadCommands() {
-  const result = await runtime.request({ type: "get_commands" }, target);
-  commandCatalog = buildCommandCatalog({
-    nativeCommands: result.response?.data?.commands ?? [],
-  });
-  commandCompatibility.prune(commandCatalog.values());
-}
-
-function setupSessionSidebar() {
-  const container = document.getElementById("session-list");
-  if (!container) return;
-  const selectSession = createSessionSelectionHandler({
-    switchSession,
-    openSessionInProject,
-    onError: showError,
-  });
-  agentInboxNavSelectSession = selectSession;
-  sidebar = new SessionSidebar(container, {
-    data,
-    runtime,
-    control,
-    config,
-    getTarget: () => target,
-    onSelect: (session) => {
-      updateSuperAgentActiveState(session);
-      selectSession(session);
-    },
-    onCreateSession: createSessionViaHost,
-    onSessionsLoaded: subscribeToLiveSessions,
-    onAgentInboxSessionChange: setAgentInboxNavSession,
-  });
-
-  setupSessionSearchDialog({
-    triggerInput: document.getElementById("session-search-input"),
-    triggerClear: document.getElementById("session-search-clear"),
-    overlay: document.getElementById("session-search-overlay"),
-    dialog: document.getElementById("session-search-dialog"),
-    input: document.getElementById("session-search-dialog-input"),
-    list: document.getElementById("session-search-results"),
-    data,
-    getWorkspaceId: () => target.workspaceId,
-    getSessions: () => sidebar.sessions,
-    onSelect: (session, { query } = {}) => {
-      activeSearchQuery = query || "";
-      updateSuperAgentActiveState(session);
-      selectSession(session);
-      if (session?.id === target.sessionId) applyActiveSearchHighlight();
-    },
-    onQueryChange: (query) => {
-      activeSearchQuery = query || "";
-      applyActiveSearchHighlight({ scrollToFirst: false });
-    },
-    onError: showError,
-  });
-}
-
-async function switchSession(sessionId) {
-  if (!sessionId || sessionId === target.sessionId) return;
-  const generation = ++navigationGeneration;
-  const switchStartedAt = performance.now();
-  console.info("[SESSION-LOAD] session switch started", { sessionId, generation });
-
-  // Keep the current messages visible while the new session loads. The
-  // history render below replaces them atomically once the new data is ready.
-  setStatus("loading");
-  // The rebuilt turns belong to the session being left, not the one arriving.
-  taskAnalysis?.resetHistory();
-
-  // Phase 1: fire bootstrap (spawns Pi if needed) and fast disk message read
-  // in parallel. The disk read returns messages without waiting for Pi to start.
-  const workspaceId = target.workspaceId;
-  const bootstrapPromise = loadBootstrapTarget({ name: "session", workspaceId, sessionId }).then(
-    (nextTarget) => {
-      console.info("[SESSION-LOAD] switch bootstrap completed", {
-        sessionId,
-        generation,
-        elapsedMs: Math.round(performance.now() - switchStartedAt),
-      });
-      return nextTarget;
-    },
-  );
-  const [nextTarget, diskLoad] = await Promise.all([
-    bootstrapPromise,
-    data
-      .readSessionMessages(workspaceId, sessionId)
-      .then((result) => {
-        if (generation !== navigationGeneration) return { result, hadInFlightPrompt: false };
-        const diskMessages = result?.messages ?? [];
-        diskHistoryFallback =
-          diskMessages.length > 0 ? { sessionId, messages: diskMessages } : null;
-        console.info("[SESSION-LOAD] switch disk fallback updated", {
-          sessionId,
-          messageCount: diskMessages.length,
-          roles: summarizeMessageRoles(diskMessages),
-        });
-        const renderStartedAt = performance.now();
-        const hadInFlightPrompt = renderHistory(diskMessages);
-        convNav.rebuild();
-        console.info("[SESSION-LOAD] switch disk history rendered", {
-          sessionId,
-          generation,
-          messageCount: diskMessages.length,
-          elapsedMs: Math.round(performance.now() - renderStartedAt),
-          totalElapsedMs: Math.round(performance.now() - switchStartedAt),
-        });
-        return { result, hadInFlightPrompt };
-      })
-      .catch((error) => {
-        console.warn("[SESSION-LOAD] switch disk history failed", error);
-        return { result: null, hadInFlightPrompt: false };
-      }),
-  ]);
-  if (generation !== navigationGeneration) return;
-
-  await adoptTarget(nextTarget, { updateRoute: false });
-  history.pushState(
-    null,
-    "",
-    appRoutePath({ name: "session", workspaceId: target.workspaceId, sessionId: target.sessionId }),
-  );
-  // Authoritative re-check: whatever the caller passed to
-  // updateSuperAgentActiveState() before invoking switchSession() may be
-  // stale or skipped entirely (new sessions, sa-view-session routing, etc).
-  // Recompute from the now-adopted target so a leftover `super-agent-active`
-  // class can never survive a navigation and silently disable the header's
-  // drag region (-webkit-app-region: drag) for the rest of the session.
-  const adoptedSession =
-    sidebar?.sessions?.find((session) => session.id === target.sessionId) ?? null;
-  updateSuperAgentActiveState(adoptedSession);
-
-  // Phase 2: disk history was rendered by the parallel read as soon as it
-  // arrived, without waiting for the Pi process to finish bootstrapping.
-  setStatus("connected");
-  if (diskLoad.hadInFlightPrompt) {
-    await extensionUi.flushForegroundQueue();
-  }
-
-  // Phase 3: get the authoritative snapshot from Pi (Pi may still be starting).
-  // When it arrives, re-render with the live state (model, thinking level,
-  // lifecycle) and the authoritative message tree (handles branched sessions).
-  try {
-    const snapshotStartedAt = performance.now();
-    const snapshot = await runtime.snapshot(target.sessionId);
-    if (generation !== navigationGeneration) return;
-    await hydrateFromSnapshot(snapshot);
-    console.info("[SESSION-LOAD] switch Pi snapshot hydrated", {
-      sessionId: target.sessionId,
-      generation,
-      elapsedMs: Math.round(performance.now() - snapshotStartedAt),
-      totalElapsedMs: Math.round(performance.now() - switchStartedAt),
-    });
-  } catch (error) {
-    if (generation !== navigationGeneration) return;
-    // Pi snapshot failed but disk messages are already showing — degrade
-    // gracefully rather than surfacing an error over a readable history.
-    console.warn("[switchSession] Pi snapshot failed, showing disk history:", error);
-    setStatus("connected");
-    // Still flush any queued extension prompts even when snapshot fails.
-    await extensionUi.flushForegroundQueue();
-  }
-}
-
-async function openSessionInProject(session) {
-  const invoke = globalThis.__TAURI__?.core?.invoke;
-  if (!invoke) {
-    // LAN/mobile: no Tauri window mechanism — resolve the target project's
-    // workspace id over HTTP and navigate the current tab to its session
-    // route so the page re-bootstraps against that workspace.
-    await openSessionInProjectViaHost(session);
-    return;
-  }
-  await invoke("open_session_in_project", {
-    projectPath: session.projectPath,
-    sessionId: session.id,
-  });
-}
-
-function subscribeToLiveSessions(sessions) {
-  syncSessionInfo();
-  for (const session of sessions ?? []) {
-    const liveTarget = session?.target;
-    if (liveTarget?.workspaceId && liveTarget?.sessionId && liveTarget?.instanceId) {
-      adapter.subscribeTarget(liveTarget);
+    if (frame.type === "workflow_resync_required") {
+      window.dispatchEvent(new CustomEvent("pipline:workflow-host-event", { detail: frame }));
+      return;
     }
-  }
-  updateSuperAgentActiveState(resolveSuperAgentActiveSession(sessions, target.sessionId));
-  handleSuperAgentStartupSessions(sessions).catch(showError);
-}
-
-function updateSuperAgentActiveState(session = null, { openRuntimePanel = false } = {}) {
-  const active = isSuperAgentSessionSummary(session);
-  document.body.classList.toggle("super-agent-active", active);
-  document.getElementById("super-agent-chat-header")?.classList.toggle("hidden", !active);
-  updateAgentInboxNavActive();
-
-  // Selecting/restoring the Agent Inbox session should not automatically open
-  // the task runtime panel: on narrow windows it can squeeze the chat column to
-  // an unreadable sliver. Explicit runtime opens (`sa-open-runtime`) opt in.
-  if (active && !openRuntimePanel) {
-    document.querySelector("super-agent-runtime")?.classList.add("collapsed");
-    console.info("[SESSION-LOAD] Agent Inbox active; runtime panel kept collapsed", {
-      sessionId: target.sessionId,
+    if (frame.type !== "runtime_event") return;
+    // Claude Code subagent task runtimes carry a synthetic sessionId/instanceId;
+    // their events feed a card in the message list, not the Pi session state.
+    if (subagentRuns.applyEvent(frame)) return;
+    taskCompletionNotifications.handleRuntimeFrame(frame);
+    turnTrace.handleRuntimeFrame(frame);
+    const previous = store;
+    const routed = routeRuntimeFrame({
+      frame,
+      target,
+      store,
+      consumeConfigResponse: (candidate) => {
+        // M3 mutual exclusion: OAuth envelopes are consumed first and never
+        // reach the config gateway or chat rendering.
+        if (oauthGateway.consumeFrame(candidate)) return true;
+        return consumeConfigResponseFrame(config, candidate);
+      },
+      reduceForeground: reduceSessionState,
     });
-  }
-}
-
-function setAgentInboxNavSession(session) {
-  agentInboxNavSession = session;
-  const button = document.getElementById("sidebar-agent-inbox-btn");
-  button?.classList.toggle("hidden", !session);
-  updateAgentInboxNavActive();
-}
-
-function updateAgentInboxNavActive() {
-  const button = document.getElementById("sidebar-agent-inbox-btn");
-  button?.classList.toggle("active", document.body.classList.contains("super-agent-active"));
-}
-
-function openAgentInboxNav({ openRuntimePanel = false } = {}) {
-  if (!agentInboxNavSession) return;
-  updateSuperAgentActiveState(agentInboxNavSession, { openRuntimePanel });
-  const selected = agentInboxNavSelectSession?.(agentInboxNavSession);
-  if (selected && typeof selected.catch === "function") selected.catch(showError);
-}
-
-document.getElementById("sidebar-agent-inbox-btn")?.addEventListener("click", () => {
-  openAgentInboxNav();
-});
-
-document.addEventListener("sa-open-agent-inbox", (event) => {
-  openAgentInboxNav({ openRuntimePanel: event.detail?.openRuntimePanel === true });
-});
-
-function insertTaskPrompt(task) {
-  if (!task) return;
-  const draft = input.value.trim();
-  input.value = `${buildTaskComposerPrompt(task)}${draft ? `\n${draft}` : ""}`;
-  composerAutoResize.sync();
-  input.focus();
-}
-
-document.addEventListener("sa-prompt-task", (event) => insertTaskPrompt(event.detail));
-document.addEventListener("sa-view-session", (event) => {
-  const task = event.detail;
-  const childSessionId = task?.dispatch?.childSessionId;
-  if (!childSessionId) return;
-  // Dispatched tasks run inside their target project's own window/port, so a
-  // plain in-window switchSession() can't reach them. Route to the owning
-  // project's session (opens/focuses that project window) when we know the
-  // target project; fall back to an in-window switch for same-project tasks.
-  const projectPath = task?.dispatch?.targetProject || task?.targetProject;
-  if (projectPath) {
-    openSessionInProject({ id: childSessionId, projectPath }).catch(showError);
-  } else {
-    // Leaving the Agent Inbox session in-window: close its task panel so it
-    // doesn't stay pinned over the session we're navigating to.
-    updateSuperAgentActiveState(null);
-    switchSession(childSessionId).catch(showError);
-  }
-});
-
-document.addEventListener("sa-dispatch", (event) => {
-  const task = event.detail;
-  if (!task) return;
-  dispatchSuperAgentTaskNative({
-    task,
-    resolveWorkspace: (projectPath) => resolveWorkspaceViaHost(projectPath),
-    spawnSession: (workspaceId) => spawnSessionViaHost(workspaceId),
-    sendPrompt: (dispatchTarget, message) =>
-      runtime.request({ type: "prompt", message }, dispatchTarget, {
-        idempotencyKey: randomId(),
-      }),
-    resolveBoundTarget: async (dispatchTarget) => {
-      const snapshot = await runtime.snapshot(dispatchTarget.sessionId);
-      return snapshot.target;
-    },
-    updateTask: (taskId, updater) =>
-      updateSuperAgentTask(window.__picotConfigCall, taskId, updater),
-    registerDispatchTarget: (dispatchTarget, taskId) => {
-      dispatchedInstances.set(dispatchTarget.instanceId, taskId);
-      adapter.subscribeTarget?.(dispatchTarget);
-    },
-  }).catch(showError);
-});
-
-async function handleSuperAgentStartupSessions(sessions) {
-  const action = selectSuperAgentStartupAction({
-    alreadyLaunched: wasSuperAgentLaunched(),
-    enabled: isSuperAgentEnabled(),
-    sessions,
-    currentSessionId: target.sessionId,
+    if (routed.kind === "background" || routed.kind === "consumed-background") {
+      if (routed.kind === "background") handleBackgroundRuntimeEvent(frame).catch(showError);
+      return;
+    }
+    store = routed.store;
+    if (!previous.snapshotRequired && store.snapshotRequired) {
+      // Use hydrateSnapshotOnce to deduplicate concurrent calls (e.g. when the
+      // subscriber fires at the same time as the startup try-block) and to
+      // silently retry on brief WebSocket disconnections that can occur during
+      // project switches, instead of rendering error messages that are quickly
+      // overwritten once the connection stabilises.
+      hydrateSnapshotOnce().catch(showError);
+      return;
+    }
+    if (previous.queue !== store.queue) renderQueuedMessages(queuedMessages, store.queue);
+    if (routed.kind === "consumed-foreground") return;
+    handleRuntimeEvent(frame.event).catch(showError);
   });
-  if (action.type === "ensure") {
-    await ensureSuperAgentStartupSession();
-    return;
-  }
-  if (action.type === "launch") {
-    await openSuperAgentSessionOnce(action.session);
-  }
-}
+  setupConfigGatewayConnectionListener({
+    adapter,
+    isReady: () => configGatewayTargetReady,
+    onDisconnected: () => {
+      setStatus("disconnected");
+      // The pi connection dropped mid-compaction — compaction_end will never
+      // arrive, so don't leave the button spinning until the next timeout.
+      compactCoordinator.reset();
+      // Same reasoning applies to the independent store.compaction "running"
+      // flag requestManualCompaction guards on; see the onTimeout handler above.
+      if (store.compaction?.status === "running") store = { ...store, compaction: null };
+    },
+  });
+  adapter.connect();
 
-async function ensureSuperAgentStartupSession({ reloadAfterEnsure = true } = {}) {
-  const invoke = globalThis.__TAURI__?.core?.invoke;
-  if (!invoke || !isSuperAgentEnabled()) return;
-  if (!superAgentEnsureInFlight) {
-    superAgentEnsureInFlight = invoke("ensure_agent_inbox_session").finally(() => {
-      superAgentEnsureInFlight = null;
+  // Wire DOM-only event handlers immediately, before any network awaits, so the
+  // UI (settings overlay, file browser, composer, abort) stays responsive even
+  // when the runtime connection is slow, hangs, or fails. Previously these were
+  // attached after `await adapter.ready()/hydrateSnapshot()/loadCommands()`, so a
+  // stalled runtime left the settings button dead ("can't open settings").
+  setupSessionSidebar();
+  sidebar?.load().catch(showError);
+  setupSidebarToggle();
+  if (atFileMentionMenu) {
+    // @-file mention completion must be wired before the Enter-to-send listener
+    // so it can intercept Enter/Tab/Escape while its listbox is open.
+    atFileMention = setupAtFileMention({
+      input,
+      container: atFileMentionMenu,
+      getWorkspaceRoot: () => target.workspaceId,
+      searchFiles: async (workspaceId, query, signal) => {
+        const url = new URL("/api/file-mentions", window.location.origin);
+        url.searchParams.set("workspaceId", workspaceId);
+        url.searchParams.set("query", query);
+        const response = await fetch(url, { signal });
+        if (!response.ok) throw new Error(`File mention search failed: ${response.status}`);
+        return response.json();
+      },
     });
   }
-  await superAgentEnsureInFlight;
-  if (reloadAfterEnsure) await sidebar?.load({ quiet: true });
-}
-
-async function openSuperAgentSessionOnce(session) {
-  const invoke = globalThis.__TAURI__?.core?.invoke;
-  if (!invoke || !session) return;
-  markSuperAgentLaunched();
-  try {
-    await invoke("open_session_in_project", {
-      projectPath: session.projectPath,
-      sessionId: session.id,
-    });
-  } catch (error) {
-    console.warn("[SuperAgent] Failed to auto-launch Agent Inbox:", error);
-  }
-}
-
-async function handleBackgroundRuntimeEvent(frame) {
-  const sessionId = frame.target?.sessionId;
-  switch (frame.event?.type) {
-    case "agent_start":
-      sidebar?.setStreaming(sessionId, true);
-      sidebar?.markUnread(sessionId);
-      break;
-    case "agent_settled":
-    case "agent_end":
-      sidebar?.setStreaming(sessionId, false);
-      sidebar?.markUnread(sessionId);
-      break;
-    case "message_end":
-      if (frame.event.message?.role === "assistant") {
-        sidebar?.markUnread(sessionId);
+  const pasteOffload = setupComposerPasteOffload({
+    textarea: input,
+    container: document.getElementById("composer-card"),
+    offload: async (content) => {
+      const result = await config.call("write_paste_offload", { content });
+      if (!result?.ok || typeof result.data?.path !== "string") {
+        throw new Error(result?.error || "Paste offload failed");
       }
-      break;
-    case "session_bound":
-      await bindDispatchedChildSession(frame.target?.instanceId, frame.event?.sessionId);
-      break;
-    case "session_info_changed":
-      sidebar?.setSessionName(sessionId, frame.event.name);
-      break;
-  }
-}
-
-// When a dispatched child runtime binds its persisted session id, upgrade the
-// owning Agent Inbox task so "View Session ->" navigates to the real session.
-async function bindDispatchedChildSession(instanceId, boundSessionId) {
-  if (!instanceId || !boundSessionId) return;
-  const taskId = dispatchedInstances.get(instanceId);
-  if (!taskId) return;
-  dispatchedInstances.delete(instanceId);
-  await updateSuperAgentTask(window.__picotConfigCall, taskId, (task) =>
-    markTaskChildSessionBound(task, { childSessionId: boundSessionId }),
-  ).catch((error) => console.warn("[SuperAgent] failed to bind child session:", error));
-}
-
-function setupSidebarToggle() {
-  const sidebarEl = document.getElementById("sidebar");
-  const toggleBtn = document.getElementById("sidebar-toggle");
-  const overlay = document.getElementById("sidebar-overlay");
-  if (!sidebarEl || !toggleBtn) return;
-
-  const isMobile = () => window.innerWidth <= 768;
-
-  const setCollapsed = (collapsed) => {
-    sidebarEl.classList.toggle("collapsed", collapsed);
-    overlay?.classList.toggle("visible", !collapsed && isMobile());
-  };
-
-  // Auto-collapse on mobile so sidebar doesn't block content on first load
-  if (isMobile()) {
-    setCollapsed(true);
-  }
-
-  toggleBtn.addEventListener("click", () => {
-    setCollapsed(!sidebarEl.classList.contains("collapsed"));
+      return result.data.path;
+    },
+    t,
   });
-  overlay?.addEventListener("click", () => setCollapsed(true));
-  overlay?.addEventListener("touchend", (e) => {
-    e.preventDefault();
-    setCollapsed(true);
-  });
-
-  setupResizablePanel(sidebarEl, {
-    storageKey: "pi-studio-sidebar-width",
-    defaultWidth: 272,
-    minWidth: 200,
-    maxWidth: 480,
-    side: "left",
-  });
-
-  // File/Git sidebar — right-edge panel, drag handle on the left side.
-  // Uses the native --panel-width CSS variable (same as super-agent runtime
-  // panel). Width persists to localStorage under a separate key.
-  const fileSidebarEl = document.getElementById("file-sidebar");
-  setupResizablePanel(fileSidebarEl, {
-    storageKey: "pi-studio-file-sidebar-width",
-    defaultWidth: 260,
-    minWidth: 200,
-    maxWidth: 500,
-    side: "right",
-  });
-}
-
-function setupFilePreviewPanel() {
-  const panel = document.getElementById("file-preview-panel");
-  const resizer = document.getElementById("file-preview-resizer");
-  const tabBar = document.getElementById("file-preview-tabs");
-  const content = document.getElementById("file-preview-content");
-  const mainContainer = document.querySelector(".main");
-  if (!panel || !resizer || !tabBar || !content || !mainContainer) return null;
-
-  const fileApi = createNativeFilePreviewApi({ workspaceId: () => target.workspaceId });
-  return new FilePreviewPanel({
-    panel,
-    resizer,
-    tabBar,
-    content,
-    mainContainer,
-    fileApi,
-    onOpenDesktop: (relativePath) => openWorkspaceRelativePath(relativePath).catch(showError),
-  });
-}
-
-function createNativeFilePreviewApi({ workspaceId }) {
-  const buildUrl = (path, endpoint) => {
-    const url = new URL(endpoint, window.location.origin);
-    url.searchParams.set("workspaceId", workspaceId());
-    url.searchParams.set("path", path);
-    return url;
-  };
-  return {
-    readFileContent(path, { signal } = {}) {
-      return fetch(buildUrl(path, "/api/files/content"), { signal });
-    },
-    writeFileContent({ path, content, expectedMtimeMs, force }) {
-      return fetch("/api/files/content", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          workspaceId: workspaceId(),
-          path,
-          content,
-          expectedMtimeMs,
-          force,
-        }),
-      });
-    },
-    rawUrlForPath(path) {
-      return buildUrl(path, "/api/files/raw").toString();
-    },
-    readGitDiff(path, { signal } = {}) {
-      return fetch(buildUrl(path, "/api/git/diff"), { signal });
-    },
-    readGitStat({ signal } = {}) {
-      const url = new URL("/api/git/stat", origin);
-      url.searchParams.set("workspaceId", target.workspaceId);
-      return fetch(url.toString(), { signal });
-    },
-  };
-}
-
-async function openWorkspaceRelativePath(relativePath = "") {
-  const info = await data.workspaceInfo(target.workspaceId);
-  const root = info?.path ?? "";
-  const normalizedRelative = String(relativePath || "").replace(/^\/+/, "");
-  const absolutePath = normalizedRelative ? `${root}/${normalizedRelative}` : root;
-  await control.openInApp(absolutePath);
-}
-
-function setupFileBrowser() {
-  const sidebar = document.getElementById("file-sidebar");
-  const fileList = document.getElementById("file-list");
-  const pathEl = document.getElementById("file-sidebar-path");
-  if (!sidebar || !fileList || !pathEl) return;
-
-  const upBtn = document.getElementById("file-sidebar-up");
-  if (upBtn) upBtn.disabled = true; // disabled until we've navigated into a subdir
-
-  const refreshBtn = document.getElementById("file-sidebar-refresh");
-  const toggleHiddenBtn = document.getElementById("file-sidebar-toggle-hidden");
-
-  fileBrowser = new NativeFileBrowser(fileList, pathEl, data, target.workspaceId, {
-    showViewSwitch: false,
-    onFileOpen(entry) {
-      openWorkspaceRelativePath(entry.relativePath).catch(showError);
-    },
-    onFileSelect(entry) {
-      filePreviewPanel?.openFile(entry.relativePath, {
-        fileName: entry.name,
-        size: entry.size,
-        mode: entry.mode,
-      });
-    },
-    onMention(entry) {
-      if (!atFileMention) return;
-      const isDirectory = entry.kind === "directory" || entry.isDirectory;
-      const value = buildAtMentionValue(entry.relativePath, isDirectory);
-      input.focus();
-      atFileMention.insert(value, isDirectory);
-      composerAutoResize.sync();
-    },
-    onPathChange(path) {
-      // Enable the up button only when we're inside a subdirectory.
-      if (upBtn) upBtn.disabled = path === "";
-    },
-    onShowHiddenChange(showHidden) {
-      toggleHiddenBtn?.setAttribute("aria-pressed", String(showHidden));
+  setupComposerSubmitHandling({
+    input,
+    form,
+    onSubmit: ({ altKey }) => {
+      sendComposerInput({ altKey }).catch(showError);
     },
   });
-
-  refreshBtn?.addEventListener("click", () => fileBrowser?.refresh()?.catch(showError));
-  toggleHiddenBtn?.addEventListener("click", () => {
-    fileBrowser?.setShowHidden(!fileBrowser.showHidden)?.catch(showError);
+  abortButton?.addEventListener("click", abortCurrentRun);
+  messagesElement.addEventListener("previewfile", (event) => {
+    const path = event.detail?.path;
+    if (path) void filePreviewFollow.openPath(path).catch(showError);
   });
-
-  document.getElementById("file-sidebar-finder")?.addEventListener("click", async () => {
+  messagesElement.addEventListener("messagefork", async (event) => {
+    let { entryId } = event.detail;
+    if (store.lifecycle === "working") {
+      showError(new Error(t("infoPanel.actionWhileStreaming")));
+      return;
+    }
     try {
-      const current = fileBrowser.currentPath ?? "";
-      await openWorkspaceRelativePath(current);
+      if (!entryId) {
+        // Root cause of "fork does nothing": live-rendered messages (this
+        // turn's `message_start` event) never carry an entryId — that field
+        // only exists on entries from get_entries/get_tree, and AgentMessage
+        // objects streamed during a run don't include it, so the DOM node's
+        // [data-entry-id] is simply absent until the session is reloaded from
+        // disk. Recover it by asking Pi for the ordered list of forkable user
+        // messages and matching by the clicked message's position among all
+        // rendered user messages (get_fork_messages returns exactly the user
+        // turns on the active branch, in the same order they're rendered).
+        const messageEl = event.target?.closest?.(".message.user") ?? null;
+        const index = messageEl
+          ? [...messagesElement.querySelectorAll(".message.user")].indexOf(messageEl)
+          : -1;
+        if (index >= 0) {
+          const forkMessages = await runtime.request({ type: "get_fork_messages" }, target);
+          entryId = forkMessages?.response?.data?.messages?.[index]?.entryId ?? null;
+        }
+        if (!entryId) {
+          showError(
+            new Error(t("errors.treeNavigateFailed", { error: "Invalid entry ID for forking" })),
+          );
+          return;
+        }
+      }
+      const result = await runtime.request({ type: "fork", entryId }, target, {
+        idempotencyKey: randomId(),
+      });
+      const data = result?.response?.data;
+      if (data?.cancelled) return;
+      // `fork` moves Pi's active branch pointer in memory immediately (the new
+      // session *file* isn't written until the forked message is actually
+      // sent — see pendingForkSwitchCheck below for that part). But the active
+      // branch itself already changed, so — exactly like navigateActiveTree
+      // does for edit — re-hydrating now re-renders the message list truncated
+      // to the fork point right away, instead of leaving the old conversation
+      // visible until after the next send.
+      //
+      // chooseHydrationMessages() deliberately falls back to the cached disk
+      // history when it has *more* messages than a fresh snapshot, to protect
+      // a normal session switch from a transient race where the snapshot
+      // arrives before the full disk read. That protection actively fights
+      // fork, which *legitimately* shrinks the visible history — so the stale,
+      // longer disk-read cached from before this fork would otherwise win and
+      // the panel would silently stay on the old conversation. Drop it first.
+      if (diskHistoryFallback?.sessionId === target.sessionId) diskHistoryFallback = null;
+      await hydrateSnapshotOnce();
+      // Remember exactly which target this fork applies to. Consuming this
+      // purely as a boolean let it leak across an unrelated session: if the
+      // user forked here but then switched sessions and sent an ordinary first
+      // message elsewhere — the temporary-id-to-formal-id rebind every brand
+      // new session goes through on its first message looks, superficially,
+      // just like a fork's session-id change — the leaked flag would fire
+      // checkAndAdoptForkedSession for that unrelated send, forcing a spurious
+      // full re-render that reads as "the page refreshed".
+      pendingForkSwitchCheck = { ...target };
+      if (data?.text != null) {
+        input.value = data.text;
+        composerAutoResize.sync();
+        input.focus();
+      }
     } catch (error) {
       showError(error);
     }
   });
 
-  const toggleBtn = document.getElementById("file-sidebar-toggle");
-  toggleBtn?.addEventListener("click", openFilesPanel);
-  if (toggleBtn) {
-    const shortcutLabel = isMacOS() ? "⌘B" : "Ctrl+B";
-    const baseTitle = toggleBtn.title || "Files";
-    toggleBtn.title = `${baseTitle} (${shortcutLabel})`;
+  // Set by the messagefork handler above; consumed once the forked prompt's
+  // turn fully settles (see the "agent_settled" case in handleRuntimeEvent).
+  // Persisting the new session file happens as part of that turn, not at
+  // `prompt` acceptance time, so checking any earlier still sees the old
+  // session. Waiting for settle (rather than agent_start) also avoids
+  // adoptTarget's mid-stream reset of assistantMessageStream/streamingElement,
+  // which would otherwise wipe the in-progress reply out from under the user.
+  let pendingForkSwitchCheck = null;
+  async function checkAndAdoptForkedSession() {
+    try {
+      const statsResult = await runtime.request({ type: "get_session_stats" }, target);
+      const statsData = statsResult?.response?.data;
+      if (!statsData?.sessionId || statsData.sessionId === target.sessionId) return;
+      // Tell the host registry about the identity change *before* adopting it
+      // locally. adoptTarget resubscribes to events for the new target tuple;
+      // if the registry still thinks this instance is on the old session id,
+      // the resubscription won't match the events this instance actually
+      // emits (tagged with whatever the registry believes), and this client
+      // silently stops receiving any runtime events at all.
+      const rebound = await runtime.rebindSession(target, statsData.sessionId);
+      if (!rebound) return;
+      await sidebar?.load({ quiet: true });
+      await adoptTarget(rebound, { updateRoute: true });
+      await hydrateSnapshotOnce();
+    } catch (error) {
+      showError(error);
+    }
   }
-  document.addEventListener("keydown", (event) => {
-    if (!isFilePanelShortcut(event)) return;
-    event.preventDefault();
-    openFilesPanel();
+  messagesElement.addEventListener("messageedit", async (event) => {
+    const { entryId, text } = event.detail || {};
+    if (!entryId) return;
+    if (store.lifecycle === "working") {
+      showError(new Error(t("infoPanel.actionWhileStreaming")));
+      return;
+    }
+    try {
+      // Same Pi bridge navigate as the Info panel Resume: leaf moves to the
+      // user entry, then the original prompt is prefilled for a new branch.
+      await navigateActiveTree(entryId);
+      if (typeof text === "string" && text) {
+        input.value = text;
+        composerAutoResize.sync();
+        input.focus();
+      }
+    } catch (error) {
+      showError(
+        new Error(t("errors.treeNavigateFailed", { error: String(error?.message ?? error) })),
+      );
+    }
   });
-  document.getElementById("file-sidebar-close")?.addEventListener("click", () => {
-    sidebar.classList.add("collapsed");
+  document.getElementById("refresh-sessions-btn")?.addEventListener("click", (e) => {
+    const btn = /** @type {HTMLButtonElement} */ (e.currentTarget);
+    btn.classList.remove("spinning");
+    // Force reflow so re-adding the class restarts the animation
+    void btn.offsetWidth;
+    btn.classList.add("spinning");
+    ensureSuperAgentStartupSession({ reloadAfterEnsure: false }).catch(showError);
+    sidebar?.load().catch(showError);
   });
-  upBtn?.addEventListener("click", () => {
-    const parent = fileBrowser.getParentPath();
-    if (parent !== null) fileBrowser.load(parent).catch(showError);
+  window.addEventListener("picot-super-agent-autostart-changed", (event) => {
+    if (event.detail?.enabled) {
+      sidebar?.syncAgentInboxNav();
+      ensureSuperAgentStartupSession().catch(showError);
+      return;
+    }
+    setAgentInboxNavSession(null);
+    updateSuperAgentActiveState(null);
+  });
+  setupFileBrowser();
+  const imageAttachments = setupComposerImageAttachments({
+    input,
+    attachButton,
+    imageInput,
+    previewContainer: imagePreviews,
+    dropTarget: composerCard,
+    onError: showError,
+  });
+  const slashMenu = setupComposerSlashMenu({
+    input,
+    container: skillSlashMenu,
+    getCommands: () => commandCompatibility.decorate(commandCatalog.values()),
+  });
+  setupCommandPalette({
+    button: commandButton,
+    palette: commandPalette,
+    overlay: commandPaletteOverlay,
+    list: commandList,
+    commands: () => [
+      {
+        icon: "⬇️",
+        label: "Expand All Tools",
+        desc: "Expand all tool cards",
+        action: () => toolRenderer.expandAll(),
+      },
+      {
+        icon: "⬆️",
+        label: "Collapse All Tools",
+        desc: "Collapse all tool cards",
+        action: () => toolRenderer.collapseAll(),
+      },
+      {
+        icon: "⚙️",
+        label: "Settings",
+        desc: "Open Pipline settings",
+        action: () => document.getElementById("settings-btn")?.click(),
+      },
+      {
+        icon: "?",
+        label: "Help",
+        desc: "Show composer shortcuts",
+        action: () => runBuiltin("show_help"),
+      },
+    ],
+    onError: showError,
+  });
+  const settingsPanel = setupSettingsPanel({
+    data,
+    control,
+    preferences,
+    terminal: terminalIntegration,
+    getWorkspaceId: () => target.workspaceId,
+    configGateway: config,
+    oauthGateway,
+    onModelConfigurationChanged: () => {
+      // Auth or visibility edits invalidate both caches; refetch authoritatively.
+      scopedModelsLoaded = false;
+      loadScopedModelIds({ force: true });
+      loadAvailableModels({ force: true });
+    },
+    runtime,
+    getTarget: () => target,
+    onError: showError,
+    notify: notifications.notify,
+    onRestarted: () => window.location.reload(),
+    onThinkingLevelChanged: (level, changedTarget) => {
+      if (changedTarget?.sessionId === target.sessionId) updateComposerThinking(level);
+    },
+    desktopClient: remoteAuth.clientType === "desktop",
+  });
+  setupAppUpdater({ settingsPanel });
+  setupNewSessionButton({ workspaceId: target.workspaceId, onError: showError });
+
+  // SPA session creation: when workspace-actions creates a new session via the
+  // HTTP API, it emits picot:session-created with the new target. Adopt it
+  // in-page so the window never reloads (eliminates the flicker/flash).
+  window.addEventListener("picot:session-created", (event) => {
+    const detail = event.detail;
+    if (!detail?.sessionId || !detail?.workspaceId) return;
+    const nextTarget = {
+      workspaceId: detail.workspaceId,
+      sessionId: detail.sessionId,
+      instanceId: detail.instanceId || `pending-${detail.sessionId.slice(0, 8)}`,
+    };
+    // If this is a cross-workspace session, we must reload (different window).
+    // Same-workspace sessions adopt in-page.
+    if (nextTarget.workspaceId !== target.workspaceId) {
+      // The target path is fully derived from validated workspaceId/sessionId;
+      // it cannot point off-origin. Build with explicit origin and verify before
+      // assigning to window.location.href.
+      const target = new URL(
+        "/app/workspaces/" +
+          encodeURIComponent(nextTarget.workspaceId) +
+          "/sessions/" +
+          encodeURIComponent(nextTarget.sessionId),
+        window.location.origin,
+      );
+      // pi-lens ignores this branch: target.origin === window.location.origin
+      // is statically provable (URL was built against window.location.origin),
+      // so this assignment is always safe.
+      if (target.origin === window.location.origin) {
+        window.location.assign(target.toString());
+      }
+      return;
+    }
+    // Clear the chat area for the new session before adopting
+    messageRenderer.clear();
+    toolRenderer.clear();
+    const profileOverride = nextTarget.sessionId.startsWith("temporary-")
+      ? profileForNewSession(
+          { provider: currentModelProvider, id: currentModelId },
+          currentThinkingLevel,
+        )
+      : undefined;
+    void adoptTarget(nextTarget, { profileOverride }).then(() => {
+      input.value = "";
+      composerAutoResize.sync();
+      input.focus();
+      // Hydrate the new session's state from Pi
+      hydrateSnapshotOnce().catch(showError);
+    });
   });
 
-  const diffSidebar = document.getElementById("diff-sidebar");
-  const diffToggle = document.getElementById("diff-sidebar-toggle");
-  diffToggle?.addEventListener("click", openGitPanel);
-  document.getElementById("diff-sidebar-close")?.addEventListener("click", () => {
-    diffSidebar.classList.add("collapsed");
+  setupOpenFolderButton({ onError: showError });
+  // The connect dialog (built above, alongside the ssh-reauth notify hook) is the
+  // only place a remote workspace is configured, so the header pill reopens it
+  // on this workspace's binding rather than a settings tab.
+  setupSshRemoteIndicator({
+    onEdit: (binding) => remoteWorkspaceDialog.open({ prefill: binding }),
   });
-}
+  setupAppKeyboardShortcuts({
+    input,
+    abort: abortCurrentRun,
+    isWorking: () => store.lifecycle === "working",
+  });
+  convNav.mount();
 
-function knownSubagent(token) {
-  return SUBAGENTS.find((entry) => entry.token === token || entry.id === token) ?? null;
-}
+  let startupStage = "adopting Pi runtime";
+  try {
+    const initialLoadStartedAt = performance.now();
+    console.info("[SESSION-LOAD] initial load started", { sessionId: route.sessionId });
+    // Temporary targets are process-local. Resolve them through the host so it
+    // can return the existing target or create a replacement after a restart.
+    const bootstrappedTarget = await loadBootstrapTarget(route);
+    console.info("[SESSION-LOAD] initial target adopted", {
+      sessionId: bootstrappedTarget.sessionId,
+      temporary: bootstrappedTarget.sessionId.startsWith("temporary-"),
+      elapsedMs: Math.round(performance.now() - initialLoadStartedAt),
+    });
+    startupStage = "connecting to the native host";
+    setStatus("loading");
+    await adoptTarget(bootstrappedTarget, { updateRoute: false });
+    // The eager sidebar request above can race bootstrap and observe a
+    // temporarily empty host session index. Re-check once registration is
+    // complete so startup and cross-project navigation converge without a
+    // manual refresh.
+    sidebar?.load({ quiet: true }).catch(showError);
+    if (route.sessionId.startsWith("temporary-") && target.sessionId !== route.sessionId) {
+      replaceTemporarySessionRoute(history, route.workspaceId, route.sessionId, target.sessionId);
+    }
+    const hostReadyStartedAt = performance.now();
+    console.info("[SESSION-LOAD] waiting for Host connection", { sessionId: target.sessionId });
+    await Promise.race([
+      adapter.ready(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("连接 Pipline 本地服务超时，请重启应用后重试。")), 15000),
+      ),
+    ]);
+    console.info("[SESSION-LOAD] initial Host connection ready", {
+      elapsedMs: Math.round(performance.now() - hostReadyStartedAt),
+      totalElapsedMs: Math.round(performance.now() - initialLoadStartedAt),
+    });
+    if (target.sessionId.startsWith("temporary-")) setStatus("connected");
 
-// Returns { agent, task } when `value` delegates to a known subagent
-// (`#claude <task>` / `/codex <task>` / …), { agent, incomplete: true } when the
-// token is there but the task is missing, or null when it's an ordinary line.
-function parseSubagentTask(value) {
-  const text = String(value ?? "").trimStart();
-  const match = SUBAGENT_LINE.exec(text);
-  if (match) {
-    const agent = knownSubagent(match[1]);
-    const task = match[2].trim();
-    if (agent && task) return { agent, task };
+    // Start disk history loading without putting it on the critical path. Pi's
+    // snapshot can render immediately; disk history fills in while it loads and
+    // is only allowed to replace a rendered snapshot when it is longer and
+    // that Pi session has not advanced in the meantime.
+    if (!target.sessionId.startsWith("temporary-")) {
+      const sessionId = target.sessionId;
+      const generation = navigationGeneration;
+      initialHistoryContext = {
+        sessionId,
+        generation,
+        startedAt: initialLoadStartedAt,
+        snapshot: null,
+        snapshotStarted: false,
+      };
+      void data
+        .readSessionMessages(target.workspaceId, target.sessionId)
+        .then(async (diskResult) => {
+          if (
+            target.sessionId !== sessionId ||
+            navigationGeneration !== generation ||
+            initialHistoryContext?.sessionId !== sessionId ||
+            initialHistoryContext.generation !== generation
+          ) {
+            return;
+          }
+          const diskMessages = diskResult?.messages ?? [];
+          diskHistoryFallback =
+            diskMessages.length > 0 ? { sessionId, messages: diskMessages } : null;
+          console.info("[SESSION-LOAD] initial disk fallback updated", {
+            sessionId,
+            messageCount: diskMessages.length,
+            roles: summarizeMessageRoles(diskMessages),
+            afterSnapshot: Boolean(initialHistoryContext.snapshot),
+          });
+          await applyInitialDiskHistory(sessionId, generation, diskMessages);
+        })
+        .catch((error) => {
+          console.warn("[SESSION-LOAD] initial disk history failed", error);
+        });
+    } else {
+      diskHistoryFallback = null;
+      initialHistoryContext = null;
+      console.info("[SESSION-LOAD] initial disk fallback skipped for temporary session", {
+        sessionId: target.sessionId,
+      });
+    }
+    // Focus the composer for every session, not just brand-new ones, so the user
+    // can start typing as soon as the page opens.
+    input.focus();
+
+    startupStage = "loading the Pi conversation";
+    const snapshotStartedAt = performance.now();
+    const snapshotTimeout = setTimeout(() => {
+      showError(new Error("Pi 对话加载超时。请检查内置 Pi 运行时是否正常启动。"));
+    }, 20000);
+    await hydrateSnapshotOnce();
+    clearTimeout(snapshotTimeout);
+    console.info("[SESSION-LOAD] initial Pi snapshot hydrated", {
+      sessionId: target.sessionId,
+      elapsedMs: Math.round(performance.now() - snapshotStartedAt),
+      totalElapsedMs: Math.round(performance.now() - initialLoadStartedAt),
+    });
+    // Deliberately not awaited (and not part of the Promise.all below): the pill
+    // probe waits for the config gateway to become ready, which must never gate
+    // session adoption. A stale probe cannot win, so a late answer is harmless.
+    refreshSshRemoteIndicator({ call: window.__picotConfigCall }).catch((error) => {
+      console.warn("[Native] Failed to probe the remote workspace binding:", error);
+    });
+    await Promise.all([
+      loadCommands()
+        .then(() => slashMenu.update())
+        .catch((error) => {
+          console.warn("[Native] Failed to load slash commands:", error);
+        }),
+      setupProjectHeader({
+        data,
+        workspaceId: target.workspaceId,
+      }).catch((error) => {
+        console.warn("[Native] Failed to load project header info:", error);
+      }),
+      Promise.resolve(
+        setupHeaderOpenApp({ data, control, workspaceId: target.workspaceId, onError: showError }),
+      ).catch((error) => {
+        console.warn("[Native] Failed to set up app launcher:", error);
+      }),
+      loadAvailableModels().catch((error) => {
+        console.warn("[Native] Failed to load available models:", error);
+      }),
+    ]);
+  } catch (error) {
+    showError(new Error(`启动阶段「${startupStage}」失败：${error?.message ?? String(error)}`));
   }
-  const tokenOnly = SUBAGENT_TOKEN_ONLY.exec(text);
-  const agent = tokenOnly && knownSubagent(tokenOnly[1]);
-  if (agent) return { agent, incomplete: true };
-  return null;
-}
 
-async function sendComposerInput({ altKey }) {
-  if (pasteOffload?.isBusy()) return;
-  const value = input.value;
-  const images = imageAttachments.getImages();
-  if (!value.trim() && images.length === 0) return;
-  // Delegate to a subagent: `#claude <task>`, `/codex <task>`, … — the rest of
-  // the line is the task; the Pi session is untouched and a card streams the run.
-  const subagentTask = parseSubagentTask(value);
-  if (subagentTask && isSshRemoteActive()) {
-    // Subagent CLIs run locally against this workspace's local checkout; a
-    // remote (SSH) workspace has none for them to work against, so refuse
-    // rather than silently starting a run pointed at an empty anchor dir.
-    messageRenderer.renderSystemMessage(t("messages.subagentUnavailableOverSsh"));
-    return;
+  function provisionalTargetFromRoute(currentRoute) {
+    return {
+      workspaceId: currentRoute.workspaceId,
+      sessionId: currentRoute.sessionId,
+      instanceId: "pending-bootstrap",
+    };
   }
-  if (subagentTask?.incomplete) {
-    const { token, label } = subagentTask.agent;
-    messageRenderer.renderSystemMessage(
-      `Add a task after #${token}, e.g. #${token} ask ${label} to review the diff.`,
+
+  async function loadBootstrapTarget(currentRoute) {
+    return resolveBootstrapTarget({
+      route: currentRoute,
+      requestTarget: requestBootstrapTarget,
+      spawnTemporarySession: spawnSessionViaHost,
+    });
+  }
+
+  async function requestBootstrapTarget(currentRoute) {
+    const query = new URLSearchParams({
+      workspaceId: currentRoute.workspaceId,
+      sessionId: currentRoute.sessionId,
+    });
+    const response = await fetch(`/v2/bootstrap?${query}`);
+    if (!response.ok) {
+      const error = new Error("This Pipline runtime is stopped or unavailable");
+      error.status = response.status;
+      throw error;
+    }
+    return response.json();
+  }
+
+  async function hydrateSnapshot() {
+    const expectedSessionId = target.sessionId;
+    const snapshot = await runtime.snapshot(expectedSessionId);
+    if (target.sessionId !== expectedSessionId) return; // stale: session switched while snapshot was in-flight
+    await hydrateFromSnapshot(snapshot);
+    configGatewayTargetReady = true;
+    resolveConfigGatewayReady();
+    signalConfigGatewayReady();
+  }
+
+  /**
+   * Returns true for errors that indicate a transient WebSocket disconnection
+   * rather than a permanent failure. These errors resolve on their own once the
+   * adapter reconnects, so they should not be surfaced as visible messages.
+   */
+  function isTransientConnectionError(error) {
+    const msg = error?.message ?? "";
+    return (
+      msg.includes("Pipline Host runtime is disconnected") ||
+      msg.includes("Runtime disconnected before the request completed") ||
+      msg.includes("Host disconnected before the")
     );
-    return;
   }
-  if (subagentTask) {
+
+  /**
+   * Hydrate the session snapshot with deduplication and automatic retry on
+   * transient connection errors.
+   *
+   * - Deduplication: if a hydration is already in progress, the new call joins
+   *   it and returns without starting a second request.
+   * - Retry: if the adapter briefly disconnects (race during project switch),
+   *   wait for it to reconnect and try once more before giving up.
+   * - Errors: non-transient failures are re-thrown so callers can decide how to
+   *   handle them; transient failures on the retry are also re-thrown.
+   */
+  async function hydrateSnapshotOnce() {
+    if (snapshotInFlight) return;
+    snapshotInFlight = true;
+    try {
+      await hydrateSnapshot();
+    } catch (error) {
+      await applyPendingInitialDiskHistory();
+      if (isTransientConnectionError(error)) {
+        console.warn(
+          "[Session] Transient connection error during snapshot; retrying after reconnect:",
+          error.message,
+        );
+        await adapter.ready();
+        await hydrateSnapshot();
+      } else {
+        throw error;
+      }
+    } finally {
+      snapshotInFlight = false;
+    }
+  }
+
+  async function loadCommands() {
+    const result = await runtime.request({ type: "get_commands" }, target);
+    commandCatalog = buildCommandCatalog({
+      nativeCommands: result.response?.data?.commands ?? [],
+    });
+    commandCompatibility.prune(commandCatalog.values());
+  }
+
+  function setupSessionSidebar() {
+    const container = document.getElementById("session-list");
+    if (!container) return;
+    const selectSession = createSessionSelectionHandler({
+      switchSession,
+      openSessionInProject,
+      onError: showError,
+    });
+    agentInboxNavSelectSession = selectSession;
+    sidebar = new SessionSidebar(container, {
+      data,
+      runtime,
+      control,
+      config,
+      getTarget: () => target,
+      onSelect: (session) => {
+        updateSuperAgentActiveState(session);
+        selectSession(session);
+      },
+      onCreateSession: createSessionViaHost,
+      onSessionsLoaded: subscribeToLiveSessions,
+      onAgentInboxSessionChange: setAgentInboxNavSession,
+    });
+
+    setupSessionSearchDialog({
+      triggerInput: document.getElementById("session-search-input"),
+      triggerClear: document.getElementById("session-search-clear"),
+      overlay: document.getElementById("session-search-overlay"),
+      dialog: document.getElementById("session-search-dialog"),
+      input: document.getElementById("session-search-dialog-input"),
+      list: document.getElementById("session-search-results"),
+      data,
+      getWorkspaceId: () => target.workspaceId,
+      getSessions: () => sidebar.sessions,
+      onSelect: (session, { query } = {}) => {
+        activeSearchQuery = query || "";
+        updateSuperAgentActiveState(session);
+        selectSession(session);
+        if (session?.id === target.sessionId) applyActiveSearchHighlight();
+      },
+      onQueryChange: (query) => {
+        activeSearchQuery = query || "";
+        applyActiveSearchHighlight({ scrollToFirst: false });
+      },
+      onError: showError,
+    });
+  }
+
+  async function switchSession(sessionId) {
+    if (!sessionId || sessionId === target.sessionId) return;
+    const generation = ++navigationGeneration;
+    const switchStartedAt = performance.now();
+    console.info("[SESSION-LOAD] session switch started", { sessionId, generation });
+
+    // Keep the current messages visible while the new session loads. The
+    // history render below replaces them atomically once the new data is ready.
+    setStatus("loading");
+    // The rebuilt turns belong to the session being left, not the one arriving.
+    taskAnalysis?.resetHistory();
+
+    // Phase 1: fire bootstrap (spawns Pi if needed) and fast disk message read
+    // in parallel. The disk read returns messages without waiting for Pi to start.
+    const workspaceId = target.workspaceId;
+    const bootstrapPromise = loadBootstrapTarget({ name: "session", workspaceId, sessionId }).then(
+      (nextTarget) => {
+        console.info("[SESSION-LOAD] switch bootstrap completed", {
+          sessionId,
+          generation,
+          elapsedMs: Math.round(performance.now() - switchStartedAt),
+        });
+        return nextTarget;
+      },
+    );
+    const [nextTarget, diskLoad] = await Promise.all([
+      bootstrapPromise,
+      data
+        .readSessionMessages(workspaceId, sessionId)
+        .then((result) => {
+          if (generation !== navigationGeneration) return { result, hadInFlightPrompt: false };
+          const diskMessages = result?.messages ?? [];
+          diskHistoryFallback =
+            diskMessages.length > 0 ? { sessionId, messages: diskMessages } : null;
+          console.info("[SESSION-LOAD] switch disk fallback updated", {
+            sessionId,
+            messageCount: diskMessages.length,
+            roles: summarizeMessageRoles(diskMessages),
+          });
+          const renderStartedAt = performance.now();
+          const hadInFlightPrompt = renderHistory(diskMessages);
+          convNav.rebuild();
+          console.info("[SESSION-LOAD] switch disk history rendered", {
+            sessionId,
+            generation,
+            messageCount: diskMessages.length,
+            elapsedMs: Math.round(performance.now() - renderStartedAt),
+            totalElapsedMs: Math.round(performance.now() - switchStartedAt),
+          });
+          return { result, hadInFlightPrompt };
+        })
+        .catch((error) => {
+          console.warn("[SESSION-LOAD] switch disk history failed", error);
+          return { result: null, hadInFlightPrompt: false };
+        }),
+    ]);
+    if (generation !== navigationGeneration) return;
+
+    await adoptTarget(nextTarget, { updateRoute: false });
+    history.pushState(
+      null,
+      "",
+      appRoutePath({
+        name: "session",
+        workspaceId: target.workspaceId,
+        sessionId: target.sessionId,
+      }),
+    );
+    // Authoritative re-check: whatever the caller passed to
+    // updateSuperAgentActiveState() before invoking switchSession() may be
+    // stale or skipped entirely (new sessions, sa-view-session routing, etc).
+    // Recompute from the now-adopted target so a leftover `super-agent-active`
+    // class can never survive a navigation and silently disable the header's
+    // drag region (-webkit-app-region: drag) for the rest of the session.
+    const adoptedSession =
+      sidebar?.sessions?.find((session) => session.id === target.sessionId) ?? null;
+    updateSuperAgentActiveState(adoptedSession);
+
+    // Phase 2: disk history was rendered by the parallel read as soon as it
+    // arrived, without waiting for the Pi process to finish bootstrapping.
+    setStatus("connected");
+    if (diskLoad.hadInFlightPrompt) {
+      await extensionUi.flushForegroundQueue();
+    }
+
+    // Phase 3: get the authoritative snapshot from Pi (Pi may still be starting).
+    // When it arrives, re-render with the live state (model, thinking level,
+    // lifecycle) and the authoritative message tree (handles branched sessions).
+    try {
+      const snapshotStartedAt = performance.now();
+      const snapshot = await runtime.snapshot(target.sessionId);
+      if (generation !== navigationGeneration) return;
+      await hydrateFromSnapshot(snapshot);
+      console.info("[SESSION-LOAD] switch Pi snapshot hydrated", {
+        sessionId: target.sessionId,
+        generation,
+        elapsedMs: Math.round(performance.now() - snapshotStartedAt),
+        totalElapsedMs: Math.round(performance.now() - switchStartedAt),
+      });
+    } catch (error) {
+      if (generation !== navigationGeneration) return;
+      // Pi snapshot failed but disk messages are already showing — degrade
+      // gracefully rather than surfacing an error over a readable history.
+      console.warn("[switchSession] Pi snapshot failed, showing disk history:", error);
+      setStatus("connected");
+      // Still flush any queued extension prompts even when snapshot fails.
+      await extensionUi.flushForegroundQueue();
+    }
+  }
+
+  async function openSessionInProject(session) {
+    const invoke = globalThis.__TAURI__?.core?.invoke;
+    if (!invoke) {
+      // LAN/mobile: no Tauri window mechanism — resolve the target project's
+      // workspace id over HTTP and navigate the current tab to its session
+      // route so the page re-bootstraps against that workspace.
+      await openSessionInProjectViaHost(session);
+      return;
+    }
+    await invoke("open_session_in_project", {
+      projectPath: session.projectPath,
+      sessionId: session.id,
+    });
+  }
+
+  function subscribeToLiveSessions(sessions) {
+    syncSessionInfo();
+    for (const session of sessions ?? []) {
+      const liveTarget = session?.target;
+      if (liveTarget?.workspaceId && liveTarget?.sessionId && liveTarget?.instanceId) {
+        adapter.subscribeTarget(liveTarget);
+      }
+    }
+    updateSuperAgentActiveState(resolveSuperAgentActiveSession(sessions, target.sessionId));
+    handleSuperAgentStartupSessions(sessions).catch(showError);
+  }
+
+  function updateSuperAgentActiveState(session = null, { openRuntimePanel = false } = {}) {
+    const active = isSuperAgentSessionSummary(session);
+    document.body.classList.toggle("super-agent-active", active);
+    document.getElementById("super-agent-chat-header")?.classList.toggle("hidden", !active);
+    updateAgentInboxNavActive();
+
+    // Selecting/restoring the Agent Inbox session should not automatically open
+    // the task runtime panel: on narrow windows it can squeeze the chat column to
+    // an unreadable sliver. Explicit runtime opens (`sa-open-runtime`) opt in.
+    if (active && !openRuntimePanel) {
+      document.querySelector("super-agent-runtime")?.classList.add("collapsed");
+      console.info("[SESSION-LOAD] Agent Inbox active; runtime panel kept collapsed", {
+        sessionId: target.sessionId,
+      });
+    }
+  }
+
+  function setAgentInboxNavSession(session) {
+    agentInboxNavSession = session;
+    const button = document.getElementById("sidebar-agent-inbox-btn");
+    button?.classList.toggle("hidden", !session);
+    updateAgentInboxNavActive();
+  }
+
+  function updateAgentInboxNavActive() {
+    const button = document.getElementById("sidebar-agent-inbox-btn");
+    button?.classList.toggle("active", document.body.classList.contains("super-agent-active"));
+  }
+
+  function openAgentInboxNav({ openRuntimePanel = false } = {}) {
+    if (!agentInboxNavSession) return;
+    updateSuperAgentActiveState(agentInboxNavSession, { openRuntimePanel });
+    const selected = agentInboxNavSelectSession?.(agentInboxNavSession);
+    if (selected && typeof selected.catch === "function") selected.catch(showError);
+  }
+
+  document.getElementById("sidebar-agent-inbox-btn")?.addEventListener("click", () => {
+    openAgentInboxNav();
+  });
+
+  document.addEventListener("sa-open-agent-inbox", (event) => {
+    openAgentInboxNav({ openRuntimePanel: event.detail?.openRuntimePanel === true });
+  });
+
+  function insertTaskPrompt(task) {
+    if (!task) return;
+    const draft = input.value.trim();
+    input.value = `${buildTaskComposerPrompt(task)}${draft ? `\n${draft}` : ""}`;
+    composerAutoResize.sync();
+    input.focus();
+  }
+
+  document.addEventListener("sa-prompt-task", (event) => insertTaskPrompt(event.detail));
+  document.addEventListener("sa-view-session", (event) => {
+    const task = event.detail;
+    const childSessionId = task?.dispatch?.childSessionId;
+    if (!childSessionId) return;
+    // Dispatched tasks run inside their target project's own window/port, so a
+    // plain in-window switchSession() can't reach them. Route to the owning
+    // project's session (opens/focuses that project window) when we know the
+    // target project; fall back to an in-window switch for same-project tasks.
+    const projectPath = task?.dispatch?.targetProject || task?.targetProject;
+    if (projectPath) {
+      openSessionInProject({ id: childSessionId, projectPath }).catch(showError);
+    } else {
+      // Leaving the Agent Inbox session in-window: close its task panel so it
+      // doesn't stay pinned over the session we're navigating to.
+      updateSuperAgentActiveState(null);
+      switchSession(childSessionId).catch(showError);
+    }
+  });
+
+  document.addEventListener("sa-dispatch", (event) => {
+    const task = event.detail;
+    if (!task) return;
+    dispatchSuperAgentTaskNative({
+      task,
+      resolveWorkspace: (projectPath) => resolveWorkspaceViaHost(projectPath),
+      spawnSession: (workspaceId) => spawnSessionViaHost(workspaceId),
+      sendPrompt: (dispatchTarget, message) =>
+        runtime.request({ type: "prompt", message }, dispatchTarget, {
+          idempotencyKey: randomId(),
+        }),
+      resolveBoundTarget: async (dispatchTarget) => {
+        const snapshot = await runtime.snapshot(dispatchTarget.sessionId);
+        return snapshot.target;
+      },
+      updateTask: (taskId, updater) =>
+        updateSuperAgentTask(window.__picotConfigCall, taskId, updater),
+      registerDispatchTarget: (dispatchTarget, taskId) => {
+        dispatchedInstances.set(dispatchTarget.instanceId, taskId);
+        adapter.subscribeTarget?.(dispatchTarget);
+      },
+    }).catch(showError);
+  });
+
+  async function handleSuperAgentStartupSessions(sessions) {
+    const action = selectSuperAgentStartupAction({
+      alreadyLaunched: wasSuperAgentLaunched(),
+      enabled: isSuperAgentEnabled(),
+      sessions,
+      currentSessionId: target.sessionId,
+    });
+    if (action.type === "ensure") {
+      await ensureSuperAgentStartupSession();
+      return;
+    }
+    if (action.type === "launch") {
+      await openSuperAgentSessionOnce(action.session);
+    }
+  }
+
+  async function ensureSuperAgentStartupSession({ reloadAfterEnsure = true } = {}) {
+    const invoke = globalThis.__TAURI__?.core?.invoke;
+    if (!invoke || !isSuperAgentEnabled()) return;
+    if (!superAgentEnsureInFlight) {
+      superAgentEnsureInFlight = invoke("ensure_agent_inbox_session").finally(() => {
+        superAgentEnsureInFlight = null;
+      });
+    }
+    await superAgentEnsureInFlight;
+    if (reloadAfterEnsure) await sidebar?.load({ quiet: true });
+  }
+
+  async function openSuperAgentSessionOnce(session) {
+    const invoke = globalThis.__TAURI__?.core?.invoke;
+    if (!invoke || !session) return;
+    markSuperAgentLaunched();
+    try {
+      await invoke("open_session_in_project", {
+        projectPath: session.projectPath,
+        sessionId: session.id,
+      });
+    } catch (error) {
+      console.warn("[SuperAgent] Failed to auto-launch Agent Inbox:", error);
+    }
+  }
+
+  async function handleBackgroundRuntimeEvent(frame) {
+    const sessionId = frame.target?.sessionId;
+    switch (frame.event?.type) {
+      case "agent_start":
+        sidebar?.setStreaming(sessionId, true);
+        sidebar?.markUnread(sessionId);
+        break;
+      case "agent_settled":
+        sidebar?.setStreaming(sessionId, false);
+        sidebar?.markUnread(sessionId);
+        break;
+      case "agent_end":
+        sidebar?.markUnread(sessionId);
+        break;
+      case "message_end":
+        if (frame.event.message?.role === "assistant") {
+          sidebar?.markUnread(sessionId);
+        }
+        break;
+      case "session_bound":
+        await bindDispatchedChildSession(frame.target?.instanceId, frame.event?.sessionId);
+        break;
+      case "session_info_changed":
+        sidebar?.setSessionName(sessionId, frame.event.name);
+        break;
+    }
+  }
+
+  // When a dispatched child runtime binds its persisted session id, upgrade the
+  // owning Agent Inbox task so "View Session ->" navigates to the real session.
+  async function bindDispatchedChildSession(instanceId, boundSessionId) {
+    if (!instanceId || !boundSessionId) return;
+    const taskId = dispatchedInstances.get(instanceId);
+    if (!taskId) return;
+    dispatchedInstances.delete(instanceId);
+    await updateSuperAgentTask(window.__picotConfigCall, taskId, (task) =>
+      markTaskChildSessionBound(task, { childSessionId: boundSessionId }),
+    ).catch((error) => console.warn("[SuperAgent] failed to bind child session:", error));
+  }
+
+  function setupSidebarToggle() {
+    const sidebarEl = document.getElementById("sidebar");
+    const toggleBtn = document.getElementById("sidebar-toggle");
+    const overlay = document.getElementById("sidebar-overlay");
+    if (!sidebarEl || !toggleBtn) return;
+
+    const isMobile = () => window.innerWidth <= 768;
+
+    const setCollapsed = (collapsed) => {
+      sidebarEl.classList.toggle("collapsed", collapsed);
+      overlay?.classList.toggle("visible", !collapsed && isMobile());
+    };
+
+    // Auto-collapse on mobile so sidebar doesn't block content on first load
+    if (isMobile()) {
+      setCollapsed(true);
+    }
+
+    toggleBtn.addEventListener("click", () => {
+      setCollapsed(!sidebarEl.classList.contains("collapsed"));
+    });
+    overlay?.addEventListener("click", () => setCollapsed(true));
+    overlay?.addEventListener("touchend", (e) => {
+      e.preventDefault();
+      setCollapsed(true);
+    });
+
+    setupResizablePanel(sidebarEl, {
+      storageKey: "pi-studio-sidebar-width",
+      defaultWidth: 272,
+      minWidth: 200,
+      maxWidth: 480,
+      side: "left",
+    });
+
+    // File/Git sidebar — right-edge panel, drag handle on the left side.
+    // Uses the native --panel-width CSS variable (same as super-agent runtime
+    // panel). Width persists to localStorage under a separate key.
+    const fileSidebarEl = document.getElementById("file-sidebar");
+    setupResizablePanel(fileSidebarEl, {
+      storageKey: "pi-studio-file-sidebar-width",
+      defaultWidth: 260,
+      minWidth: 200,
+      maxWidth: 500,
+      side: "right",
+    });
+  }
+
+  function setupFilePreviewPanel() {
+    const panel = document.getElementById("file-preview-panel");
+    const resizer = document.getElementById("file-preview-resizer");
+    const tabBar = document.getElementById("file-preview-tabs");
+    const content = document.getElementById("file-preview-content");
+    const mainContainer = document.querySelector(".main");
+    if (!panel || !resizer || !tabBar || !content || !mainContainer) return null;
+
+    const fileApi = createNativeFilePreviewApi({ workspaceId: () => target.workspaceId });
+    return new FilePreviewPanel({
+      panel,
+      resizer,
+      tabBar,
+      content,
+      mainContainer,
+      fileApi,
+      onOpenDesktop: (relativePath) => openWorkspaceRelativePath(relativePath).catch(showError),
+    });
+  }
+
+  function createNativeFilePreviewApi({ workspaceId }) {
+    const buildUrl = (path, endpoint) => {
+      const url = new URL(endpoint, window.location.origin);
+      url.searchParams.set("workspaceId", workspaceId());
+      url.searchParams.set("path", path);
+      return url;
+    };
+    return {
+      readFileContent(path, { signal } = {}) {
+        return fetch(buildUrl(path, "/api/files/content"), { signal });
+      },
+      writeFileContent({ path, content, expectedMtimeMs, force }) {
+        return fetch("/api/files/content", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspaceId: workspaceId(),
+            path,
+            content,
+            expectedMtimeMs,
+            force,
+          }),
+        });
+      },
+      rawUrlForPath(path) {
+        return buildUrl(path, "/api/files/raw").toString();
+      },
+      readGitDiff(path, { signal } = {}) {
+        return fetch(buildUrl(path, "/api/git/diff"), { signal });
+      },
+      readGitStat({ signal } = {}) {
+        const url = new URL("/api/git/stat", origin);
+        url.searchParams.set("workspaceId", target.workspaceId);
+        return fetch(url.toString(), { signal });
+      },
+    };
+  }
+
+  async function openWorkspaceRelativePath(relativePath = "") {
+    const info = await data.workspaceInfo(target.workspaceId);
+    const root = info?.path ?? "";
+    const normalizedRelative = String(relativePath || "").replace(/^\/+/, "");
+    const absolutePath = normalizedRelative ? `${root}/${normalizedRelative}` : root;
+    await control.openInApp(absolutePath);
+  }
+
+  function setupFileBrowser() {
+    const sidebar = document.getElementById("file-sidebar");
+    const fileList = document.getElementById("file-list");
+    const pathEl = document.getElementById("file-sidebar-path");
+    if (!sidebar || !fileList || !pathEl) return;
+
+    const upBtn = document.getElementById("file-sidebar-up");
+    if (upBtn) upBtn.disabled = true; // disabled until we've navigated into a subdir
+
+    const refreshBtn = document.getElementById("file-sidebar-refresh");
+    const toggleHiddenBtn = document.getElementById("file-sidebar-toggle-hidden");
+
+    fileBrowser = new NativeFileBrowser(fileList, pathEl, data, target.workspaceId, {
+      showViewSwitch: false,
+      onFileOpen(entry) {
+        openWorkspaceRelativePath(entry.relativePath).catch(showError);
+      },
+      onFileSelect(entry) {
+        filePreviewPanel?.openFile(entry.relativePath, {
+          fileName: entry.name,
+          size: entry.size,
+          mode: entry.mode,
+        });
+      },
+      onMention(entry) {
+        if (!atFileMention) return;
+        const isDirectory = entry.kind === "directory" || entry.isDirectory;
+        const value = buildAtMentionValue(entry.relativePath, isDirectory);
+        input.focus();
+        atFileMention.insert(value, isDirectory);
+        composerAutoResize.sync();
+      },
+      onPathChange(path) {
+        // Enable the up button only when we're inside a subdirectory.
+        if (upBtn) upBtn.disabled = path === "";
+      },
+      onShowHiddenChange(showHidden) {
+        toggleHiddenBtn?.setAttribute("aria-pressed", String(showHidden));
+      },
+    });
+
+    refreshBtn?.addEventListener("click", () => fileBrowser?.refresh()?.catch(showError));
+    toggleHiddenBtn?.addEventListener("click", () => {
+      fileBrowser?.setShowHidden(!fileBrowser.showHidden)?.catch(showError);
+    });
+
+    document.getElementById("file-sidebar-finder")?.addEventListener("click", async () => {
+      try {
+        const current = fileBrowser.currentPath ?? "";
+        await openWorkspaceRelativePath(current);
+      } catch (error) {
+        showError(error);
+      }
+    });
+
+    const toggleBtn = document.getElementById("file-sidebar-toggle");
+    toggleBtn?.addEventListener("click", openFilesPanel);
+    if (toggleBtn) {
+      const shortcutLabel = isMacOS() ? "⌘B" : "Ctrl+B";
+      const baseTitle = toggleBtn.title || "Files";
+      toggleBtn.title = `${baseTitle} (${shortcutLabel})`;
+    }
+    document.addEventListener("keydown", (event) => {
+      if (!isFilePanelShortcut(event)) return;
+      event.preventDefault();
+      openFilesPanel();
+    });
+    document.getElementById("file-sidebar-close")?.addEventListener("click", () => {
+      sidebar.classList.add("collapsed");
+    });
+    upBtn?.addEventListener("click", () => {
+      const parent = fileBrowser.getParentPath();
+      if (parent !== null) fileBrowser.load(parent).catch(showError);
+    });
+
+    const diffSidebar = document.getElementById("diff-sidebar");
+    const diffToggle = document.getElementById("diff-sidebar-toggle");
+    diffToggle?.addEventListener("click", openGitPanel);
+    document.getElementById("diff-sidebar-close")?.addEventListener("click", () => {
+      diffSidebar.classList.add("collapsed");
+    });
+  }
+
+  function knownSubagent(token) {
+    return SUBAGENTS.find((entry) => entry.token === token || entry.id === token) ?? null;
+  }
+
+  // Returns { agent, task } when `value` delegates to a known subagent
+  // (`#claude <task>` / `/codex <task>` / …), { agent, incomplete: true } when the
+  // token is there but the task is missing, or null when it's an ordinary line.
+  function parseSubagentTask(value) {
+    const text = String(value ?? "").trimStart();
+    const match = SUBAGENT_LINE.exec(text);
+    if (match) {
+      const agent = knownSubagent(match[1]);
+      const task = match[2].trim();
+      if (agent && task) return { agent, task };
+    }
+    const tokenOnly = SUBAGENT_TOKEN_ONLY.exec(text);
+    const agent = tokenOnly && knownSubagent(tokenOnly[1]);
+    if (agent) return { agent, incomplete: true };
+    return null;
+  }
+
+  async function sendComposerInput({ altKey }) {
+    if (pasteOffload?.isBusy()) return;
+    const value = input.value;
+    const images = imageAttachments.getImages();
+    if (!value.trim() && images.length === 0) return;
+    // Delegate to a subagent: `#claude <task>`, `/codex <task>`, … — the rest of
+    // the line is the task; the Pi session is untouched and a card streams the run.
+    const subagentTask = parseSubagentTask(value);
+    if (subagentTask && isSshRemoteActive()) {
+      // Subagent CLIs run locally against this workspace's local checkout; a
+      // remote (SSH) workspace has none for them to work against, so refuse
+      // rather than silently starting a run pointed at an empty anchor dir.
+      messageRenderer.renderSystemMessage(t("messages.subagentUnavailableOverSsh"));
+      return;
+    }
+    if (subagentTask?.incomplete) {
+      const { token, label } = subagentTask.agent;
+      messageRenderer.renderSystemMessage(
+        `Add a task after #${token}, e.g. #${token} ask ${label} to review the diff.`,
+      );
+      return;
+    }
+    if (subagentTask) {
+      input.value = "";
+      input.scrollTop = 0;
+      composerAutoResize.sync();
+      imageAttachments.clear();
+      subagentRuns.start(subagentTask.task, subagentTask.agent).catch(showError);
+      return;
+    }
+    const intent = resolveComposerInput(value, commandCatalog, {
+      working: store.lifecycle === "working",
+      altKey,
+      images,
+    });
+    if (intent.kind === "rejected") throw new Error(intent.reason);
+    if (intent.kind === "runtime" && intent.command.type === "prompt" && !value.startsWith("/"))
+      await ensureWorkflowModeForPrompt(value);
+    if (intent.kind === "builtin") {
+      runBuiltin(intent.action);
+      return;
+    }
+    // This project is already known to be unreachable (some session of it hit
+    // this before, at session start or a previous send) — don't make the user
+    // sit through another probe just to be told the same thing again. History
+    // stays readable; only sending is blocked, and only until the dialog below
+    // reports a successful reconnect.
+    if (isProjectDisconnected(target.workspaceId)) {
+      messageRenderer.renderSystemMessage(t("messages.sshProjectDisconnected"));
+      void openReconnectDialog({
+        call: window.__picotConfigCall,
+        dialog: remoteWorkspaceDialog,
+        reauthMessage: () => t("remoteWorkspace.reauthRequired"),
+        projectPath: target.workspaceId,
+      });
+      return;
+    }
     input.value = "";
     input.scrollTop = 0;
     composerAutoResize.sync();
     imageAttachments.clear();
-    subagentRuns.start(subagentTask.task, subagentTask.agent).catch(showError);
-    return;
-  }
-  const intent = resolveComposerInput(value, commandCatalog, {
-    working: store.lifecycle === "working",
-    altKey,
-    images,
-  });
-  if (intent.kind === "rejected") throw new Error(intent.reason);
-  if (intent.kind === "builtin") {
-    runBuiltin(intent.action);
-    return;
-  }
-  // This project is already known to be unreachable (some session of it hit
-  // this before, at session start or a previous send) — don't make the user
-  // sit through another probe just to be told the same thing again. History
-  // stays readable; only sending is blocked, and only until the dialog below
-  // reports a successful reconnect.
-  if (isProjectDisconnected(target.workspaceId)) {
-    messageRenderer.renderSystemMessage(t("messages.sshProjectDisconnected"));
-    void openReconnectDialog({
-      call: window.__picotConfigCall,
-      dialog: remoteWorkspaceDialog,
-      reauthMessage: () => t("remoteWorkspace.reauthRequired"),
-      projectPath: target.workspaceId,
-    });
-    return;
-  }
-  input.value = "";
-  input.scrollTop = 0;
-  composerAutoResize.sync();
-  imageAttachments.clear();
-  // Open the attribution window before the command runs: an extension command
-  // executes immediately over RPC, so a capability report can arrive while the
-  // request is still in flight.
-  commandCompatibility.beginCommand(matchCatalogCommand(value, commandCatalog)?.command);
-  try {
-    await runtime.request(intent.command, target, { idempotencyKey: randomId() });
-  } catch (error) {
-    input.value = value;
-    composerAutoResize.sync();
-    imageAttachments.setImages(images);
-    pendingForkSwitchCheck = null;
-    throw error;
-  }
-}
-
-function runBuiltin(action) {
-  if (action === "open_settings") document.getElementById("settings-btn")?.click();
-  else if (action === "open_tree") document.dispatchEvent(new CustomEvent("picot:open-tree"));
-  else if (action === "show_help") {
-    messageRenderer.renderSystemMessage(
-      "Enter sends a prompt; while working Enter steers and Alt+Enter queues a follow-up. Use // for a literal slash.",
-    );
-  }
-}
-
-/** Mount this turn's written-file chips under the final assistant message. */
-function mountTurnFileChips() {
-  if (!messagesElement || turnWrittenPaths.length === 0) return;
-  const writes = turnWrittenPaths.map((filePath) => ({ filePath }));
-  turnWrittenPaths = [];
-  const row = renderTurnFileChips(writes);
-  if (!row) return;
-  // Chip clicks bubble a previewfile event to the #messages listener, which
-  // routes through filePreviewFollow.openPath like tool-card references.
-  const lastAssistant = [...messagesElement.querySelectorAll(".message.assistant")].pop();
-  if (lastAssistant && lastAssistant.parentElement === messagesElement) {
-    lastAssistant.insertAdjacentElement("afterend", row);
-    return;
-  }
-  messagesElement.appendChild(row);
-}
-
-async function handleRuntimeEvent(event) {
-  switch (event.type) {
-    case "agent_start":
-      lastShownProviderError = null;
-      assistantMessageStream.reset();
-      // Analysing a turn mid-flight would report its own open spans as stuck,
-      // so the analysis section leaves it out until this turn settles.
-      taskAnalysis?.setStreaming(true);
-      setStatus("working");
-      contextUsage.setWorking(true);
-      sidebar?.setStreaming(target.sessionId, true);
-      turnWrittenPaths = [];
-      break;
-    case "agent_settled":
-      settleForegroundAgent(event);
-      // Only consume the pending check if it was armed for *this* target — a
-      // session switch in between arm and settle invalidates it, rather than
-      // letting it misfire on an unrelated session's own (ordinary,
-      // fork-unrelated) session-id change.
-      if (
-        pendingForkSwitchCheck &&
-        pendingForkSwitchCheck.workspaceId === target.workspaceId &&
-        pendingForkSwitchCheck.sessionId === target.sessionId &&
-        pendingForkSwitchCheck.instanceId === target.instanceId
-      ) {
-        pendingForkSwitchCheck = null;
-        void checkAndAdoptForkedSession();
-      }
-      break;
-    case "agent_end":
-      settleForegroundAgent(event);
-      break;
-    case "session_info_changed":
-      sidebar?.setSessionName(target.sessionId, event.name);
-      break;
-    case "compaction_start":
-      compactCoordinator.started();
-      break;
-    case "compaction_end": {
-      const succeeded =
-        !event.errorMessage && !event.error && !event.aborted && event.result !== null;
-      compactCoordinator.ended({
-        success: succeeded,
-        error: event.errorMessage || event.error,
-      });
-      if (!succeeded) {
-        const error = event.errorMessage || event.error;
-        if (error) showError(new Error(error));
-      } else {
-        // Pi has replaced its context; the old aggregate is stale. Re-hydrate
-        // from the authoritative get_session_stats.
-        await hydrateSnapshotOnce();
-        hydrateHeaderSessionStats();
-      }
-      break;
+    // Open the attribution window before the command runs: an extension command
+    // executes immediately over RPC, so a capability report can arrive while the
+    // request is still in flight.
+    commandCompatibility.beginCommand(matchCatalogCommand(value, commandCatalog)?.command);
+    try {
+      await runtime.request(intent.command, target, { idempotencyKey: randomId() });
+    } catch (error) {
+      input.value = value;
+      composerAutoResize.sync();
+      imageAttachments.setImages(images);
+      pendingForkSwitchCheck = null;
+      throw error;
     }
-    case "message_start":
-      if (event.message?.role === "user") {
-        messageRenderer.renderUserMessage(event.message);
-        upsertActiveSessionFromUserMessage(event.message);
-      } else if (event.message?.role === "assistant") {
-        const message = assistantMessageStream.start(event.message);
-        showLiveProcessIndicator();
-        streamingStartedAt = Date.now();
-        streamingElement = messageRenderer.renderAssistantMessage(message, true);
-      }
-      break;
-    case "message_update": {
-      // Pi's current RPC protocol emits deltas in assistantMessageEvent and
-      // intentionally omits the former cumulative event.message snapshot.
-      const message = assistantMessageStream.update(event);
-      if (!streamingElement) {
-        showLiveProcessIndicator();
-        streamingStartedAt = Date.now();
-        streamingElement = messageRenderer.renderAssistantMessage(message, true);
-      } else {
-        messageRenderer.updateStreamingMessage(streamingElement, message.content);
-      }
-      break;
+  }
+
+  function runBuiltin(action) {
+    if (action === "open_settings") document.getElementById("settings-btn")?.click();
+    else if (action === "open_tree") document.dispatchEvent(new CustomEvent("picot:open-tree"));
+    else if (action === "show_help") {
+      messageRenderer.renderSystemMessage(
+        "Enter sends a prompt; while working Enter steers and Alt+Enter queues a follow-up. Use // for a literal slash.",
+      );
     }
-    case "message_end":
-      if (event.message?.role === "assistant") {
-        const message = assistantMessageStream.finish(event.message);
-        if (streamingElement) {
-          const durationMs = streamingStartedAt != null ? Date.now() - streamingStartedAt : null;
-          messageRenderer.updateStreamingMessage(streamingElement, message.content);
-          messageRenderer.finalizeStreamingMessage(
-            streamingElement,
-            message.usage ?? null,
-            "",
-            durationMs,
-          );
-          contextUsage.setUsage(message.usage ?? null, currentModelContextWindow);
-          setSessionCost(sessionTotalCost + (message.usage?.cost?.total ?? 0));
-          headerStatusBar?.applyLiveUsage?.(message.usage ?? null);
-          streamingElement = null;
-          streamingStartedAt = null;
-          convNav.notifyNewMessage();
+  }
+
+  /** Mount this turn's written-file chips under the final assistant message. */
+  function mountTurnFileChips() {
+    if (!messagesElement || turnWrittenPaths.length === 0) return;
+    const writes = turnWrittenPaths.map((filePath) => ({ filePath }));
+    turnWrittenPaths = [];
+    const row = renderTurnFileChips(writes);
+    if (!row) return;
+    // Chip clicks bubble a previewfile event to the #messages listener, which
+    // routes through filePreviewFollow.openPath like tool-card references.
+    const lastAssistant = [...messagesElement.querySelectorAll(".message.assistant")].pop();
+    if (lastAssistant && lastAssistant.parentElement === messagesElement) {
+      lastAssistant.insertAdjacentElement("afterend", row);
+      return;
+    }
+    messagesElement.appendChild(row);
+  }
+
+  async function handleRuntimeEvent(event) {
+    switch (event.type) {
+      case "agent_start":
+        lastShownProviderError = null;
+        assistantMessageStream.reset();
+        // Analysing a turn mid-flight would report its own open spans as stuck,
+        // so the analysis section leaves it out until this turn settles.
+        taskAnalysis?.setStreaming(true);
+        setStatus("working");
+        contextUsage.setWorking(true);
+        sidebar?.setStreaming(target.sessionId, true);
+        turnWrittenPaths = [];
+        break;
+      case "agent_settled":
+        settleForegroundAgent(event);
+        // Only consume the pending check if it was armed for *this* target — a
+        // session switch in between arm and settle invalidates it, rather than
+        // letting it misfire on an unrelated session's own (ordinary,
+        // fork-unrelated) session-id change.
+        if (
+          pendingForkSwitchCheck &&
+          pendingForkSwitchCheck.workspaceId === target.workspaceId &&
+          pendingForkSwitchCheck.sessionId === target.sessionId &&
+          pendingForkSwitchCheck.instanceId === target.instanceId
+        ) {
+          pendingForkSwitchCheck = null;
+          void checkAndAdoptForkedSession();
         }
-        showProviderErrorIfNeeded(event);
-        if (infoSidebar && !infoSidebar.classList.contains("collapsed")) {
-          void refreshInfoPanel();
+        break;
+      case "agent_end":
+        // agent_end closes one low-level Pi run. Retries, compaction retries, or
+        // queued prompts may still follow; agent_settled is the session-level
+        // signal that the composer and workflow runner can safely unlock.
+        if (!event.willRetry) showProviderErrorIfNeeded(event);
+        break;
+      case "session_info_changed":
+        sidebar?.setSessionName(target.sessionId, event.name);
+        break;
+      case "compaction_start":
+        compactCoordinator.started();
+        break;
+      case "compaction_end": {
+        const succeeded =
+          !event.errorMessage && !event.error && !event.aborted && event.result !== null;
+        compactCoordinator.ended({
+          success: succeeded,
+          error: event.errorMessage || event.error,
+        });
+        if (!succeeded) {
+          const error = event.errorMessage || event.error;
+          if (error) showError(new Error(error));
+        } else {
+          // Pi has replaced its context; the old aggregate is stale. Re-hydrate
+          // from the authoritative get_session_stats.
+          await hydrateSnapshotOnce();
+          hydrateHeaderSessionStats();
         }
-      } else if (event.message?.role === "user") {
-        // The persisted user turn is a new tree node; refresh the open Info
-        // panel so it appears before the assistant reply finishes.
-        if (infoSidebar && !infoSidebar.classList.contains("collapsed")) {
-          void refreshInfoPanel();
-        }
-      }
-      break;
-    case "tool_execution_start":
-      toolRenderer.createToolCard({ ...event, status: "pending" });
-      filePreviewFollow.onToolStart(event);
-      break;
-    case "tool_execution_update":
-      toolRenderer.updateToolCard({
-        ...event,
-        status: "streaming",
-        output: textFromResult(event.partialResult),
-      });
-      break;
-    case "tool_execution_end":
-      toolRenderer.finalizeToolCard(event.toolCallId, event.result, event.isError);
-      if (event.toolName === "todo" && !event.isError)
-        todoMirrorPanel.applyToolResult(event.result);
-      void filePreviewFollow.onToolEnd(event).catch(showError);
-      break;
-    case "extension_ui_request":
-      await extensionUi.handle(target, event);
-      break;
-    case "extension_error":
-      showError(new Error(event.error || "Extension failed"));
-      break;
-    case "session_bound":
-      await adoptTarget({ ...target, sessionId: event.sessionId });
-      upsertActiveSessionFromUserMessage();
-      await hydrateSnapshotOnce();
-      sidebar?.load({ quiet: true }).catch(showError);
-      break;
-  }
-}
-
-function upsertActiveSessionFromUserMessage(message = null) {
-  const firstMessage = message
-    ? textFromMessageContent(message.content)
-    : pendingBoundSessionFirstMessage;
-  if (target?.sessionId?.startsWith("temporary-")) {
-    pendingBoundSessionFirstMessage = firstMessage;
-    return;
-  }
-  if (!target?.sessionId) return;
-  sidebar?.upsertSession({
-    id: target.sessionId,
-    firstMessage,
-    timestamp: new Date().toISOString(),
-    modifiedAtMs: Date.now(),
-    isCurrentWorkspace: true,
-  });
-  pendingBoundSessionFirstMessage = null;
-}
-
-async function adoptTarget(nextTarget, { updateRoute = true, profileOverride = undefined } = {}) {
-  const previousTarget = target;
-  const effectiveProfileOverride =
-    profileOverride === undefined
-      ? profileForSnapshotRebind(
-          previousTarget,
-          nextTarget,
-          pendingModelRestore,
-          { provider: currentModelProvider, id: currentModelId },
-          currentThinkingLevel,
-        )
-      : profileOverride;
-  const sessionChanged = nextTarget.sessionId !== previousTarget.sessionId;
-  const targetChanged =
-    sessionChanged ||
-    nextTarget.workspaceId !== previousTarget.workspaceId ||
-    nextTarget.instanceId !== previousTarget.instanceId;
-  if (!targetChanged) return;
-  configGatewayTargetReady = false;
-  if (updateRoute && sessionChanged) {
-    replaceTemporarySessionRoute(
-      history,
-      previousTarget.workspaceId,
-      previousTarget.sessionId,
-      nextTarget.sessionId,
-    );
-  }
-  target = nextTarget;
-  store = createSessionStore(target);
-  // Reset the in-flight guard whenever the target changes so a new session
-  // is never blocked from hydrating by a stale flag from the previous one.
-  snapshotInFlight = false;
-  renderQueuedMessages(queuedMessages, store.queue);
-  todoMirrorPanel.clear();
-  // Widgets and any open custom-UI panel belong to the session that published
-  // them; carrying them across a switch would show another session's state.
-  extensionWidgets.clear();
-  customUiPanel.close({ notifyExtension: false });
-  filePreviewFollow.clear();
-  assistantMessageStream.reset();
-  streamingElement = null;
-  streamingStartedAt = null;
-  liveProcessGroup = null;
-  adapter.subscribeTarget(target);
-  sidebar?.setActive(target.sessionId);
-  // When the workspace changes, the cached session list is stale — reload it
-  // so the sidebar reflects the new project's sessions. Same-workspace
-  // session switches skip this (the list is already current). Without this
-  // the sidebar never populated after bootstrap, because the initial
-  // sidebar.load() at startup runs before the workspace is resolved.
-  if (nextTarget.workspaceId !== previousTarget.workspaceId) {
-    sidebar?.load().catch(showError);
-    // Header pills must follow the workspace, not the git panel: re-probe on
-    // every workspace entry so a non-Git workspace hides the git pill without
-    // opening the panel, and switching back un-hides it (v3 49564e0).
-    setupProjectHeader({
-      data,
-      workspaceId: nextTarget.workspaceId,
-    }).catch((error) => {
-      console.warn("[Native] Failed to load project header info:", error);
-    });
-    refreshSshRemoteIndicator({ call: window.__picotConfigCall }).catch((error) => {
-      console.warn("[Native] Failed to probe the remote workspace binding:", error);
-    });
-  }
-  // The Info panel's tree belongs to the active session: bump the sequence
-  // (dropping any in-flight fetch for the old session) and reload if open.
-  // The trace timeline is per target, so the analysis must re-evaluate against
-  // the session just switched to.
-  taskAnalysis?.rerender();
-  infoTreeSeq += 1;
-  infoPanel?.updateTree({ entries: [], leafId: null });
-  if (infoSidebar && !infoSidebar.classList.contains("collapsed")) {
-    void refreshInfoPanel({
-      refreshWorkspace: nextTarget.workspaceId !== previousTarget.workspaceId,
-    });
-  }
-  syncSessionInfo();
-  headerStatusBar?.reset?.();
-  // Re-hydrate the aggregate stats for the new session.
-  hydrateHeaderSessionStats();
-  setSessionCost(0);
-  // Restore model/thinking for the new session
-  const restoredProfile =
-    effectiveProfileOverride === undefined
-      ? await sessionUiState.loadProfile()
-      : effectiveProfileOverride;
-  if (target !== nextTarget) return;
-  pendingModelRestore = restoredProfile;
-  if (restoredProfile) {
-    updateComposerModel(
-      { provider: restoredProfile.provider, id: restoredProfile.modelId },
-      { persist: false },
-    );
-    updateComposerThinking(restoredProfile.thinkingLevel, { persist: false });
-  }
-  // Intentionally leave input.value untouched here: an unsent composer draft
-  // must follow the user across session switches instead of being cleared or
-  // swapped for a different session's stored draft.
-  composerAutoResize.sync();
-  await extensionUi.setForegroundSession(target.sessionId, { flush: false });
-}
-
-function lastAssistantErrorInRange(messages, start, end) {
-  for (let i = end - 1; i >= start; i -= 1) {
-    if (messages[i]?.role === "assistant") {
-      return extractAssistantError(messages[i], { fallback: t("messages.providerError") });
-    }
-  }
-  return null;
-}
-
-/** Non-empty rendered text for an assistant message's `text` blocks. */
-function assistantTextOf(content) {
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block) => block?.type === "text")
-    .map((block) => block.text ?? "")
-    .join("\n")
-    .trim();
-}
-
-/**
- * Split one assistant message's content blocks into "process" (thinking,
- * tool calls, and any leading text) and "answer" (the trailing run of text
- * blocks) — mirrors pi-web's splitFinalAssistantBlocks. Everything up to and
- * including the last non-text block is process; blocks after that are the
- * final answer.
- */
-function splitFinalAssistantBlocks(content) {
-  if (!Array.isArray(content)) return { processBlocks: [], answerBlocks: [] };
-  let lastNonTextIdx = -1;
-  for (let i = 0; i < content.length; i++) {
-    if (content[i]?.type !== "text") lastNonTextIdx = i;
-  }
-  return {
-    processBlocks: content.slice(0, lastNonTextIdx + 1),
-    answerBlocks: content.slice(lastNonTextIdx + 1),
-  };
-}
-
-/** Render an assistant message's tool-call blocks as history cards, target defaults to the main container. */
-function renderToolCallBlocks(blocks, toolResults, targetContainer) {
-  let count = 0;
-  for (const block of blocks) {
-    if (block?.type !== "toolCall") continue;
-    count += 1;
-    toolRenderer.createHistoryCard(
-      { toolCallId: block.id, toolName: block.name, args: block.arguments ?? {} },
-      targetContainer,
-    );
-    const result = toolResults.get(block.id);
-    if (result) toolRenderer.addHistoryResult(block.id, result, result.isError);
-  }
-  return count;
-}
-
-function renderHistory(messages) {
-  console.info("[SESSION-LOAD] renderHistory start", {
-    sessionId: target.sessionId,
-    messageCount: messages.length,
-    roles: summarizeMessageRoles(messages),
-    existingChildCount: messagesElement?.children?.length ?? null,
-  });
-  const hadInFlightPrompt = extensionUi.requeueForegroundPrompt();
-  const expandedProcessGroups = captureExpandedProcessGroups(messagesElement);
-  messageRenderer.clear();
-  toolRenderer.clear();
-  liveProcessGroup = null;
-  if (messages.length === 0) {
-    messageRenderer.renderWelcome();
-    applyActiveSearchHighlight({ scrollToFirst: false });
-    subagentRuns.restore(target.sessionId).catch(showError);
-    logMessagesDom("renderHistory empty", {
-      sessionId: target.sessionId,
-    });
-    return hadInFlightPrompt;
-  }
-
-  // Pre-index tool results by toolCallId for O(1) lookup
-  const toolResults = new Map();
-  for (const message of messages) {
-    if (message.role === "toolResult") {
-      toolResults.set(message.toolCallId, message);
-    }
-  }
-
-  // Split into turns anchored at each user message so each turn's
-  // thinking/tool-call noise can be folded into one collapsed group, leaving
-  // only the user prompt and the final answer visible (mirrors pi-web).
-  const turns = [];
-  let turnStart = 0;
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === "user" && i !== turnStart) {
-      turns.push([turnStart, i]);
-      turnStart = i;
-    }
-  }
-  turns.push([turnStart, messages.length]);
-
-  let processGroupIndex = 0;
-  for (const [start, end] of turns) {
-    const anchor = messages[start];
-    let bodyStart = start;
-    if (anchor.role === "user") {
-      messageRenderer.renderUserMessage(anchor, true);
-      bodyStart = start + 1;
-    }
-
-    let finalAssistantIdx = -1;
-    for (let i = end - 1; i >= bodyStart; i--) {
-      if (messages[i].role === "assistant" && assistantTextOf(messages[i].content)) {
-        finalAssistantIdx = i;
         break;
       }
+      case "message_start":
+        if (event.message?.role === "user") {
+          messageRenderer.renderUserMessage(event.message);
+          upsertActiveSessionFromUserMessage(event.message);
+        } else if (event.message?.role === "assistant") {
+          const message = assistantMessageStream.start(event.message);
+          showLiveProcessIndicator();
+          streamingStartedAt = Date.now();
+          streamingElement = messageRenderer.renderAssistantMessage(message, true);
+        }
+        break;
+      case "message_update": {
+        // Pi's current RPC protocol emits deltas in assistantMessageEvent and
+        // intentionally omits the former cumulative event.message snapshot.
+        const message = assistantMessageStream.update(event);
+        if (!streamingElement) {
+          showLiveProcessIndicator();
+          streamingStartedAt = Date.now();
+          streamingElement = messageRenderer.renderAssistantMessage(message, true);
+        } else {
+          messageRenderer.updateStreamingMessage(streamingElement, message.content);
+        }
+        if (event.assistantMessageEvent?.type === "toolcall_end") {
+          const toolCall = event.assistantMessageEvent.toolCall;
+          if (toolCall?.id && toolCall.name) {
+            toolRenderer.createToolCard({
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              args: toolCall.arguments ?? {},
+              status: "pending",
+            });
+          }
+        }
+        break;
+      }
+      case "message_end":
+        if (event.message?.role === "assistant") {
+          const message = assistantMessageStream.finish(event.message);
+          if (streamingElement) {
+            const durationMs = streamingStartedAt != null ? Date.now() - streamingStartedAt : null;
+            messageRenderer.updateStreamingMessage(streamingElement, message.content);
+            messageRenderer.finalizeStreamingMessage(
+              streamingElement,
+              message.usage ?? null,
+              "",
+              durationMs,
+            );
+            contextUsage.setUsage(message.usage ?? null, currentModelContextWindow);
+            setSessionCost(sessionTotalCost + (message.usage?.cost?.total ?? 0));
+            headerStatusBar?.applyLiveUsage?.(message.usage ?? null);
+            streamingElement = null;
+            streamingStartedAt = null;
+            convNav.notifyNewMessage();
+          }
+          showProviderErrorIfNeeded(event);
+          if (infoSidebar && !infoSidebar.classList.contains("collapsed")) {
+            void refreshInfoPanel();
+          }
+        } else if (event.message?.role === "user") {
+          // The persisted user turn is a new tree node; refresh the open Info
+          // panel so it appears before the assistant reply finishes.
+          if (infoSidebar && !infoSidebar.classList.contains("collapsed")) {
+            void refreshInfoPanel();
+          }
+        }
+        break;
+      case "tool_execution_start":
+        toolRenderer.createToolCard({ ...event, status: "pending" });
+        filePreviewFollow.onToolStart(event);
+        break;
+      case "tool_execution_update":
+        toolRenderer.updateToolCard({
+          ...event,
+          status: "streaming",
+          output: textFromResult(event.partialResult),
+        });
+        break;
+      case "tool_execution_end":
+        toolRenderer.finalizeToolCard(event.toolCallId, event.result, event.isError);
+        if (event.toolName === "todo" && !event.isError)
+          todoMirrorPanel.applyToolResult(event.result);
+        void filePreviewFollow.onToolEnd(event).catch(showError);
+        break;
+      case "extension_ui_request":
+        await extensionUi.handle(target, event);
+        break;
+      case "extension_error":
+        showError(new Error(event.error || "Extension failed"));
+        break;
+      case "session_bound":
+        await adoptTarget({ ...target, sessionId: event.sessionId });
+        upsertActiveSessionFromUserMessage();
+        await hydrateSnapshotOnce();
+        sidebar?.load({ quiet: true }).catch(showError);
+        break;
+    }
+  }
+
+  function upsertActiveSessionFromUserMessage(message = null) {
+    const firstMessage = message
+      ? textFromMessageContent(message.content)
+      : pendingBoundSessionFirstMessage;
+    if (target?.sessionId?.startsWith("temporary-")) {
+      pendingBoundSessionFirstMessage = firstMessage;
+      return;
+    }
+    if (!target?.sessionId) return;
+    sidebar?.upsertSession({
+      id: target.sessionId,
+      firstMessage,
+      timestamp: new Date().toISOString(),
+      modifiedAtMs: Date.now(),
+      isCurrentWorkspace: true,
+    });
+    pendingBoundSessionFirstMessage = null;
+  }
+
+  async function adoptTarget(nextTarget, { updateRoute = true, profileOverride = undefined } = {}) {
+    const previousTarget = target;
+    const effectiveProfileOverride =
+      profileOverride === undefined
+        ? profileForSnapshotRebind(
+            previousTarget,
+            nextTarget,
+            pendingModelRestore,
+            { provider: currentModelProvider, id: currentModelId },
+            currentThinkingLevel,
+          )
+        : profileOverride;
+    const sessionChanged = nextTarget.sessionId !== previousTarget.sessionId;
+    const targetChanged =
+      sessionChanged ||
+      nextTarget.workspaceId !== previousTarget.workspaceId ||
+      nextTarget.instanceId !== previousTarget.instanceId;
+    if (!targetChanged) return;
+    configGatewayTargetReady = false;
+    if (updateRoute && sessionChanged) {
+      replaceTemporarySessionRoute(
+        history,
+        previousTarget.workspaceId,
+        previousTarget.sessionId,
+        nextTarget.sessionId,
+      );
+    }
+    target = nextTarget;
+    void globalThis.__TAURI__?.core?.invoke?.("update_workflow_window_target", {
+      workspaceId: nextTarget.workspaceId,
+      target: nextTarget,
+    });
+    const workflowPanel = document.getElementById("workflow-panel");
+    if (workflowPanel && !workflowPanel.classList.contains("hidden")) {
+      void import("./workflow/workflow-panel.js")
+        .then(({ syncWorkflowModeTarget }) => syncWorkflowModeTarget())
+        .catch((error) =>
+          console.warn("[Workflow] Could not sync Pi tools after session switch:", error),
+        );
+    }
+    store = createSessionStore(target);
+    // Reset the in-flight guard whenever the target changes so a new session
+    // is never blocked from hydrating by a stale flag from the previous one.
+    snapshotInFlight = false;
+    renderQueuedMessages(queuedMessages, store.queue);
+    todoMirrorPanel.clear();
+    // Widgets and any open custom-UI panel belong to the session that published
+    // them; carrying them across a switch would show another session's state.
+    extensionWidgets.clear();
+    customUiPanel.close({ notifyExtension: false });
+    filePreviewFollow.clear();
+    assistantMessageStream.reset();
+    streamingElement = null;
+    streamingStartedAt = null;
+    liveProcessGroup = null;
+    adapter.subscribeTarget(target);
+    sidebar?.setActive(target.sessionId);
+    // When the workspace changes, the cached session list is stale — reload it
+    // so the sidebar reflects the new project's sessions. Same-workspace
+    // session switches skip this (the list is already current). Without this
+    // the sidebar never populated after bootstrap, because the initial
+    // sidebar.load() at startup runs before the workspace is resolved.
+    if (nextTarget.workspaceId !== previousTarget.workspaceId) {
+      sidebar?.load().catch(showError);
+      // Header pills must follow the workspace, not the git panel: re-probe on
+      // every workspace entry so a non-Git workspace hides the git pill without
+      // opening the panel, and switching back un-hides it (v3 49564e0).
+      setupProjectHeader({
+        data,
+        workspaceId: nextTarget.workspaceId,
+      }).catch((error) => {
+        console.warn("[Native] Failed to load project header info:", error);
+      });
+      refreshSshRemoteIndicator({ call: window.__picotConfigCall }).catch((error) => {
+        console.warn("[Native] Failed to probe the remote workspace binding:", error);
+      });
+    }
+    // The Info panel's tree belongs to the active session: bump the sequence
+    // (dropping any in-flight fetch for the old session) and reload if open.
+    // The trace timeline is per target, so the analysis must re-evaluate against
+    // the session just switched to.
+    taskAnalysis?.rerender();
+    infoTreeSeq += 1;
+    infoPanel?.updateTree({ entries: [], leafId: null });
+    if (infoSidebar && !infoSidebar.classList.contains("collapsed")) {
+      void refreshInfoPanel({
+        refreshWorkspace: nextTarget.workspaceId !== previousTarget.workspaceId,
+      });
+    }
+    syncSessionInfo();
+    headerStatusBar?.reset?.();
+    // Re-hydrate the aggregate stats for the new session.
+    hydrateHeaderSessionStats();
+    setSessionCost(0);
+    // Restore model/thinking for the new session
+    const restoredProfile =
+      effectiveProfileOverride === undefined
+        ? await sessionUiState.loadProfile()
+        : effectiveProfileOverride;
+    if (target !== nextTarget) return;
+    pendingModelRestore = restoredProfile;
+    if (restoredProfile) {
+      updateComposerModel(
+        { provider: restoredProfile.provider, id: restoredProfile.modelId },
+        { persist: false },
+      );
+      updateComposerThinking(restoredProfile.thinkingLevel, { persist: false });
+    }
+    // Intentionally leave input.value untouched here: an unsent composer draft
+    // must follow the user across session switches instead of being cleared or
+    // swapped for a different session's stored draft.
+    composerAutoResize.sync();
+    await extensionUi.setForegroundSession(target.sessionId, { flush: false });
+  }
+
+  function lastAssistantErrorInRange(messages, start, end) {
+    for (let i = end - 1; i >= start; i -= 1) {
+      if (messages[i]?.role === "assistant") {
+        return extractAssistantError(messages[i], { fallback: t("messages.providerError") });
+      }
+    }
+    return null;
+  }
+
+  /** Non-empty rendered text for an assistant message's `text` blocks. */
+  function assistantTextOf(content) {
+    if (!Array.isArray(content)) return "";
+    return content
+      .filter((block) => block?.type === "text")
+      .map((block) => block.text ?? "")
+      .join("\n")
+      .trim();
+  }
+
+  /**
+   * Split one assistant message's content blocks into "process" (thinking,
+   * tool calls, and any leading text) and "answer" (the trailing run of text
+   * blocks) — mirrors pi-web's splitFinalAssistantBlocks. Everything up to and
+   * including the last non-text block is process; blocks after that are the
+   * final answer.
+   */
+  function splitFinalAssistantBlocks(content) {
+    if (!Array.isArray(content)) return { processBlocks: [], answerBlocks: [] };
+    let lastNonTextIdx = -1;
+    for (let i = 0; i < content.length; i++) {
+      if (content[i]?.type !== "text") lastNonTextIdx = i;
+    }
+    return {
+      processBlocks: content.slice(0, lastNonTextIdx + 1),
+      answerBlocks: content.slice(lastNonTextIdx + 1),
+    };
+  }
+
+  /** Render an assistant message's tool-call blocks as history cards, target defaults to the main container. */
+  function renderToolCallBlocks(blocks, toolResults, targetContainer) {
+    let count = 0;
+    for (const block of blocks) {
+      if (block?.type !== "toolCall") continue;
+      count += 1;
+      toolRenderer.createHistoryCard(
+        { toolCallId: block.id, toolName: block.name, args: block.arguments ?? {} },
+        targetContainer,
+      );
+      const result = toolResults.get(block.id);
+      if (result) toolRenderer.addHistoryResult(block.id, result, result.isError);
+    }
+    return count;
+  }
+
+  function renderHistory(messages) {
+    console.info("[SESSION-LOAD] renderHistory start", {
+      sessionId: target.sessionId,
+      messageCount: messages.length,
+      roles: summarizeMessageRoles(messages),
+      existingChildCount: messagesElement?.children?.length ?? null,
+    });
+    const hadInFlightPrompt = extensionUi.requeueForegroundPrompt();
+    const expandedProcessGroups = captureExpandedProcessGroups(messagesElement);
+    messageRenderer.clear();
+    toolRenderer.clear();
+    liveProcessGroup = null;
+    if (messages.length === 0) {
+      messageRenderer.renderWelcome();
+      applyActiveSearchHighlight({ scrollToFirst: false });
+      subagentRuns.restore(target.sessionId).catch(showError);
+      logMessagesDom("renderHistory empty", {
+        sessionId: target.sessionId,
+      });
+      return hadInFlightPrompt;
     }
 
-    let group = null;
-    let stepCount = 0;
-    let toolCallCount = 0;
-    const ensureGroup = () => {
-      if (!group) {
-        group = createProcessDetailsGroup({
-          expanded: expandedProcessGroups.has(processGroupIndex),
-        });
-        processGroupIndex += 1;
-        // Insert immediately so later appends (the final answer, or the next
-        // turn's user message) land after it in DOM order — the group holds
-        // this turn's spot even before its body has any children.
-        messagesElement.appendChild(group.wrapper);
+    // Pre-index tool results by toolCallId for O(1) lookup
+    const toolResults = new Map();
+    for (const message of messages) {
+      if (message.role === "toolResult") {
+        toolResults.set(message.toolCallId, message);
       }
-      return group;
-    };
+    }
 
-    for (let i = bodyStart; i < end; i++) {
-      const message = messages[i];
-      if (message.role !== "assistant") continue;
+    // Split into turns anchored at each user message so each turn's
+    // thinking/tool-call noise can be folded into one collapsed group, leaving
+    // only the user prompt and the final answer visible (mirrors pi-web).
+    const turns = [];
+    let turnStart = 0;
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].role === "user" && i !== turnStart) {
+        turns.push([turnStart, i]);
+        turnStart = i;
+      }
+    }
+    turns.push([turnStart, messages.length]);
 
-      if (i === finalAssistantIdx) {
-        const { processBlocks, answerBlocks } = splitFinalAssistantBlocks(message.content);
-        // A turn that ends on this message with no trailing answer text is
-        // incomplete (the run was cut off mid tool-use, e.g. a dropped
-        // connection). Surface the assistant's leading narration instead of
-        // silently folding it into "Process details" with nothing visible.
-        const isUnterminatedTurn = answerBlocks.length === 0 && i === messages.length - 1;
-        if (isUnterminatedTurn) {
-          const leadingText = processBlocks.filter((b) => b.type === "text");
-          if (leadingText.length > 0) {
+    let processGroupIndex = 0;
+    for (const [start, end] of turns) {
+      const anchor = messages[start];
+      let bodyStart = start;
+      if (anchor.role === "user") {
+        messageRenderer.renderUserMessage(anchor, true);
+        bodyStart = start + 1;
+      }
+
+      let finalAssistantIdx = -1;
+      for (let i = end - 1; i >= bodyStart; i--) {
+        if (messages[i].role === "assistant" && assistantTextOf(messages[i].content)) {
+          finalAssistantIdx = i;
+          break;
+        }
+      }
+
+      let group = null;
+      let stepCount = 0;
+      let toolCallCount = 0;
+      const ensureGroup = () => {
+        if (!group) {
+          group = createProcessDetailsGroup({
+            expanded: expandedProcessGroups.has(processGroupIndex),
+          });
+          processGroupIndex += 1;
+          // Insert immediately so later appends (the final answer, or the next
+          // turn's user message) land after it in DOM order — the group holds
+          // this turn's spot even before its body has any children.
+          messagesElement.appendChild(group.wrapper);
+        }
+        return group;
+      };
+
+      for (let i = bodyStart; i < end; i++) {
+        const message = messages[i];
+        if (message.role !== "assistant") continue;
+
+        if (i === finalAssistantIdx) {
+          const { processBlocks, answerBlocks } = splitFinalAssistantBlocks(message.content);
+          // A turn that ends on this message with no trailing answer text is
+          // incomplete (the run was cut off mid tool-use, e.g. a dropped
+          // connection). Surface the assistant's leading narration instead of
+          // silently folding it into "Process details" with nothing visible.
+          const isUnterminatedTurn = answerBlocks.length === 0 && i === messages.length - 1;
+          if (isUnterminatedTurn) {
+            const leadingText = processBlocks.filter((b) => b.type === "text");
+            if (leadingText.length > 0) {
+              messageRenderer.renderAssistantMessage(
+                {
+                  content: leadingText,
+                  usage: message.usage,
+                  timestamp: message.timestamp,
+                  entryId: message.entryId,
+                },
+                false,
+                true,
+              );
+            }
+            const remainingProcessBlocks = processBlocks.filter((b) => b.type !== "text");
+            if (remainingProcessBlocks.some((b) => b.type === "thinking")) {
+              const el = messageRenderer.renderAssistantMessage(
+                { content: remainingProcessBlocks, usage: message.usage },
+                false,
+                true,
+                ensureGroup().body,
+              );
+              if (el) stepCount += 1;
+            }
+            if (remainingProcessBlocks.some((b) => b.type === "toolCall")) {
+              toolCallCount += renderToolCallBlocks(
+                remainingProcessBlocks,
+                toolResults,
+                ensureGroup().body,
+              );
+            }
+          } else {
+            if (processBlocks.some((b) => b.type === "text" || b.type === "thinking")) {
+              const el = messageRenderer.renderAssistantMessage(
+                { content: processBlocks, usage: message.usage },
+                false,
+                true,
+                ensureGroup().body,
+              );
+              if (el) stepCount += 1;
+            }
+            if (processBlocks.some((b) => b.type === "toolCall")) {
+              toolCallCount += renderToolCallBlocks(processBlocks, toolResults, ensureGroup().body);
+            }
+          }
+          if (answerBlocks.length > 0) {
             messageRenderer.renderAssistantMessage(
               {
-                content: leadingText,
+                content: answerBlocks,
                 usage: message.usage,
                 timestamp: message.timestamp,
                 entryId: message.entryId,
@@ -2746,628 +3140,597 @@ function renderHistory(messages) {
               true,
             );
           }
-          const remainingProcessBlocks = processBlocks.filter((b) => b.type !== "text");
-          if (remainingProcessBlocks.some((b) => b.type === "thinking")) {
-            const el = messageRenderer.renderAssistantMessage(
-              { content: remainingProcessBlocks, usage: message.usage },
-              false,
-              true,
-              ensureGroup().body,
-            );
-            if (el) stepCount += 1;
-          }
-          if (remainingProcessBlocks.some((b) => b.type === "toolCall")) {
-            toolCallCount += renderToolCallBlocks(
-              remainingProcessBlocks,
-              toolResults,
-              ensureGroup().body,
-            );
-          }
         } else {
-          if (processBlocks.some((b) => b.type === "text" || b.type === "thinking")) {
-            const el = messageRenderer.renderAssistantMessage(
-              { content: processBlocks, usage: message.usage },
-              false,
-              true,
-              ensureGroup().body,
-            );
-            if (el) stepCount += 1;
-          }
-          if (processBlocks.some((b) => b.type === "toolCall")) {
-            toolCallCount += renderToolCallBlocks(processBlocks, toolResults, ensureGroup().body);
-          }
-        }
-        if (answerBlocks.length > 0) {
-          messageRenderer.renderAssistantMessage(
-            {
-              content: answerBlocks,
-              usage: message.usage,
-              timestamp: message.timestamp,
-              entryId: message.entryId,
-            },
+          const el = messageRenderer.renderAssistantMessage(
+            message,
             false,
             true,
+            ensureGroup().body,
           );
+          if (el) stepCount += 1;
+          toolCallCount += renderToolCallBlocks(message.content ?? [], toolResults, group.body);
         }
-      } else {
-        const el = messageRenderer.renderAssistantMessage(message, false, true, ensureGroup().body);
-        if (el) stepCount += 1;
-        toolCallCount += renderToolCallBlocks(message.content ?? [], toolResults, group.body);
+      }
+
+      const turnError = lastAssistantErrorInRange(messages, bodyStart, end);
+      if (turnError) messageRenderer.renderError(turnError);
+
+      if (group) {
+        if (group.body.children.length > 0) {
+          group.setLabel(summarizeProcessGroup(stepCount, toolCallCount));
+        } else {
+          group.wrapper.remove();
+        }
       }
     }
 
-    const turnError = lastAssistantErrorInRange(messages, bodyStart, end);
-    if (turnError) messageRenderer.renderError(turnError);
+    // Re-attach Claude Code subagent cards after the message list rebuild that
+    // messageRenderer.clear() just wiped.
+    subagentRuns.restore(target.sessionId).catch(showError);
 
-    if (group) {
-      if (group.body.children.length > 0) {
-        group.setLabel(summarizeProcessGroup(stepCount, toolCallCount));
-      } else {
-        group.wrapper.remove();
+    const highlighted = applyActiveSearchHighlight();
+    if (highlighted === 0) messageRenderer.forceScrollToBottom();
+    logMessagesDom("renderHistory complete", {
+      sessionId: target.sessionId,
+      inputCount: messages.length,
+      turnCount: turns.length,
+      highlighted,
+    });
+    return hadInFlightPrompt;
+  }
+
+  /**
+   * Fold the just-finished turn's thinking blocks and tool cards into a
+   * collapsed "Process details" group, leaving the user prompt and final
+   * answer as the only visible content. Runs once a turn fully completes
+   * (`agent_settled`) — while streaming, everything still renders flat and
+   * expanded so the user can watch it happen live, matching pi-web.
+   */
+  function collapseCompletedTurn({ markDone = false } = {}) {
+    const children = Array.from(messagesElement.children);
+    let lastUserIdx = -1;
+    for (let i = children.length - 1; i >= 0; i--) {
+      if (children[i].classList.contains("user")) {
+        lastUserIdx = i;
+        break;
       }
     }
-  }
+    const afterUser = children.slice(lastUserIdx + 1);
+    if (afterUser.length === 0) return;
 
-  // Re-attach Claude Code subagent cards after the message list rebuild that
-  // messageRenderer.clear() just wiped.
-  subagentRuns.restore(target.sessionId).catch(showError);
+    const group = createProcessDetailsGroup();
+    let stepCount = 0;
+    let toolCallCount = 0;
+    let inserted = false;
+    const insertGroupBefore = (el) => {
+      if (inserted) return;
+      el.before(group.wrapper);
+      inserted = true;
+    };
 
-  const highlighted = applyActiveSearchHighlight();
-  if (highlighted === 0) messageRenderer.forceScrollToBottom();
-  logMessagesDom("renderHistory complete", {
-    sessionId: target.sessionId,
-    inputCount: messages.length,
-    turnCount: turns.length,
-    highlighted,
-  });
-  return hadInFlightPrompt;
-}
-
-/**
- * Fold the just-finished turn's thinking blocks and tool cards into a
- * collapsed "Process details" group, leaving the user prompt and final
- * answer as the only visible content. Runs once a turn fully completes
- * (`agent_settled`) — while streaming, everything still renders flat and
- * expanded so the user can watch it happen live, matching pi-web.
- */
-function collapseCompletedTurn({ markDone = false } = {}) {
-  const children = Array.from(messagesElement.children);
-  let lastUserIdx = -1;
-  for (let i = children.length - 1; i >= 0; i--) {
-    if (children[i].classList.contains("user")) {
-      lastUserIdx = i;
-      break;
+    for (const el of afterUser) {
+      if (el.classList.contains("tool-card")) {
+        insertGroupBefore(el);
+        group.body.appendChild(el);
+        stepCount += 1;
+        toolCallCount += 1;
+        continue;
+      }
+      if (el.classList.contains("assistant")) {
+        const thinkingEl = el.querySelector(".thinking-block");
+        if (!thinkingEl) continue;
+        insertGroupBefore(el);
+        thinkingEl.remove();
+        group.body.appendChild(thinkingEl);
+        stepCount += 1;
+        const contentEl = el.querySelector(".message-content");
+        const hasRemainingContent = Boolean(contentEl?.textContent.trim());
+        if (!hasRemainingContent) el.remove();
+      }
     }
+
+    if (group.body.children.length === 0) return; // nothing to fold away; wrapper was never inserted
+    group.setLabel(summarizeProcessGroup(stepCount, toolCallCount));
+    if (markDone) group.markDone();
   }
-  const afterUser = children.slice(lastUserIdx + 1);
-  if (afterUser.length === 0) return;
 
-  const group = createProcessDetailsGroup();
-  let stepCount = 0;
-  let toolCallCount = 0;
-  let inserted = false;
-  const insertGroupBefore = (el) => {
-    if (inserted) return;
-    el.before(group.wrapper);
-    inserted = true;
-  };
+  /**
+   * Show a pulsing "Process details" placeholder right where the assistant's
+   * response is about to appear, so there's an immediate live-thinking cue
+   * (matching the shimmer other chat UIs use) even before
+   * `collapseCompletedTurn` builds the real group. Idempotent — only the first
+   * call in a turn actually inserts anything, so the indicator's position
+   * (right before the assistant's first message) never moves mid-turn.
+   */
+  function showLiveProcessIndicator() {
+    if (liveProcessGroup) return;
+    liveProcessGroup = createProcessDetailsGroup();
+    liveProcessGroup.setLabel(t("messages.thinking"));
+    liveProcessGroup.setStreaming(true);
+    messagesElement.appendChild(liveProcessGroup.wrapper);
+    messageRenderer.forceScrollToBottom();
+  }
 
-  for (const el of afterUser) {
-    if (el.classList.contains("tool-card")) {
-      insertGroupBefore(el);
-      group.body.appendChild(el);
-      stepCount += 1;
-      toolCallCount += 1;
-      continue;
+  function hideLiveProcessIndicator() {
+    liveProcessGroup?.wrapper.remove();
+    liveProcessGroup = null;
+  }
+
+  function applyActiveSearchHighlight({ scrollToFirst = true } = {}) {
+    const query = activeSearchQuery.trim();
+    if (!query) {
+      messageRenderer.clearSearchHighlights();
+      return 0;
     }
-    if (el.classList.contains("assistant")) {
-      const thinkingEl = el.querySelector(".thinking-block");
-      if (!thinkingEl) continue;
-      insertGroupBefore(el);
-      thinkingEl.remove();
-      group.body.appendChild(thinkingEl);
-      stepCount += 1;
-      const contentEl = el.querySelector(".message-content");
-      const hasRemainingContent = Boolean(contentEl?.textContent.trim());
-      if (!hasRemainingContent) el.remove();
-    }
+    return messageRenderer.highlightSearchQuery(query, { scrollToFirst });
   }
 
-  if (group.body.children.length === 0) return; // nothing to fold away; wrapper was never inserted
-  group.setLabel(summarizeProcessGroup(stepCount, toolCallCount));
-  if (markDone) group.markDone();
-}
-
-/**
- * Show a pulsing "Process details" placeholder right where the assistant's
- * response is about to appear, so there's an immediate live-thinking cue
- * (matching the shimmer other chat UIs use) even before
- * `collapseCompletedTurn` builds the real group. Idempotent — only the first
- * call in a turn actually inserts anything, so the indicator's position
- * (right before the assistant's first message) never moves mid-turn.
- */
-function showLiveProcessIndicator() {
-  if (liveProcessGroup) return;
-  liveProcessGroup = createProcessDetailsGroup();
-  liveProcessGroup.setLabel(t("messages.thinking"));
-  liveProcessGroup.setStreaming(true);
-  messagesElement.appendChild(liveProcessGroup.wrapper);
-  messageRenderer.forceScrollToBottom();
-}
-
-function hideLiveProcessIndicator() {
-  liveProcessGroup?.wrapper.remove();
-  liveProcessGroup = null;
-}
-
-function applyActiveSearchHighlight({ scrollToFirst = true } = {}) {
-  const query = activeSearchQuery.trim();
-  if (!query) {
-    messageRenderer.clearSearchHighlights();
-    return 0;
+  function textFromResult(result) {
+    return (result?.content ?? [])
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
   }
-  return messageRenderer.highlightSearchQuery(query, { scrollToFirst });
-}
 
-function textFromResult(result) {
-  return (result?.content ?? [])
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("\n");
-}
-
-function textFromMessageContent(content) {
-  const text =
-    typeof content === "string"
-      ? content
-      : Array.isArray(content)
+  function textFromMessageContent(content) {
+    const text =
+      typeof content === "string"
         ? content
-            .filter((block) => block?.type === "text")
-            .map((block) => block.text ?? "")
-            .join("\n")
-        : "";
-  const trimmed = text.trim();
-  return trimmed ? trimmed.slice(0, 120) : null;
-}
-
-function abortCurrentRun() {
-  runtime.request({ type: "abort" }, target).catch(showError);
-  // A tool call blocked on ctx.ui.select/confirm/input/editor won't be
-  // unblocked by "abort" alone — pi is waiting on an extension_ui_response
-  // that only the UI can send. Without this, an unanswered/cancelled prompt
-  // leaves the run wedged forever with Stop appearing to do nothing.
-  extensionUi.cancelForeground();
-}
-
-function settleForegroundAgent(event) {
-  setStatus("connected");
-  taskAnalysis?.setStreaming(false);
-  contextUsage.setWorking(false);
-  sidebar?.setStreaming(target.sessionId, false);
-  hideLiveProcessIndicator();
-  collapseCompletedTurn({ markDone: true });
-  mountTurnFileChips();
-  showProviderErrorIfNeeded(event);
-}
-
-function showProviderErrorIfNeeded(event) {
-  const error = extractRuntimeEventError(event, { fallback: t("messages.providerError") });
-  if (!error || error === lastShownProviderError) return;
-  lastShownProviderError = error;
-  messageRenderer.renderError(error);
-}
-
-function showError(error) {
-  setStatus("disconnected");
-  messageRenderer.renderError(error?.message || String(error));
-}
-
-// ── Composer model dropdown & thinking button (functions & event wiring) ────────
-
-function updateComposerModel(model, { persist = true } = {}) {
-  currentModelProvider = model?.provider ?? null;
-  currentModelId = model?.id ?? null;
-  // Persist the model change to session UI state
-  if (persist)
-    sessionUiState
-      .saveProfile({
-        provider: currentModelProvider || "",
-        modelId: currentModelId || "",
-        thinkingLevel: currentThinkingLevel,
-      })
-      .catch(() => {});
-  currentModelContextWindow =
-    Number(model?.contextWindow) || findModelContextWindow(currentModelProvider, currentModelId);
-  contextUsage.setContextWindowSize(currentModelContextWindow);
-  if (modelDropdownLabel) {
-    modelDropdownLabel.textContent = formatModelName(model) || "model";
+        : Array.isArray(content)
+          ? content
+              .filter((block) => block?.type === "text")
+              .map((block) => block.text ?? "")
+              .join("\n")
+          : "";
+    const trimmed = text.trim();
+    return trimmed ? trimmed.slice(0, 120) : null;
   }
-}
 
-function updateComposerThinking(level, { persist = true } = {}) {
-  currentThinkingLevel = level ?? "off";
-  if (persist)
-    sessionUiState
-      .saveProfile({
-        provider: currentModelProvider || "",
-        modelId: currentModelId || "",
-        thinkingLevel: currentThinkingLevel,
-      })
-      .catch(() => {});
-  if (thinkingBtn) {
-    const levelLabel = formatThinkingLevelLabel(currentThinkingLevel);
-    thinkingBtn.textContent = t("settings.thinkingCompact", { level: levelLabel });
-    thinkingBtn.className = `thinking-tag${currentThinkingLevel === "off" ? " off" : ""}`;
-    thinkingBtn.title = t("settings.thinkingTitle");
-    thinkingBtn.setAttribute("aria-label", t("settings.thinkingAriaLabel", { level: levelLabel }));
+  function abortCurrentRun() {
+    runtime.request({ type: "abort" }, target).catch(showError);
+    // A tool call blocked on ctx.ui.select/confirm/input/editor won't be
+    // unblocked by "abort" alone — pi is waiting on an extension_ui_response
+    // that only the UI can send. Without this, an unanswered/cancelled prompt
+    // leaves the run wedged forever with Stop appearing to do nothing.
+    extensionUi.cancelForeground();
   }
-}
 
-async function loadAvailableModels({ force = false } = {}) {
-  // Serve the cache unless a configuration change explicitly invalidated it.
-  if (availableModelsLoaded && !force) return;
-  try {
-    const result = await runtime.request({ type: "get_available_models" }, target);
-    const runtimeModels = result?.response?.data?.models ?? [];
-    availableModels = await applyConfiguredModelVisibility(runtimeModels);
-    availableModelsLoaded = true;
-    if (!currentModelContextWindow) {
-      currentModelContextWindow = findModelContextWindow(currentModelProvider, currentModelId);
-      contextUsage.setContextWindowSize(currentModelContextWindow);
+  function settleForegroundAgent(event) {
+    setStatus("connected");
+    taskAnalysis?.setStreaming(false);
+    contextUsage.setWorking(false);
+    sidebar?.setStreaming(target.sessionId, false);
+    hideLiveProcessIndicator();
+    collapseCompletedTurn({ markDone: true });
+    mountTurnFileChips();
+    showProviderErrorIfNeeded(event);
+  }
+
+  function showProviderErrorIfNeeded(event) {
+    const error = extractRuntimeEventError(event, { fallback: t("messages.providerError") });
+    if (!error || error === lastShownProviderError) return;
+    lastShownProviderError = error;
+    messageRenderer.renderError(error);
+  }
+
+  function showError(error) {
+    setStatus("disconnected");
+    messageRenderer.renderError(error?.message || String(error));
+  }
+
+  // ── Composer model dropdown & thinking button (functions & event wiring) ────────
+
+  function updateComposerModel(model, { persist = true } = {}) {
+    currentModelProvider = model?.provider ?? null;
+    currentModelId = model?.id ?? null;
+    // Persist the model change to session UI state
+    if (persist)
+      sessionUiState
+        .saveProfile({
+          provider: currentModelProvider || "",
+          modelId: currentModelId || "",
+          thinkingLevel: currentThinkingLevel,
+        })
+        .catch(() => {});
+    currentModelContextWindow =
+      Number(model?.contextWindow) || findModelContextWindow(currentModelProvider, currentModelId);
+    contextUsage.setContextWindowSize(currentModelContextWindow);
+    if (modelDropdownLabel) {
+      modelDropdownLabel.textContent = formatModelName(model) || "model";
     }
-    renderModelDropdownMenu();
-  } catch (error) {
-    console.warn("[Native] Failed to load available models:", error);
-  }
-}
-
-/**
- * New sessions (zero messages) inherit the last manually selected model instead
- * of pi's built-in startup default. Resumed sessions (with history) keep the
- * model pi restored from their own session record, so this is a no-op for them.
- */
-async function maybeInheritLastModel({ messages, piModel }) {
-  if (Array.isArray(messages) && messages.length > 0) return;
-  const last = getLastModel();
-  if (!last) return;
-  if (piModel?.provider === last.provider && piModel?.id === last.modelId) return;
-  try {
-    const result = await runtime.request(
-      { type: "set_model", provider: last.provider, modelId: last.modelId },
-      target,
-      { idempotencyKey: randomId() },
-    );
-    // pi returns false / no model when the provider is unauthenticated; keep the
-    // session on pi's default rather than showing a model it cannot use.
-    const applied = result?.response?.data;
-    if (applied === false) return;
-    updateComposerModel({ provider: last.provider, id: last.modelId });
-    const stateResult = await runtime.request({ type: "get_state" }, target);
-    const level = stateResult?.response?.data?.thinkingLevel;
-    if (level) updateComposerThinking(level);
-  } catch (error) {
-    console.warn("[Native] Failed to inherit last model:", error);
-  }
-}
-
-async function applyConfiguredModelVisibility(models) {
-  try {
-    const result = await config.call("list_model_visibility");
-    if (!result?.ok) throw new Error(result?.error || "Failed to load model visibility");
-    const visibility = result.data?.visibility ?? {};
-    return models.filter((model) => visibility[`${model.provider}/${model.id}`] !== false);
-  } catch (error) {
-    console.warn("[Native] Failed to load configured model visibility:", error);
-    return [];
-  }
-}
-
-function findModelContextWindow(provider, modelId) {
-  if (!provider || !modelId) return 0;
-  const model = availableModels.find(
-    (candidate) => candidate.provider === provider && candidate.id === modelId,
-  );
-  return Number(model?.contextWindow) || 0;
-}
-
-function formatModelName(model) {
-  const raw = typeof model === "string" ? model : model?.name || model?.id || "";
-  return raw.replace(/^claude-/, "").replace(/-\d{8}$/, "");
-}
-
-function getModelSearchText(model) {
-  return [model.name, model.id, model.provider].filter(Boolean).join(" ").toLowerCase();
-}
-
-function renderEmptyModelDropdown(container) {
-  const empty = document.createElement("div");
-  empty.className = "model-dropdown-empty";
-
-  const title = document.createElement("div");
-  title.className = "model-dropdown-empty-title";
-  title.textContent = t("models.emptyTitle");
-
-  const message = document.createElement("div");
-  message.textContent = t("models.emptyHelp");
-
-  const settingsButton = document.createElement("button");
-  settingsButton.type = "button";
-  settingsButton.className = "btn-primary model-dropdown-empty-action";
-  settingsButton.textContent = t("migrated.native.app.textcontent.openSettings");
-  settingsButton.addEventListener("click", () => {
-    closeModelDropdown();
-    // Provider credentials / models.json live on the Models tab since the
-    // settings split; Advanced Configuration is the agent settings.json
-    // editor and would land the user on the wrong page.
-    settingsPanel?.openSettings("models");
-  });
-
-  empty.append(title, message, settingsButton);
-  container.appendChild(empty);
-}
-
-function buildModelDropdownItem(model, isScoped) {
-  const item = document.createElement("div");
-  const selected = isSelectedModel(model, {
-    provider: currentModelProvider,
-    modelId: currentModelId,
-  });
-  item.className = `model-dropdown-item${selected ? " active" : ""}`;
-
-  const main = document.createElement("button");
-  main.type = "button";
-  main.className = "model-dropdown-item-main";
-
-  const nameWrap = document.createElement("span");
-  nameWrap.className = "model-dropdown-item-name";
-  nameWrap.textContent = formatModelName(model);
-
-  if (model.provider && model.provider !== "anthropic") {
-    const provider = document.createElement("span");
-    provider.className = "model-dropdown-item-provider";
-    provider.textContent = model.provider;
-    nameWrap.appendChild(provider);
   }
 
-  const context = document.createElement("span");
-  context.className = "model-dropdown-item-ctx";
-  context.textContent = model.contextWindow
-    ? `${(Number(model.contextWindow) / 1000).toFixed(0)}k`
-    : "";
+  function updateComposerThinking(level, { persist = true } = {}) {
+    currentThinkingLevel = level ?? "off";
+    if (persist)
+      sessionUiState
+        .saveProfile({
+          provider: currentModelProvider || "",
+          modelId: currentModelId || "",
+          thinkingLevel: currentThinkingLevel,
+        })
+        .catch(() => {});
+    if (thinkingBtn) {
+      const levelLabel = formatThinkingLevelLabel(currentThinkingLevel);
+      thinkingBtn.textContent = t("settings.thinkingCompact", { level: levelLabel });
+      thinkingBtn.className = `thinking-tag${currentThinkingLevel === "off" ? " off" : ""}`;
+      thinkingBtn.title = t("settings.thinkingTitle");
+      thinkingBtn.setAttribute(
+        "aria-label",
+        t("settings.thinkingAriaLabel", { level: levelLabel }),
+      );
+    }
+  }
 
-  main.append(nameWrap, context);
-  main.addEventListener("click", async () => {
-    closeModelDropdown();
+  async function loadAvailableModels({ force = false } = {}) {
+    // Serve the cache unless a configuration change explicitly invalidated it.
+    if (availableModelsLoaded && !force) return;
     try {
-      await runtime.request(
-        { type: "set_model", provider: model.provider, modelId: model.id },
+      const result = await runtime.request({ type: "get_available_models" }, target);
+      const runtimeModels = result?.response?.data?.models ?? [];
+      availableModels = await applyConfiguredModelVisibility(runtimeModels);
+      availableModelsLoaded = true;
+      if (!currentModelContextWindow) {
+        currentModelContextWindow = findModelContextWindow(currentModelProvider, currentModelId);
+        contextUsage.setContextWindowSize(currentModelContextWindow);
+      }
+      renderModelDropdownMenu();
+    } catch (error) {
+      console.warn("[Native] Failed to load available models:", error);
+    }
+  }
+
+  /**
+   * New sessions (zero messages) inherit the last manually selected model instead
+   * of pi's built-in startup default. Resumed sessions (with history) keep the
+   * model pi restored from their own session record, so this is a no-op for them.
+   */
+  async function maybeInheritLastModel({ messages, piModel }) {
+    if (Array.isArray(messages) && messages.length > 0) return;
+    const last = getLastModel();
+    if (!last) return;
+    if (piModel?.provider === last.provider && piModel?.id === last.modelId) return;
+    try {
+      const result = await runtime.request(
+        { type: "set_model", provider: last.provider, modelId: last.modelId },
         target,
         { idempotencyKey: randomId() },
       );
-      // Remember the manual pick so future new sessions inherit it (localStorage).
-      setLastModel(model);
-      updateComposerModel(model);
-      // Reconcile the thinking level after a model switch. pi 0.83's set_model
-      // response is the Model object (no thinkingLevel field, see rpc.md); the
-      // server's effective thinking level for the new model lives in get_state.
+      // pi returns false / no model when the provider is unauthenticated; keep the
+      // session on pi's default rather than showing a model it cannot use.
+      const applied = result?.response?.data;
+      if (applied === false) return;
+      updateComposerModel({ provider: last.provider, id: last.modelId });
       const stateResult = await runtime.request({ type: "get_state" }, target);
       const level = stateResult?.response?.data?.thinkingLevel;
       if (level) updateComposerThinking(level);
     } catch (error) {
-      showError(error);
+      console.warn("[Native] Failed to inherit last model:", error);
     }
-  });
-
-  const star = document.createElement("button");
-  star.type = "button";
-  star.className = `model-dropdown-star${isScoped ? " active" : ""}`;
-  star.textContent = isScoped ? "\u2605" : "\u2606";
-  star.setAttribute("aria-label", t(isScoped ? "models.removeScoped" : "models.addScoped"));
-  star.addEventListener("click", async (event) => {
-    // Starring only changes the preference — it must never switch the model.
-    event.stopPropagation();
-    try {
-      const response = await config.call("set_scoped_model", {
-        provider: model.provider,
-        modelId: model.id,
-        enabled: !isScoped,
-      });
-      if (response?.ok && Array.isArray(response.data?.modelIds)) {
-        scopedModelIds = response.data.modelIds;
-        const container = modelDropdownMenu?.querySelector(".model-dropdown-items");
-        if (container && !modelDropdownMenu.classList.contains("hidden")) {
-          renderModelDropdownItems(
-            container,
-            modelDropdownMenu.querySelector(".model-dropdown-search")?.value ?? "",
-          );
-        }
-      }
-    } catch {
-      // An unavailable config bridge leaves the current menu state intact.
-    }
-  });
-
-  item.append(main, star);
-  return item;
-}
-
-function renderModelDropdownItems(container, filter = "") {
-  container.replaceChildren();
-  if (availableModels.length === 0) {
-    renderEmptyModelDropdown(container);
-    return;
   }
 
-  const query = filter.trim().toLowerCase();
-  const matchingModels = query
-    ? availableModels.filter((model) => getModelSearchText(model).includes(query))
-    : availableModels;
+  async function applyConfiguredModelVisibility(models) {
+    try {
+      const result = await config.call("list_model_visibility");
+      if (!result?.ok) throw new Error(result?.error || "Failed to load model visibility");
+      const visibility = result.data?.visibility ?? {};
+      return models.filter((model) => visibility[`${model.provider}/${model.id}`] !== false);
+    } catch (error) {
+      console.warn("[Native] Failed to load configured model visibility:", error);
+      return [];
+    }
+  }
 
-  if (matchingModels.length === 0) {
+  function findModelContextWindow(provider, modelId) {
+    if (!provider || !modelId) return 0;
+    const model = availableModels.find(
+      (candidate) => candidate.provider === provider && candidate.id === modelId,
+    );
+    return Number(model?.contextWindow) || 0;
+  }
+
+  function formatModelName(model) {
+    const raw = typeof model === "string" ? model : model?.name || model?.id || "";
+    return raw.replace(/^claude-/, "").replace(/-\d{8}$/, "");
+  }
+
+  function getModelSearchText(model) {
+    return [model.name, model.id, model.provider].filter(Boolean).join(" ").toLowerCase();
+  }
+
+  function renderEmptyModelDropdown(container) {
     const empty = document.createElement("div");
     empty.className = "model-dropdown-empty";
-    empty.textContent = t("migrated.native.app.textcontent.noModelsMatchYourSearch");
+
+    const title = document.createElement("div");
+    title.className = "model-dropdown-empty-title";
+    title.textContent = t("models.emptyTitle");
+
+    const message = document.createElement("div");
+    message.textContent = t("models.emptyHelp");
+
+    const settingsButton = document.createElement("button");
+    settingsButton.type = "button";
+    settingsButton.className = "btn-primary model-dropdown-empty-action";
+    settingsButton.textContent = t("migrated.native.app.textcontent.openSettings");
+    settingsButton.addEventListener("click", () => {
+      closeModelDropdown();
+      // Provider credentials / models.json live on the Models tab since the
+      // settings split; Advanced Configuration is the agent settings.json
+      // editor and would land the user on the wrong page.
+      settingsPanel?.openSettings("models");
+    });
+
+    empty.append(title, message, settingsButton);
     container.appendChild(empty);
-    return;
   }
 
-  const { scoped, remaining } = splitModelsByScope(matchingModels, scopedModelIds);
-  appendModelSection(container, t("models.scoped"), scoped, true);
-  appendModelSection(container, t("models.allEnabled"), remaining, false);
-}
+  function buildModelDropdownItem(model, isScoped) {
+    const item = document.createElement("div");
+    const selected = isSelectedModel(model, {
+      provider: currentModelProvider,
+      modelId: currentModelId,
+    });
+    item.className = `model-dropdown-item${selected ? " active" : ""}`;
 
-function appendModelSection(container, label, models, isScoped) {
-  if (models.length === 0) return;
-  const heading = document.createElement("div");
-  heading.className = "model-dropdown-section";
-  heading.textContent = label;
-  container.appendChild(heading);
-  for (const model of models) {
-    container.appendChild(buildModelDropdownItem(model, isScoped));
-  }
-}
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "model-dropdown-item-main";
 
-async function loadScopedModelIds({ force = false } = {}) {
-  if (scopedModelsLoaded && !force) return;
-  try {
-    const response = await config.call("list_scoped_models");
-    if (response?.ok && Array.isArray(response.data?.modelIds)) {
-      scopedModelIds = response.data.modelIds;
-      scopedModelsLoaded = true;
+    const nameWrap = document.createElement("span");
+    nameWrap.className = "model-dropdown-item-name";
+    nameWrap.textContent = formatModelName(model);
+
+    if (model.provider && model.provider !== "anthropic") {
+      const provider = document.createElement("span");
+      provider.className = "model-dropdown-item-provider";
+      provider.textContent = model.provider;
+      nameWrap.appendChild(provider);
     }
-  } catch {
-    // An unavailable config bridge degrades to the ungrouped enabled list.
+
+    const context = document.createElement("span");
+    context.className = "model-dropdown-item-ctx";
+    context.textContent = model.contextWindow
+      ? `${(Number(model.contextWindow) / 1000).toFixed(0)}k`
+      : "";
+
+    main.append(nameWrap, context);
+    main.addEventListener("click", async () => {
+      closeModelDropdown();
+      try {
+        await runtime.request(
+          { type: "set_model", provider: model.provider, modelId: model.id },
+          target,
+          { idempotencyKey: randomId() },
+        );
+        // Remember the manual pick so future new sessions inherit it (localStorage).
+        setLastModel(model);
+        updateComposerModel(model);
+        // Reconcile the thinking level after a model switch. pi 0.83's set_model
+        // response is the Model object (no thinkingLevel field, see rpc.md); the
+        // server's effective thinking level for the new model lives in get_state.
+        const stateResult = await runtime.request({ type: "get_state" }, target);
+        const level = stateResult?.response?.data?.thinkingLevel;
+        if (level) updateComposerThinking(level);
+      } catch (error) {
+        showError(error);
+      }
+    });
+
+    const star = document.createElement("button");
+    star.type = "button";
+    star.className = `model-dropdown-star${isScoped ? " active" : ""}`;
+    star.textContent = isScoped ? "\u2605" : "\u2606";
+    star.setAttribute("aria-label", t(isScoped ? "models.removeScoped" : "models.addScoped"));
+    star.addEventListener("click", async (event) => {
+      // Starring only changes the preference — it must never switch the model.
+      event.stopPropagation();
+      try {
+        const response = await config.call("set_scoped_model", {
+          provider: model.provider,
+          modelId: model.id,
+          enabled: !isScoped,
+        });
+        if (response?.ok && Array.isArray(response.data?.modelIds)) {
+          scopedModelIds = response.data.modelIds;
+          const container = modelDropdownMenu?.querySelector(".model-dropdown-items");
+          if (container && !modelDropdownMenu.classList.contains("hidden")) {
+            renderModelDropdownItems(
+              container,
+              modelDropdownMenu.querySelector(".model-dropdown-search")?.value ?? "",
+            );
+          }
+        }
+      } catch {
+        // An unavailable config bridge leaves the current menu state intact.
+      }
+    });
+
+    item.append(main, star);
+    return item;
   }
-}
 
-function renderModelDropdownMenu() {
-  if (!modelDropdownMenu) return;
-  modelDropdownMenu.replaceChildren();
+  function renderModelDropdownItems(container, filter = "") {
+    container.replaceChildren();
+    if (availableModels.length === 0) {
+      renderEmptyModelDropdown(container);
+      return;
+    }
 
-  const search = document.createElement("input");
-  search.className = "model-dropdown-search";
-  search.placeholder = t("models.searchPlaceholder");
-  search.type = "text";
-  modelDropdownMenu.appendChild(search);
+    const query = filter.trim().toLowerCase();
+    const matchingModels = query
+      ? availableModels.filter((model) => getModelSearchText(model).includes(query))
+      : availableModels;
 
-  const itemsContainer = document.createElement("div");
-  itemsContainer.className = "model-dropdown-items";
-  modelDropdownMenu.appendChild(itemsContainer);
+    if (matchingModels.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "model-dropdown-empty";
+      empty.textContent = t("migrated.native.app.textcontent.noModelsMatchYourSearch");
+      container.appendChild(empty);
+      return;
+    }
 
-  renderModelDropdownItems(itemsContainer);
-  // Scoped ids are cached after the first open; only the initial fetch rerenders
-  // (the enabled list is shown immediately so the menu never blocks on the
-  // config bridge, and subsequent opens reuse the cache without a round-trip).
-  if (!scopedModelsLoaded) {
-    void loadScopedModelIds().then(() => {
-      if (!modelDropdownMenu.classList.contains("hidden")) {
-        renderModelDropdownItems(itemsContainer, search.value);
+    const { scoped, remaining } = splitModelsByScope(matchingModels, scopedModelIds);
+    appendModelSection(container, t("models.scoped"), scoped, true);
+    appendModelSection(container, t("models.allEnabled"), remaining, false);
+  }
+
+  function appendModelSection(container, label, models, isScoped) {
+    if (models.length === 0) return;
+    const heading = document.createElement("div");
+    heading.className = "model-dropdown-section";
+    heading.textContent = label;
+    container.appendChild(heading);
+    for (const model of models) {
+      container.appendChild(buildModelDropdownItem(model, isScoped));
+    }
+  }
+
+  async function loadScopedModelIds({ force = false } = {}) {
+    if (scopedModelsLoaded && !force) return;
+    try {
+      const response = await config.call("list_scoped_models");
+      if (response?.ok && Array.isArray(response.data?.modelIds)) {
+        scopedModelIds = response.data.modelIds;
+        scopedModelsLoaded = true;
+      }
+    } catch {
+      // An unavailable config bridge degrades to the ungrouped enabled list.
+    }
+  }
+
+  function renderModelDropdownMenu() {
+    if (!modelDropdownMenu) return;
+    modelDropdownMenu.replaceChildren();
+
+    const search = document.createElement("input");
+    search.className = "model-dropdown-search";
+    search.placeholder = t("models.searchPlaceholder");
+    search.type = "text";
+    modelDropdownMenu.appendChild(search);
+
+    const itemsContainer = document.createElement("div");
+    itemsContainer.className = "model-dropdown-items";
+    modelDropdownMenu.appendChild(itemsContainer);
+
+    renderModelDropdownItems(itemsContainer);
+    // Scoped ids are cached after the first open; only the initial fetch rerenders
+    // (the enabled list is shown immediately so the menu never blocks on the
+    // config bridge, and subsequent opens reuse the cache without a round-trip).
+    if (!scopedModelsLoaded) {
+      void loadScopedModelIds().then(() => {
+        if (!modelDropdownMenu.classList.contains("hidden")) {
+          renderModelDropdownItems(itemsContainer, search.value);
+        }
+      });
+    }
+
+    search.addEventListener("input", () => renderModelDropdownItems(itemsContainer, search.value));
+    search.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeModelDropdown();
+        event.stopPropagation();
+      }
+      if (event.key === "Enter") {
+        itemsContainer.querySelector(".model-dropdown-item")?.click();
       }
     });
   }
 
-  search.addEventListener("input", () => renderModelDropdownItems(itemsContainer, search.value));
-  search.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      closeModelDropdown();
-      event.stopPropagation();
-    }
-    if (event.key === "Enter") {
-      itemsContainer.querySelector(".model-dropdown-item")?.click();
-    }
-  });
-}
-
-function openModelDropdown() {
-  if (!modelDropdownMenu) return;
-  renderModelDropdownMenu();
-  modelDropdownMenu.classList.remove("hidden");
-  modelDropdown?.classList.add("open");
-  modelDropdownToolbar?.classList.add("model-menu-open");
-  modelDropdownBtn?.setAttribute("aria-expanded", "true");
-  requestAnimationFrame(() => modelDropdownMenu.querySelector(".model-dropdown-search")?.focus());
-}
-
-function closeModelDropdown() {
-  modelDropdownMenu?.classList.add("hidden");
-  modelDropdown?.classList.remove("open");
-  modelDropdownToolbar?.classList.remove("model-menu-open");
-  modelDropdownBtn?.setAttribute("aria-expanded", "false");
-}
-
-if (modelDropdownBtn) {
-  modelDropdownBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const isOpen = !modelDropdownMenu?.classList.contains("hidden");
-    if (isOpen) {
-      closeModelDropdown();
-    } else {
-      if (!availableModelsLoaded) loadAvailableModels();
-      openModelDropdown();
-    }
-  });
-}
-
-document.addEventListener("click", (event) => {
-  if (!event.target.closest("#model-dropdown")) closeModelDropdown();
-});
-
-// Optimistic composer label: paint the stored last model straight away so a
-// fresh window/new task shows it immediately instead of the HTML placeholder
-// while the first snapshot loads. Display only — the snapshot hydrate (and
-// maybeInheritLastModel) reconcile the authoritative runtime model.
-{
-  const storedInitialModel = getLastModel();
-  if (storedInitialModel && modelDropdownLabel) {
-    modelDropdownLabel.textContent = formatModelName({ id: storedInitialModel.modelId }) || "model";
+  function openModelDropdown() {
+    if (!modelDropdownMenu) return;
+    renderModelDropdownMenu();
+    modelDropdownMenu.classList.remove("hidden");
+    modelDropdown?.classList.add("open");
+    modelDropdownToolbar?.classList.add("model-menu-open");
+    modelDropdownBtn?.setAttribute("aria-expanded", "true");
+    requestAnimationFrame(() => modelDropdownMenu.querySelector(".model-dropdown-search")?.focus());
   }
-}
 
-onLocaleChange(() => {
-  updateComposerThinking(currentThinkingLevel);
-  renderStatus();
-  // The document-wide data-i18n pass cannot reach the analysis section's own
-  // nodes; repaint its labels from the new locale.
-  taskAnalysis?.rerender();
-});
+  function closeModelDropdown() {
+    modelDropdownMenu?.classList.add("hidden");
+    modelDropdown?.classList.remove("open");
+    modelDropdownToolbar?.classList.remove("model-menu-open");
+    modelDropdownBtn?.setAttribute("aria-expanded", "false");
+  }
 
-if (thinkingBtn) {
-  thinkingBtn.addEventListener("click", async () => {
-    try {
-      // Ask the server to cycle through the current model's supported levels
-      // (cycle_thinking_level) instead of stepping a fixed client-side array —
-      // the server skips levels the active model does not support.
-      const result = await runtime.request({ type: "cycle_thinking_level" }, target);
-      const level = result?.response?.data?.level;
-      if (level) updateComposerThinking(level);
-    } catch (error) {
-      showError(error);
-    }
+  if (modelDropdownBtn) {
+    modelDropdownBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const isOpen = !modelDropdownMenu?.classList.contains("hidden");
+      if (isOpen) {
+        closeModelDropdown();
+      } else {
+        if (!availableModelsLoaded) loadAvailableModels();
+        openModelDropdown();
+      }
+    });
+  }
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("#model-dropdown")) closeModelDropdown();
   });
+
+  // Optimistic composer label: paint the stored last model straight away so a
+  // fresh window/new task shows it immediately instead of the HTML placeholder
+  // while the first snapshot loads. Display only — the snapshot hydrate (and
+  // maybeInheritLastModel) reconcile the authoritative runtime model.
+  {
+    const storedInitialModel = getLastModel();
+    if (storedInitialModel && modelDropdownLabel) {
+      modelDropdownLabel.textContent =
+        formatModelName({ id: storedInitialModel.modelId }) || "model";
+    }
+  }
+
+  onLocaleChange(() => {
+    updateComposerThinking(currentThinkingLevel);
+    renderStatus();
+    // The document-wide data-i18n pass cannot reach the analysis section's own
+    // nodes; repaint its labels from the new locale.
+    taskAnalysis?.rerender();
+  });
+
+  if (thinkingBtn) {
+    thinkingBtn.addEventListener("click", async () => {
+      try {
+        // Ask the server to cycle through the current model's supported levels
+        // (cycle_thinking_level) instead of stepping a fixed client-side array —
+        // the server skips levels the active model does not support.
+        const result = await runtime.request({ type: "cycle_thinking_level" }, target);
+        const level = result?.response?.data?.level;
+        if (level) updateComposerThinking(level);
+      } catch (error) {
+        showError(error);
+      }
+    });
+  }
+
+  function isMacOS() {
+    return navigator.platform.startsWith("Mac") || navigator.userAgent.includes("Macintosh");
+  }
+
+  function isFilePanelShortcut(event) {
+    if (event.defaultPrevented || event.isComposing) return false;
+    if (isFilePanelShortcutTypingTarget(event.target)) return false;
+    if (event.altKey || event.shiftKey || event.key.toLowerCase() !== "b") return false;
+    return event.metaKey || event.ctrlKey;
+  }
+
+  function isFilePanelShortcutTypingTarget(target) {
+    if (!(target instanceof Element)) return false;
+    if (target.closest("input, textarea, select")) return true;
+    return target.closest('[contenteditable="true"]') !== null;
+  }
+
+  window.__picotNative = {
+    runtime,
+    data,
+    adapter,
+    get target() {
+      return target;
+    },
+  };
 }
 
-function isMacOS() {
-  return navigator.platform.startsWith("Mac") || navigator.userAgent.includes("Macintosh");
-}
-
-function isFilePanelShortcut(event) {
-  if (event.defaultPrevented || event.isComposing) return false;
-  if (isFilePanelShortcutTypingTarget(event.target)) return false;
-  if (event.altKey || event.shiftKey || event.key.toLowerCase() !== "b") return false;
-  return event.metaKey || event.ctrlKey;
-}
-
-function isFilePanelShortcutTypingTarget(target) {
-  if (!(target instanceof Element)) return false;
-  if (target.closest("input, textarea, select")) return true;
-  return target.closest('[contenteditable="true"]') !== null;
-}
-
-window.__picotNative = {
-  runtime,
-  data,
-  adapter,
-  get target() {
-    return target;
-  },
-};
+export const appReady = initializeApp();

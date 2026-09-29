@@ -291,6 +291,7 @@ export default function (pi: ExtensionAPI) {
   let activeTriggerMessageId: string | undefined;
   let evictionNotice: string | undefined;
   let pendingLocalPrompt: string | undefined;
+  let lastAgentSummary: AssistantSummary | undefined;
 
   function persistChatState(conversationId?: string): void {
     pi.appendEntry<PersistedChatState>(SESSION_STATE_CUSTOM_TYPE, {
@@ -451,10 +452,10 @@ export default function (pi: ExtensionAPI) {
 
   function buildRemoteHelp(): string {
     return [
-      "Picot Super Agent is connected.",
+      "Pipline Super Agent is connected.",
       "",
       "Send a normal message here to create a Super Agent intake item.",
-      "Picot keeps project-agent dispatch behind local approval.",
+      "Pipline keeps project-agent dispatch behind local approval.",
       "",
       "Commands:",
       "/status - show current model, queue, and context status",
@@ -464,7 +465,7 @@ export default function (pi: ExtensionAPI) {
       "/models - list current and available models",
       "/health - show Telegram, task, instance, and model health",
       "/errors - show the 10 most recent full operations errors",
-      "/new - start a new pi session after confirmation in Picot",
+      "/new - start a new pi session after confirmation in Pipline",
       "/compact - compact the current session",
       "/stop - abort the current turn",
     ].join("\n");
@@ -887,6 +888,7 @@ export default function (pi: ExtensionAPI) {
     }
     try {
       chatTurnInFlight = true;
+      lastAgentSummary = undefined;
       activeTriggerMessageId = next.triggerMessageId;
       queuedOutboundAttachments = [];
       pendingChatDispatch = true;
@@ -1137,7 +1139,13 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  pi.on("agent_end", async (event, ctx) => {
+  pi.on("agent_end", async (event) => {
+    lastAgentSummary = extractAssistantSummary(event.messages as unknown[]);
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    const summary = lastAgentSummary ?? {};
+    lastAgentSummary = undefined;
     if (!runtime || !chatTurnInFlight) {
       stopTypingLoop();
       updateStatus(ctx);
@@ -1145,7 +1153,6 @@ export default function (pi: ExtensionAPI) {
       if (pendingLocalPrompt !== undefined && liveConnection) {
         const localPrompt = pendingLocalPrompt;
         pendingLocalPrompt = undefined;
-        const summary = extractAssistantSummary(event.messages as unknown[]);
         if (summary.text) {
           const combined = `${localPrompt}\n\n${summary.text}`;
           try {
@@ -1161,7 +1168,6 @@ export default function (pi: ExtensionAPI) {
     }
     // Clear any stale local prompt from a previous local turn.
     pendingLocalPrompt = undefined;
-    const summary = extractAssistantSummary(event.messages as unknown[]);
     if (summary.stopReason === "aborted") {
       stopTypingLoop();
       chatTurnInFlight = false;

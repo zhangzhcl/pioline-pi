@@ -103,7 +103,9 @@ test("body resize refits xterm and destroy disconnects the observer", () => {
   const observer = { observe: vi.fn(), disconnect: vi.fn() };
   vi.stubGlobal(
     "ResizeObserver",
-    vi.fn(() => observer),
+    vi.fn(function resizeObserverMock() {
+      return observer;
+    }),
   );
   const refitAll = vi.fn();
   const { panel } = mountedPanel({ client: { refitAll } });

@@ -195,7 +195,7 @@ describe("composer slash menu", () => {
     expect(originLabel({ source: "skill", sourceInfo: { source: "auto", scope: "user" } })).toBe(
       "Personal",
     );
-    expect(originLabel({ type: "builtin", scope: "picot" })).toBe("Picot");
+    expect(originLabel({ type: "builtin", scope: "picot" })).toBe("Pipline");
   });
 
   it("renders the providing package in the slash menu", async () => {

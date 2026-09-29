@@ -27,17 +27,17 @@ export function activeSlashQuery(input) {
 function scopeLabel(scope) {
   if (scope === "project") return "Project";
   if (scope === "temporary") return "Temporary";
-  if (scope === "picot") return "Picot";
+  if (scope === "picot") return "Pipline";
   return "Personal";
 }
 
 /**
  * Where a command comes from: the providing package when pi reports one
  * (`npm:pi-web-access` → `pi-web-access`), otherwise the scope it was loaded
- * from (Personal/Project/Temporary) or Picot for built-ins.
+ * from (Personal/Project/Temporary) or Pipline for built-ins.
  */
 export function originLabel(command) {
-  if (command?.type === "builtin") return "Picot";
+  if (command?.type === "builtin") return "Pipline";
   const source = command?.sourceInfo?.source;
   if (typeof source === "string") {
     if (source.startsWith("npm:")) return source.slice(4);
@@ -68,7 +68,7 @@ function typeLabel(command) {
   if (group === "skill") return "Skill";
   if (group === "extension") return "Extension";
   if (group === "prompt") return "Prompt";
-  if (group === "builtin") return "Picot";
+  if (group === "builtin") return "Pipline";
   return "Command";
 }
 
@@ -110,7 +110,7 @@ function commandIcon(command) {
 
 /**
  * True when the command is known to need the real terminal — pi-gui calls this
- * "terminal-only". Picot learns it the first time a command's TUI surface fails
+ * "terminal-only". Pipline learns it the first time a command's TUI surface fails
  * to render in the WebView (see extensions/extension-command-compatibility.js).
  */
 export function isTerminalOnly(command) {

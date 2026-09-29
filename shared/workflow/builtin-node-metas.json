@@ -1,0 +1,960 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "pipline.assign",
+    "version": "1.0.0",
+    "type": "assign",
+    "catalogHidden": true,
+    "label": "Assign",
+    "labelKey": "workflow.nodeTypes.assign",
+    "description": "Create a named JSON value from a declarative constant.",
+    "descriptionKey": "workflow.nodeDescriptions.assign",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "value",
+        "label": "Value",
+        "labelKey": "workflow.nodeFields.value",
+        "type": "any",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "name",
+        "label": "Output name",
+        "labelKey": "workflow.nodeFields.outputName",
+        "type": "string",
+        "required": true,
+        "defaultValue": "value"
+      },
+      {
+        "name": "value",
+        "label": "JSON value",
+        "labelKey": "workflow.nodeFields.jsonValue",
+        "type": "json",
+        "required": true,
+        "defaultValue": {}
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.assign"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.assign",
+    "version": "2.0.0",
+    "type": "assign",
+    "label": "Assign",
+    "labelKey": "workflow.nodeTypes.assign",
+    "description": "Assign an input value to a named field in the output object.",
+    "descriptionKey": "workflow.nodeDescriptions.assign",
+    "inputs": [
+      {
+        "name": "value",
+        "label": "Value",
+        "labelKey": "workflow.nodeFields.assignmentValue",
+        "type": "any",
+        "required": true,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "output",
+        "label": "Assigned object",
+        "labelKey": "workflow.nodeFields.assignedObject",
+        "type": "object",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "varName",
+        "label": "Field name",
+        "labelKey": "workflow.nodeFields.variableName",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.assign"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.template",
+    "version": "1.0.0",
+    "type": "template",
+    "label": "Template",
+    "labelKey": "workflow.nodeTypes.template",
+    "description": "Render plain text using explicit input values; no template code is executed.",
+    "descriptionKey": "workflow.nodeDescriptions.template",
+    "inputs": [
+      {
+        "name": "values",
+        "label": "Values",
+        "labelKey": "workflow.nodeFields.values",
+        "type": "object",
+        "required": true,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "text",
+        "label": "Text",
+        "labelKey": "workflow.nodeFields.text",
+        "type": "string",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "template",
+        "label": "Text template",
+        "labelKey": "workflow.nodeFields.textTemplate",
+        "type": "string",
+        "required": true,
+        "defaultValue": "{{name}}"
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.template"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.extract",
+    "version": "1.0.0",
+    "type": "extract",
+    "catalogHidden": true,
+    "label": "Extract",
+    "labelKey": "workflow.nodeTypes.extract",
+    "description": "Read a value by a fixed dot-separated object path.",
+    "descriptionKey": "workflow.nodeDescriptions.extract",
+    "inputs": [
+      {
+        "name": "source",
+        "label": "Source",
+        "labelKey": "workflow.nodeFields.source",
+        "type": "object",
+        "required": true,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "value",
+        "label": "Value",
+        "labelKey": "workflow.nodeFields.value",
+        "type": "any",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "path",
+        "label": "Object path",
+        "labelKey": "workflow.nodeFields.objectPath",
+        "type": "string",
+        "required": true,
+        "defaultValue": "data.value"
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.extract"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.extract",
+    "version": "2.0.0",
+    "type": "extract",
+    "label": "Extract",
+    "labelKey": "workflow.nodeTypes.extract",
+    "description": "Read a value from an object or array using a fixed path.",
+    "descriptionKey": "workflow.nodeDescriptions.extractStructured",
+    "inputs": [
+      {
+        "name": "source",
+        "label": "Source",
+        "labelKey": "workflow.nodeFields.source",
+        "type": "any",
+        "required": true,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "value",
+        "label": "Value",
+        "labelKey": "workflow.nodeFields.value",
+        "type": "any",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "path",
+        "label": "JSON path",
+        "labelKey": "workflow.nodeFields.jsonPath",
+        "type": "string",
+        "required": true,
+        "defaultValue": "data.value"
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.extract"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.merge",
+    "version": "1.0.0",
+    "type": "merge",
+    "label": "Merge",
+    "labelKey": "workflow.nodeTypes.mergeObjects",
+    "description": "Merge multiple object inputs using an explicit conflict policy.",
+    "descriptionKey": "workflow.nodeDescriptions.mergeObjects",
+    "inputs": [
+      {
+        "name": "values",
+        "label": "Values",
+        "labelKey": "workflow.nodeFields.values",
+        "type": {
+          "kind": "array",
+          "items": "object"
+        },
+        "required": false,
+        "allowStaticValue": true,
+        "multi": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "label": "Merged object",
+        "labelKey": "workflow.nodeFields.mergedObject",
+        "type": "object",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "conflict",
+        "label": "Key conflict",
+        "labelKey": "workflow.nodeFields.keyConflict",
+        "type": "select",
+        "required": true,
+        "defaultValue": "error",
+        "options": [
+          {
+            "label": "Error",
+            "labelKey": "workflow.nodeFields.error",
+            "value": "error"
+          },
+          {
+            "label": "Keep first",
+            "labelKey": "workflow.nodeFields.keepFirst",
+            "value": "first"
+          },
+          {
+            "label": "Keep last",
+            "labelKey": "workflow.nodeFields.keepLast",
+            "value": "last"
+          }
+        ]
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.merge"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.merge",
+    "version": "2.0.0",
+    "type": "merge",
+    "label": "Merge",
+    "labelKey": "workflow.nodeTypes.merge",
+    "catalogHidden": true,
+    "description": "Collect incoming values into an ordered array.",
+    "descriptionKey": "workflow.nodeDescriptions.merge",
+    "inputs": [
+      {
+        "name": "in0",
+        "label": "Inputs",
+        "labelKey": "workflow.nodeFields.mergeInputs",
+        "type": {
+          "kind": "array",
+          "items": "any"
+        },
+        "required": false,
+        "allowStaticValue": true,
+        "multi": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "list",
+        "label": "Collected values",
+        "labelKey": "workflow.nodeFields.mergeList",
+        "type": {
+          "kind": "array",
+          "items": "any"
+        },
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.merge"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.merge",
+    "version": "3.0.0",
+    "type": "merge",
+    "label": "Merge",
+    "labelKey": "workflow.nodeTypes.merge",
+    "description": "Collect or concatenate incoming arrays in connection order.",
+    "descriptionKey": "workflow.nodeDescriptions.merge",
+    "inputs": [
+      {
+        "name": "in0",
+        "label": "Inputs",
+        "labelKey": "workflow.nodeFields.mergeInputs",
+        "type": {
+          "kind": "array",
+          "items": "any"
+        },
+        "required": false,
+        "allowStaticValue": true,
+        "multi": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "list",
+        "label": "Collected values",
+        "labelKey": "workflow.nodeFields.mergeList",
+        "type": {
+          "kind": "array",
+          "items": "any"
+        },
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "mode",
+        "label": "Array mode",
+        "labelKey": "workflow.nodeFields.mergeMode",
+        "type": "select",
+        "required": true,
+        "defaultValue": "collect",
+        "options": [
+          {
+            "label": "Collect values",
+            "labelKey": "workflow.nodeFields.mergeCollect",
+            "value": "collect"
+          },
+          {
+            "label": "Concatenate arrays",
+            "labelKey": "workflow.nodeFields.mergeConcatenate",
+            "value": "concatenate"
+          }
+        ]
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.merge"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.merge-by-port",
+    "version": "1.0.0",
+    "type": "merge",
+    "label": "Merge by input",
+    "labelKey": "workflow.nodeTypes.mergeByPort",
+    "description": "Collect values into arrays grouped by their named input ports.",
+    "descriptionKey": "workflow.nodeDescriptions.mergeByPort",
+    "inputs": [
+      {
+        "name": "input0",
+        "label": "Input 1",
+        "labelKey": "workflow.nodeFields.mergePort0",
+        "type": { "kind": "array", "items": "any" },
+        "required": false,
+        "allowStaticValue": true,
+        "multi": true
+      },
+      {
+        "name": "input1",
+        "label": "Input 2",
+        "labelKey": "workflow.nodeFields.mergePort1",
+        "type": { "kind": "array", "items": "any" },
+        "required": false,
+        "allowStaticValue": true,
+        "multi": true
+      },
+      {
+        "name": "input2",
+        "label": "Input 3",
+        "labelKey": "workflow.nodeFields.mergePort2",
+        "type": { "kind": "array", "items": "any" },
+        "required": false,
+        "allowStaticValue": true,
+        "multi": true
+      },
+      {
+        "name": "input3",
+        "label": "Input 4",
+        "labelKey": "workflow.nodeFields.mergePort3",
+        "type": { "kind": "array", "items": "any" },
+        "required": false,
+        "allowStaticValue": true,
+        "multi": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "label": "Values by input",
+        "labelKey": "workflow.nodeFields.mergeByPortResult",
+        "type": "object",
+        "required": true,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.merge-by-port"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.filter",
+    "version": "1.0.0",
+    "type": "filter",
+    "label": "Filter",
+    "labelKey": "workflow.nodeTypes.filter",
+    "description": "Filter an array using a declarative field comparison.",
+    "descriptionKey": "workflow.nodeDescriptions.filter",
+    "inputs": [
+      {
+        "name": "items",
+        "label": "Items",
+        "labelKey": "workflow.nodeFields.items",
+        "type": "array",
+        "required": true,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "items",
+        "label": "Filtered items",
+        "labelKey": "workflow.nodeFields.filteredItems",
+        "type": "array",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "path",
+        "label": "Item field",
+        "labelKey": "workflow.nodeFields.itemField",
+        "type": "string",
+        "required": true,
+        "defaultValue": "status"
+      },
+      {
+        "name": "operator",
+        "label": "Comparison",
+        "labelKey": "workflow.nodeFields.comparison",
+        "type": "select",
+        "required": true,
+        "defaultValue": "equals",
+        "options": [
+          {
+            "label": "Equals",
+            "labelKey": "workflow.nodeFields.equals",
+            "value": "equals"
+          },
+          {
+            "label": "Not equals",
+            "labelKey": "workflow.nodeFields.notEquals",
+            "value": "notEquals"
+          },
+          {
+            "label": "Exists",
+            "labelKey": "workflow.nodeFields.exists",
+            "value": "exists"
+          }
+        ]
+      },
+      {
+        "name": "value",
+        "label": "Compare with",
+        "labelKey": "workflow.nodeFields.compareWith",
+        "type": "json",
+        "required": false,
+        "defaultValue": ""
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.filter"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.condition",
+    "version": "1.0.0",
+    "type": "condition",
+    "catalogHidden": true,
+    "label": "Condition",
+    "labelKey": "workflow.nodeTypes.condition",
+    "description": "Select a branch using a declarative input comparison; no expression code is evaluated.",
+    "descriptionKey": "workflow.nodeDescriptions.condition",
+    "inputs": [
+      {
+        "name": "value",
+        "label": "Value",
+        "labelKey": "workflow.nodeFields.value",
+        "type": "any",
+        "required": true,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "true",
+        "label": "True",
+        "labelKey": "workflow.nodeFields.true",
+        "type": "any",
+        "required": false,
+        "allowStaticValue": false
+      },
+      {
+        "name": "false",
+        "label": "False",
+        "labelKey": "workflow.nodeFields.false",
+        "type": "any",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "operator",
+        "label": "Comparison",
+        "labelKey": "workflow.nodeFields.comparison",
+        "type": "select",
+        "required": true,
+        "defaultValue": "equals",
+        "options": [
+          {
+            "label": "Equals",
+            "labelKey": "workflow.nodeFields.equals",
+            "value": "equals"
+          },
+          {
+            "label": "Not equals",
+            "labelKey": "workflow.nodeFields.notEquals",
+            "value": "notEquals"
+          },
+          {
+            "label": "Exists",
+            "labelKey": "workflow.nodeFields.exists",
+            "value": "exists"
+          }
+        ]
+      },
+      {
+        "name": "expected",
+        "label": "Expected value",
+        "labelKey": "workflow.nodeFields.expectedValue",
+        "type": "json",
+        "required": false,
+        "defaultValue": ""
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.condition"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.condition",
+    "version": "2.0.0",
+    "type": "condition",
+    "label": "Condition",
+    "labelKey": "workflow.nodeTypes.condition",
+    "description": "Select a branch by comparing a value or fixed field path; no expression code is evaluated.",
+    "descriptionKey": "workflow.nodeDescriptions.condition",
+    "inputs": [
+      {
+        "name": "value",
+        "label": "Value",
+        "labelKey": "workflow.nodeFields.value",
+        "type": "any",
+        "required": true,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "true",
+        "label": "True",
+        "labelKey": "workflow.nodeFields.true",
+        "type": "any",
+        "required": false,
+        "allowStaticValue": false
+      },
+      {
+        "name": "false",
+        "label": "False",
+        "labelKey": "workflow.nodeFields.false",
+        "type": "any",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "path",
+        "label": "JSON path",
+        "labelKey": "workflow.nodeFields.jsonPath",
+        "type": "string",
+        "required": true,
+        "defaultValue": "",
+        "descriptionKey": "workflow.nodeParamDescriptions.conditionPath"
+      },
+      {
+        "name": "operator",
+        "label": "Comparison",
+        "labelKey": "workflow.nodeFields.comparison",
+        "type": "select",
+        "required": true,
+        "defaultValue": "equals",
+        "options": [
+          {
+            "label": "Equals",
+            "labelKey": "workflow.nodeFields.equals",
+            "value": "equals"
+          },
+          {
+            "label": "Not equals",
+            "labelKey": "workflow.nodeFields.notEquals",
+            "value": "notEquals"
+          },
+          {
+            "label": "Exists",
+            "labelKey": "workflow.nodeFields.exists",
+            "value": "exists"
+          }
+        ]
+      },
+      {
+        "name": "expected",
+        "label": "Expected value",
+        "labelKey": "workflow.nodeFields.expectedValue",
+        "type": "json",
+        "required": false,
+        "defaultValue": ""
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.condition"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.start",
+    "version": "1.0.0",
+    "type": "start",
+    "label": "Start",
+    "labelKey": "workflow.nodeTypes.start",
+    "description": "Workflow entry and validated external input.",
+    "descriptionKey": "workflow.nodeDescriptions.start",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "input",
+        "label": "Workflow input",
+        "labelKey": "workflow.nodeFields.workflowInput",
+        "type": "object",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "inputSchema",
+        "label": "Input schema (JSON)",
+        "labelKey": "workflow.nodeFields.inputSchema",
+        "type": "json",
+        "required": false,
+        "defaultValue": {
+          "properties": {},
+          "required": []
+        },
+        "descriptionKey": "workflow.nodeParamDescriptions.startInputSchema"
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.start"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.pi-agent",
+    "version": "1.0.0",
+    "type": "pi-agent",
+    "catalogHidden": true,
+    "label": "Pi Agent",
+    "labelKey": "workflow.nodeTypes.piAgent",
+    "description": "Run a focused task through the current Pi Agent session and tools.",
+    "descriptionKey": "workflow.nodeDescriptions.piAgent",
+    "inputs": [
+      {
+        "name": "context",
+        "label": "Context",
+        "labelKey": "workflow.nodeFields.context",
+        "type": "object",
+        "required": false,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "content",
+        "label": "Response",
+        "labelKey": "workflow.nodeFields.response",
+        "type": "string",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "prompt",
+        "label": "Task",
+        "labelKey": "workflow.nodeFields.task",
+        "type": "string",
+        "required": true,
+        "descriptionKey": "workflow.nodeParamDescriptions.piAgentPrompt"
+      }
+    ],
+    "execution": {
+      "kind": "pi-agent",
+      "entrypoint": "pi.prompt"
+    },
+    "permissions": {
+      "filesystem": "workspace",
+      "network": "allowlist",
+      "shell": "restricted"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.pi-agent",
+    "version": "2.0.0",
+    "type": "pi-agent",
+    "label": "Pi Agent",
+    "labelKey": "workflow.nodeTypes.piAgent",
+    "description": "Run a focused task and expose both its text and parsed JSON response.",
+    "descriptionKey": "workflow.nodeDescriptions.piAgentStructured",
+    "inputs": [
+      {
+        "name": "context",
+        "label": "Context",
+        "labelKey": "workflow.nodeFields.context",
+        "type": "object",
+        "required": false,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [
+      {
+        "name": "content",
+        "label": "Response",
+        "labelKey": "workflow.nodeFields.response",
+        "type": "string",
+        "required": false,
+        "allowStaticValue": false
+      },
+      {
+        "name": "json",
+        "label": "Structured JSON",
+        "labelKey": "workflow.nodeFields.structuredJson",
+        "type": "object",
+        "required": false,
+        "allowStaticValue": false
+      }
+    ],
+    "params": [
+      {
+        "name": "prompt",
+        "label": "Task",
+        "labelKey": "workflow.nodeFields.task",
+        "type": "string",
+        "required": true,
+        "descriptionKey": "workflow.nodeParamDescriptions.piAgentPrompt"
+      }
+    ],
+    "execution": {
+      "kind": "pi-agent",
+      "entrypoint": "pi.prompt"
+    },
+    "permissions": {
+      "filesystem": "workspace",
+      "network": "allowlist",
+      "shell": "restricted"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "pipline.end",
+    "version": "1.0.0",
+    "type": "end",
+    "label": "End",
+    "labelKey": "workflow.nodeTypes.end",
+    "description": "Collect the workflow result.",
+    "descriptionKey": "workflow.nodeDescriptions.end",
+    "inputs": [
+      {
+        "name": "result",
+        "label": "Result",
+        "labelKey": "workflow.nodeFields.result",
+        "type": "any",
+        "required": true,
+        "allowStaticValue": true
+      }
+    ],
+    "outputs": [],
+    "params": [
+      {
+        "name": "returnMode",
+        "label": "Return format",
+        "labelKey": "workflow.endReturnMode.label",
+        "type": "select",
+        "required": true,
+        "defaultValue": "variable",
+        "options": [
+          {
+            "label": "Structured value",
+            "labelKey": "workflow.endReturnMode.variable",
+            "value": "variable"
+          },
+          {
+            "label": "Text",
+            "labelKey": "workflow.endReturnMode.text",
+            "value": "text"
+          }
+        ]
+      }
+    ],
+    "execution": {
+      "kind": "builtin",
+      "entrypoint": "workflow.end"
+    },
+    "permissions": {
+      "filesystem": "none",
+      "network": "none",
+      "shell": "none"
+    }
+  }
+]

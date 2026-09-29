@@ -425,14 +425,12 @@
     min-width: 0;
   }
 
-  .settings-row:has(> .settings-toggle),
-  .settings-row:has(> .settings-value-btn) {
+  .settings-row--compact-controls {
     flex-wrap: nowrap;
     align-items: center;
   }
 
-  .settings-row:has(> .settings-toggle) .settings-label,
-  .settings-row:has(> .settings-value-btn) .settings-label {
+  .settings-row--compact-controls .settings-label {
     flex: 1 1 auto;
   }
 

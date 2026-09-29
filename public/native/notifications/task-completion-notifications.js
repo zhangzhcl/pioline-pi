@@ -53,6 +53,7 @@ export function createTaskCompletionNotifications({
   logger = console,
 } = {}) {
   const runningTargets = new Set();
+  const finalErrors = new Map();
 
   const enabled = () => storage?.getItem(SETTINGS_KEY) !== "false";
 
@@ -92,14 +93,24 @@ export function createTaskCompletionNotifications({
     }
     if (frame.event?.type === "agent_start") {
       runningTargets.add(key);
+      finalErrors.delete(key);
       return;
     }
-    if (frame.event?.type !== "agent_settled" && frame.event?.type !== "agent_end") return;
+    if (frame.event?.type === "agent_end") {
+      if (!frame.event.willRetry && runningTargets.has(key)) {
+        finalErrors.set(key, extractRuntimeEventError(frame.event));
+      }
+      return;
+    }
+    if (frame.event?.type !== "agent_settled") return;
     if (!runningTargets.delete(key)) {
       logger.warn("[Notifications] completion skipped: no matching agent start", { key });
       return;
     }
-    const error = extractRuntimeEventError(frame.event);
+    const error = finalErrors.has(key)
+      ? finalErrors.get(key)
+      : extractRuntimeEventError(frame.event);
+    finalErrors.delete(key);
     void showCompletion(frame.target, error).catch(onError);
   }
 

@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Picot",
-  "identifier": "works.earendil.picot",
-  "version": "0.5.7-10000",
+  "productName": "Pipline",
+  "identifier": "app.pipline.desktop",
+  "version": "0.1.0",
   "build": {
-    "frontendDist": "../public",
+    "frontendDist": "./target/frontend-dist",
     "beforeDevCommand": "bun run fetch:pi && bun run fetch:terminal-font && bun run fetch:cjk-font && bun run build:extensions && bun run build:frontend",
-    "beforeBuildCommand": "bun run fetch:pi && bun run fetch:terminal-font && bun run fetch:cjk-font && bun run build:extensions && bun run build:frontend && bun run sign:pi"
+    "beforeBuildCommand": "bun run fetch:pi && bun run check:pi-runtime-lock && bun run fetch:terminal-font && bun run fetch:cjk-font && bun run build:extensions && bun run build:frontend && bun run fetch:cargo-deps && bun run licenses:cargo && bun run sign:pi"
   },
   "app": {
     "withGlobalTauri": true,
@@ -14,19 +14,27 @@
     "windows": [],
     "security": {
       "csp": "default-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' mediastream:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*;",
-      "capabilities": [
-        "default"
-      ]
+      "capabilities": ["default"]
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
+    "windows": {
+      "webviewInstallMode": {
+        "silent": true,
+        "type": "downloadBootstrapper"
+      },
+      "wix": {
+        "upgradeCode": "e1d8c4b6-07bf-58e2-abf0-ea25956aed42"
+      }
+    },
     "macOS": {
       "signingIdentity": "-",
       "entitlements": "./entitlements.plist",
-      "infoPlist": "./Info.plist"
+      "infoPlist": "./Info.plist",
+      "minimumSystemVersion": "11.0"
     },
     "icon": [
       "icons/32x32.png",
@@ -36,17 +44,16 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../public": "public",
+      "./target/frontend-dist": "public",
       "../extensions/dist": "extensions",
+      "../licenses": "licenses",
       "./resources/pi": "pi"
     }
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5OUQ4Q0Y5MTA1MTFDRTEKUldUaEhGRVErWXlkNlNSa01lY0g5S1ltM3BjMHJhdUYxdXdsc25USndZdDBFeGZyeGpUa2JVZWEK",
-      "endpoints": [
-        "https://github.com/shixin-guo/picot/releases/latest/download/latest.json"
-      ],
+      "endpoints": ["https://updates.pipline.invalid/latest.json"],
       "windows": {
         "installMode": "passive"
       }

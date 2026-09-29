@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Picot Local Build Script
+# Pipline Local Build Script
 #
-# Builds Picot artifacts on the local machine for internal QA. Does NOT
+# Builds Pipline artifacts on the local machine for internal QA. Does NOT
 # touch git, does NOT bump versions, does NOT push tags, does NOT publish
 # a release. Public release remains the job of:
 #   - scripts/release.sh
@@ -129,6 +129,11 @@ run_picot_prebuild() {
     bun run "$PROJECT_ROOT/scripts/build-extensions.js"
 }
 
+# Set the deployment floor for all Rust/native dependencies in macOS bundles.
+set_macos_deployment_target() {
+    export MACOSX_DEPLOYMENT_TARGET=11.0
+}
+
 # Pre-signs the pi runtime's nested Mach-O binaries so notarization doesn't
 # reject them (Tauri's macOS bundler only signs the outer .app, not
 # arbitrary files pulled in via tauri.conf.json's `bundle.resources` map).
@@ -149,13 +154,13 @@ sign_pi_resources() {
 
 # Copy the most recently built DMG from a builder's bundle dir to
 # the repo root for easy distribution. Glob the bundle dir for the
-# newest Picot_*.dmg, copy it, and log its sha256 so the user can
+# newest Pipline_*.dmg, copy it, and log its sha256 so the user can
 # verify integrity before sharing the file.
 copy_dmg_to_root() {
     local bundle_dir="$1"
     local label="$2"
     local dmg
-    dmg=$(ls -t "$bundle_dir"/dmg/Picot_*.dmg 2>/dev/null | head -n 1)
+    dmg=$(ls -t "$bundle_dir"/dmg/Pipline_*.dmg 2>/dev/null | head -n 1)
     if [ -z "$dmg" ]; then
         log_warn "No DMG found under $bundle_dir/dmg/ to copy."
         return 0
@@ -172,6 +177,7 @@ copy_dmg_to_root() {
 # Apple Silicon host build.
 build_mac_arm() {
     local target="aarch64-apple-darwin"
+    set_macos_deployment_target
     log_info "Building for macOS Apple Silicon ($target)..."
 
     rustup target add "$target" 2>/dev/null || true
@@ -179,7 +185,7 @@ build_mac_arm() {
 
     local bundle_dir="src-tauri/target/$target/release/bundle"
     log_info "macOS arm64 build completed."
-    log_info "  DMG: $bundle_dir/dmg/Picot_*.dmg  (Picot.app is bundled inside)"
+    log_info "  DMG: $bundle_dir/dmg/Pipline_*.dmg  (Pipline.app is bundled inside)"
     log_info "Note: ad-hoc signed. Gatekeeper will block first launch; right-click Open to bypass."
     copy_dmg_to_root "$bundle_dir" "arm64"
 }
@@ -187,6 +193,7 @@ build_mac_arm() {
 # Intel Mac, cross-compiled from an Apple Silicon host.
 build_mac_intel() {
     local target="x86_64-apple-darwin"
+    set_macos_deployment_target
     log_info "Building for macOS Intel ($target)..."
 
     rustup target add "$target" 2>/dev/null || true
@@ -194,7 +201,7 @@ build_mac_intel() {
 
     local bundle_dir="src-tauri/target/$target/release/bundle"
     log_info "macOS Intel build completed."
-    log_info "  DMG: $bundle_dir/dmg/Picot_*.dmg  (Picot.app is bundled inside)"
+    log_info "  DMG: $bundle_dir/dmg/Pipline_*.dmg  (Pipline.app is bundled inside)"
     log_info "Note: ad-hoc signed. Gatekeeper will block first launch; right-click Open to bypass."
     copy_dmg_to_root "$bundle_dir" "x86_64"
 }
@@ -202,6 +209,7 @@ build_mac_intel() {
 # Universal (arm64 + x86_64) build. Tauri runs cargo for both archs
 build_mac_universal() {
     local target="universal-apple-darwin"
+    set_macos_deployment_target
     log_info "Building for macOS universal ($target)..."
 
     # Universal requires both arch targets to be installed. Add them
@@ -214,7 +222,7 @@ build_mac_universal() {
 
     local bundle_dir="src-tauri/target/$target/release/bundle"
     log_info "macOS universal build completed."
-    log_info "  DMG: $bundle_dir/dmg/Picot_*.dmg  (Picot.app is bundled inside, fat binary)"
+    log_info "  DMG: $bundle_dir/dmg/Pipline_*.dmg  (Pipline.app is bundled inside, fat binary)"
     log_info "Note: ad-hoc signed. Gatekeeper will block first launch; right-click Open to bypass."
     copy_dmg_to_root "$bundle_dir" "universal"
 }
@@ -267,14 +275,14 @@ build_windows() {
     # copies src-tauri/resources/pi/ into the target's resource dir during
     # the build. If the file is a Mach-O (or anything other than a Windows
     # PE), something went wrong with the cross-platform fetch above.
-    if [ ! -f "$release_dir/Picot.exe" ]; then
-        log_error "Expected $release_dir/Picot.exe not found after build."
+    if [ ! -f "$release_dir/Pipline.exe" ]; then
+        log_error "Expected $release_dir/Pipline.exe not found after build."
         exit 1
     fi
 
     local version
     version=$(node -p "require('./package.json').version")
-    local zip_name="Picot_${version}_windows_x64.zip"
+    local zip_name="Pipline_${version}_windows_x64.zip"
     # Zip only the runtime artifacts. The release dir also contains cargo
     # intermediates (build/, deps/, incremental/, examples/, *.d) which
     # are not needed at runtime and bloat the zip by ~250 MB.
@@ -284,7 +292,7 @@ build_windows() {
     # and no stray .DS_Store from a prior run survives.
     rm -f "$PROJECT_ROOT/$zip_name"
     (cd "$release_dir" && zip -r "$PROJECT_ROOT/$zip_name" \
-        Picot.exe \
+        Pipline.exe \
         WebView2Loader.dll \
         pi \
         extensions \
@@ -294,8 +302,8 @@ build_windows() {
 
     log_info "Windows build completed."
     log_info "  Zip: $PROJECT_ROOT/$zip_name"
-    log_info "  Contents: Picot.exe + bundled DLLs + embedded pi tree + extensions"
-    log_info "Note: no MSI. Testers unzip and run Picot.exe directly."
+    log_info "  Contents: Pipline.exe + bundled DLLs + embedded pi tree + extensions"
+    log_info "Note: no MSI. Testers unzip and run Pipline.exe directly."
 }
 
 
@@ -303,7 +311,7 @@ build_windows() {
 
 show_help() {
     cat <<EOF
-Picot Local Build Script
+Pipline Local Build Script
 
 Builds Picot artifacts on the local machine for internal QA. Does NOT
 publish a release; use scripts/release.sh + GitHub Actions for that.
@@ -328,7 +336,7 @@ Notes:
     right-click Open to bypass.
   - Windows cross-build requires MinGW: brew install mingw-w64
   - Final artifacts are copied to the repo root for easy distribution
-    (e.g. Picot_0.2.3_aarch64.dmg, Picot_0.2.3_windows_x64.zip).
+    (e.g. Pipline_0.2.3_aarch64.dmg, Pipline_0.2.3_windows_x64.zip).
   - The script never touches git, never creates tags, never pushes.
 EOF
 }

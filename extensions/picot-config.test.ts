@@ -31,8 +31,12 @@ const tempHomes: string[] = [];
 async function loadConfigWithTempHome() {
   const home = mkdtempSync(join(tmpdir(), "picot-config-auth-"));
   tempHomes.push(home);
+  mkdirSync(join(home, ".pi", "agent"), { recursive: true });
   vi.resetModules();
-  process.env.HOME = home;
+  // Node resolves os.homedir() from USERPROFILE on Windows and HOME on Unix.
+  // Stub both so config tests never read or write the developer's real ~/.pi.
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("USERPROFILE", home);
   const module = await import("./picot-config.ts");
   return {
     home,
@@ -616,7 +620,7 @@ describe("picot config custom provider operations", () => {
       const result = await handlePicotConfig(
         "check_model_health",
         { provider: "my-relay", modelId: "gpt-4o-mini" },
-        { modelRegistry: registry },
+        { modelRegistry: registry as never },
       );
       expect(result.ok).toBe(true);
       expect(result).toMatchObject({

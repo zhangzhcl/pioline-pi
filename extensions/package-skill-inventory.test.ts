@@ -15,6 +15,7 @@ import {
   type ResolvedPackage,
   resolveInstalledPackageRoot,
 } from "./package-skill-inventory.ts";
+import type { SkillDiagnostic } from "./skill-inventory.ts";
 
 let tmp: string;
 
@@ -712,7 +713,7 @@ describe("collectPackageSkillCandidates — pi.skills manifest", () => {
       autoload: false,
       installedRoot: pkgRoot,
     };
-    const diags = [];
+    const diags: SkillDiagnostic[] = [];
     collectPackageSkillCandidates(resolved, diags);
     expect(diags.some((d) => /outside.*package|escape/i.test(d.message))).toBe(true);
   });

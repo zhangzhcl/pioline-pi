@@ -77,6 +77,7 @@ export async function setupProjectHeader({ data, workspaceId } = {}) {
       workspaceEl.textContent = compactWorkspaceLabel(info.path);
       workspaceEl.classList.remove("hidden");
       if (filesToggleEl) {
+        filesToggleEl.classList.add("file-sidebar-toggle--has-label");
         applyFilesToggleLabels(filesToggleEl, info);
         // One listener for the module's lifetime reads currentHeaderInfo, so
         // repeated calls never accumulate listeners nor resurrect stale paths.
@@ -98,6 +99,7 @@ export async function setupProjectHeader({ data, workspaceId } = {}) {
       workspaceEl.textContent = "";
       workspaceEl.classList.add("hidden");
       if (filesToggleEl) {
+        filesToggleEl.classList.remove("file-sidebar-toggle--has-label");
         filesToggleEl.title = t("migrated.index.title.files");
         filesToggleEl.setAttribute("aria-label", t("migrated.index.ariaLabel.toggleFileBrowser"));
       }

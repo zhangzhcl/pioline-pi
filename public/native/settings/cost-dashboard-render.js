@@ -1,5 +1,5 @@
 // Render logic for the Settings → Usage tab cost dashboard.
-import { t } from "../../i18n.js";
+import { getLocale, t } from "../../i18n.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -15,11 +15,11 @@ function formatUsd(value) {
 }
 
 function formatInt(value) {
-  return Number(value || 0).toLocaleString();
+  return Number(value || 0).toLocaleString(getLocale());
 }
 
 function formatCompact(value) {
-  return new Intl.NumberFormat(undefined, {
+  return new Intl.NumberFormat(getLocale(), {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(Number(value || 0));
@@ -218,7 +218,7 @@ function formatSessionDate(timeStr) {
   if (!timeStr) return "";
   const d = new Date(timeStr);
   if (!Number.isFinite(d.getTime())) return "";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return d.toLocaleDateString(getLocale(), { month: "short", day: "numeric" });
 }
 
 function renderSessionsPanel(target, sessions = []) {
@@ -414,7 +414,7 @@ function buildActivityMonthLabels(days, leadingEmptyDays) {
     seen.add(monthKey);
     labels.push({
       column: Math.floor((leadingEmptyDays + index) / 7) + 1,
-      name: date.toLocaleDateString(undefined, { month: "short" }),
+      name: date.toLocaleDateString(getLocale(), { month: "short" }),
     });
   }
   return labels;

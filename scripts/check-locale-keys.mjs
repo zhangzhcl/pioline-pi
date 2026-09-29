@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Fail if public/locales/*.json do not share the same leaf key set.
  *

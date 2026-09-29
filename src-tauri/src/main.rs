@@ -1,5 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(all(feature = "workflow-code-runner-prototype", not(debug_assertions)))]
+compile_error!(
+    "workflow-code-runner-prototype is a development-only experiment and cannot ship in release builds"
+);
+
 mod acp_launch;
 mod acp_manager;
 mod appimage_env;
@@ -10,13 +15,16 @@ mod host_data;
 mod host_git;
 mod host_router;
 mod host_server;
+mod log_export;
 mod markitdown_preview;
 mod metadata_store;
 mod model_health;
 mod native_pi_manager;
 mod package_updates;
+mod pi_agent_dir;
 mod pi_launch;
 mod pi_rpc_bridge;
+mod pi_shell_compat;
 mod pi_tls;
 mod remote_auth;
 mod remote_workspace;
@@ -32,6 +40,12 @@ mod terminal_registry;
 mod terminal_state_store;
 mod window_owner;
 mod windows_child;
+#[cfg(feature = "workflow-code-runner-prototype")]
+mod workflow_code_authorization;
+#[cfg(feature = "workflow-code-runner-prototype")]
+mod workflow_code_process;
+#[cfg(feature = "workflow-code-runner-prototype")]
+mod workflow_code_runner;
 
 use host_server::HostServer;
 use metadata_store::MetadataStore;
@@ -61,8 +75,8 @@ type SkillSourceRegistryState = Arc<SkillSourceRegistry>;
 
 #[cfg(target_os = "macos")]
 const MENU_NEW_SESSION_ID: &str = "picot-new-session";
-const BETA_UPDATE_ENDPOINT: &str =
-    "https://github.com/shixin-guo/picot/releases/download/beta/latest.json";
+// Set by build.rs only in the Pipline release workflow. Local builds do not
+// guess an updater repository from a possibly Picot-only git remote.
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,19 +86,31 @@ struct BetaUpdateInfo {
     body: Option<String>,
 }
 
-fn beta_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    let endpoint = reqwest::Url::parse(BETA_UPDATE_ENDPOINT)
-        .map_err(|error| format!("Invalid beta updater endpoint: {error}"))?;
+fn beta_updater(app: &AppHandle) -> Result<Option<tauri_plugin_updater::Updater>, String> {
+    let Some(repository) = option_env!("PIPLINE_RELEASE_REPOSITORY") else {
+        return Ok(None);
+    };
+    let endpoint = reqwest::Url::parse(&format!(
+        "https://github.com/{repository}/releases/download/beta/latest.json"
+    ))
+    .map_err(|error| format!("Invalid beta updater endpoint: {error}"))?;
     app.updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|error| format!("Invalid beta updater configuration: {error}"))?
         .build()
+        .map(Some)
         .map_err(|error| format!("Failed to initialize beta updater: {error}"))
 }
 
 #[tauri::command]
+fn stable_updates_available() -> bool {
+    option_env!("PIPLINE_RELEASE_REPOSITORY").is_some()
+}
+
+#[tauri::command]
 async fn check_beta_update(app: AppHandle) -> Result<Option<BetaUpdateInfo>, String> {
-    let updater = beta_updater(&app)?;
+    let updater = beta_updater(&app)?
+        .ok_or_else(|| "Beta updates are unavailable in this non-release build".to_string())?;
     let update = updater
         .check()
         .await
@@ -98,7 +124,8 @@ async fn check_beta_update(app: AppHandle) -> Result<Option<BetaUpdateInfo>, Str
 
 #[tauri::command]
 async fn install_beta_update(app: AppHandle) -> Result<(), String> {
-    let updater = beta_updater(&app)?;
+    let updater = beta_updater(&app)?
+        .ok_or_else(|| "Beta updates are unavailable in this non-release build".to_string())?;
     let update = updater
         .check()
         .await
@@ -110,6 +137,11 @@ async fn install_beta_update(app: AppHandle) -> Result<(), String> {
         .map_err(|error| format!("Beta update installation failed: {error}"))
 }
 
+#[tauri::command]
+async fn export_app_logs(app: AppHandle) -> Result<Option<usize>, String> {
+    log_export::export_app_logs(app).await
+}
+
 /// Shared services needed to bring up an additional workspace window after
 /// startup (when the user opens a folder as a new workspace).
 struct WorkspaceLauncher {
@@ -119,6 +151,264 @@ struct WorkspaceLauncher {
 
 struct FocusedWorkspaceState(Mutex<Option<String>>);
 struct WindowWorkspaceState(Mutex<HashMap<String, String>>);
+
+fn valid_window_route_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+#[tauri::command]
+async fn open_workflow_window(
+    app: AppHandle,
+    workspace_id: String,
+    workflow_id: String,
+    target: Option<RuntimeTarget>,
+) -> Result<(), String> {
+    if !valid_window_route_id(&workspace_id) || !valid_window_route_id(&workflow_id) {
+        return Err("Workflow window route contains an invalid identifier".to_string());
+    }
+    let host = app
+        .try_state::<HostServer>()
+        .ok_or_else(|| "Host server is not ready".to_string())?;
+    if let Some(target) = target.as_ref() {
+        if target.workspace_id != workspace_id
+            || !valid_window_route_id(&target.session_id)
+            || !valid_window_route_id(&target.instance_id)
+        {
+            return Err("Workflow window target is invalid".to_string());
+        }
+    }
+    let route_path = format!("/app/workspaces/{workspace_id}/workflows/{workflow_id}");
+    let mut route = route_path.clone();
+    let target_payload = target
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    if let Some(target) = target.as_ref() {
+        route.push_str(&format!(
+            "?sessionId={}&instanceId={}",
+            target.session_id, target.instance_id
+        ));
+    }
+    let url = format!("{}{}", host.origin(), route)
+        .parse()
+        .map_err(|error| format!("Invalid workflow window URL: {error}"))?;
+    let label = format!("native-workflow-{workspace_id}");
+    if let Some(window) = app.get_webview_window(&label) {
+        let same_route = window
+            .url()
+            .map(|current| {
+                current.origin().ascii_serialization() == host.origin()
+                    && current.path() == route_path
+            })
+            .unwrap_or(false);
+        if same_route {
+            if let Some(target) = target_payload {
+                window
+                    .eval(format!(
+                        "window.dispatchEvent(new CustomEvent('pipline:workflow-target-changed', {{detail:{target}}}));"
+                    ))
+                    .map_err(|error| format!("Cannot update workflow Pi session target: {error}"))?;
+            }
+        } else {
+            window
+                .eval(format!(
+                    "window.dispatchEvent(new CustomEvent('pipline:workflow-navigation-requested', {{detail:{}}}));",
+                    serde_json::to_string(&serde_json::json!({
+                        "workflowId": workflow_id,
+                        "target": target
+                    }))
+                    .map_err(|error| error.to_string())?
+                ))
+                .map_err(|error| format!("Cannot request workflow navigation: {error}"))?;
+        }
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
+        let _ = window.show();
+        let _ = window.set_focus();
+        activate_app(&app);
+        return Ok(());
+    }
+    let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
+        .map_err(|error| format!("Failed to load window icon: {error}"))?;
+    let window = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url))
+        .title("Pipline")
+        .inner_size(1440.0, 960.0)
+        .min_inner_size(960.0, 680.0)
+        .icon(icon)
+        .map_err(|error| error.to_string())?
+        .decorations(true)
+        .build()
+        .map_err(|error| format!("Cannot create workflow window: {error}"))?;
+    window
+        .show()
+        .map_err(|error| format!("Cannot show workflow window: {error}"))?;
+    let _ = window.set_focus();
+    activate_app(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn close_workflow_window(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    let Some(workspace_id) = window.label().strip_prefix("native-workflow-") else {
+        return Err("Only a workflow window may close itself".to_string());
+    };
+    window.hide().map_err(|error| error.to_string())?;
+    notify_workflow_window_hidden(&app, workspace_id)
+}
+
+fn notify_workflow_window_hidden(app: &AppHandle, workspace_id: &str) -> Result<(), String> {
+    let origin = app
+        .try_state::<HostServer>()
+        .ok_or_else(|| "Host server is not ready".to_string())?
+        .origin()
+        .to_string();
+    for chat_window in app.webview_windows().into_values() {
+        if !chat_window.label().starts_with("native-workspace-")
+            || !chat_window
+                .url()
+                .map(|url| {
+                    url.origin().ascii_serialization() == origin
+                        && url.path().contains(&format!("/workspaces/{workspace_id}/"))
+                })
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        chat_window
+            .eval("window.dispatchEvent(new CustomEvent('pipline:workflow-window-hidden'));")
+            .map_err(|error| format!("Cannot restore workflow view in conversation: {error}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_workflow_window_title(window: WebviewWindow, title: String) -> Result<(), String> {
+    if !window.label().starts_with("native-workflow-")
+        || title.trim().is_empty()
+        || title.len() > 256
+    {
+        return Err("Workflow window title is invalid".to_string());
+    }
+    window
+        .set_title(title.trim())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn send_workflow_context(
+    app: AppHandle,
+    workspace_id: String,
+    summary: Value,
+) -> Result<(), String> {
+    if !valid_window_route_id(&workspace_id) {
+        return Err("Workflow context contains an invalid workspace identifier".to_string());
+    }
+    let serialized_summary = serde_json::to_string(&summary)
+        .map_err(|error| format!("Invalid workflow context: {error}"))?;
+    if serialized_summary.len() > 256 * 1024 {
+        return Err("Workflow context exceeds 256 KiB".to_string());
+    }
+    let origin = app
+        .try_state::<HostServer>()
+        .ok_or_else(|| "Host server is not ready".to_string())?
+        .origin()
+        .to_string();
+    let mut delivered = false;
+    for window in app.webview_windows().into_values() {
+        if !window.label().starts_with("native-workspace-")
+            || !window
+                .url()
+                .map(|url| url.origin().ascii_serialization() == origin)
+                .unwrap_or(false)
+            || !window
+                .url()
+                .map(|url| url.path().contains(&format!("/workspaces/{workspace_id}/")))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        window
+            .eval(format!(
+                "window.dispatchEvent(new CustomEvent('pipline:workflow-context', {{detail:{{summary:{}}}}}));",
+                serialized_summary
+            ))
+            .map_err(|error| format!("Cannot send workflow context to chat: {error}"))?;
+        delivered = true;
+    }
+    if delivered {
+        Ok(())
+    } else {
+        Err("No conversation window is open for this workflow workspace".to_string())
+    }
+}
+
+#[tauri::command]
+fn set_workflow_run_lock(
+    app: AppHandle,
+    workspace_id: String,
+    running: bool,
+) -> Result<(), String> {
+    if !valid_window_route_id(&workspace_id) {
+        return Err("Workflow run lock contains an invalid workspace identifier".to_string());
+    }
+    let origin = app
+        .try_state::<HostServer>()
+        .ok_or_else(|| "Host server is not ready".to_string())?
+        .origin()
+        .to_string();
+    let payload = serde_json::json!({ "running": running });
+    for window in app.webview_windows().into_values() {
+        if !window.label().starts_with("native-workspace-")
+            || !window
+                .url()
+                .map(|url| url.origin().ascii_serialization() == origin)
+                .unwrap_or(false)
+            || !window
+                .url()
+                .map(|url| url.path().contains(&format!("/workspaces/{workspace_id}/")))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        window
+            .eval(format!(
+                "window.dispatchEvent(new CustomEvent('pipline:workflow-run-lock', {{detail:{payload}}}));"
+            ))
+            .map_err(|error| format!("Cannot update conversation workflow lock: {error}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn update_workflow_window_target(
+    app: AppHandle,
+    workspace_id: String,
+    target: RuntimeTarget,
+) -> Result<(), String> {
+    if !valid_window_route_id(&workspace_id)
+        || target.workspace_id != workspace_id
+        || !valid_window_route_id(&target.session_id)
+        || !valid_window_route_id(&target.instance_id)
+    {
+        return Err("Workflow window target is invalid".to_string());
+    }
+    let label = format!("native-workflow-{workspace_id}");
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok(());
+    };
+    let value = serde_json::to_string(&target).map_err(|error| error.to_string())?;
+    window
+        .eval(format!(
+            "window.dispatchEvent(new CustomEvent('pipline:workflow-target-changed', {{detail:{value}}}));"
+        ))
+        .map_err(|error| format!("Cannot update workflow Pi session target: {error}"))
+}
 
 /// Open the native folder picker and, if the user selects a directory, switch
 /// the focused Picot window to that workspace. Returns the chosen path, or
@@ -261,7 +551,7 @@ async fn ensure_agent_inbox_session(app: AppHandle) -> Result<(), String> {
     let workspace_id = launcher
         .metadata
         .lock()
-        .map_err(|_| "Picot metadata store is unavailable".to_string())?
+        .map_err(|_| "Pipline metadata store is unavailable".to_string())?
         .workspace_id_for_path(&cwd)?;
 
     host.register_workspace(&workspace_id, cwd.clone())?;
@@ -283,7 +573,7 @@ async fn ensure_agent_inbox_session(app: AppHandle) -> Result<(), String> {
 /// Retry native startup from the bootstrap error window after a failed launch.
 /// If startup already succeeded, just close the bootstrap window.
 #[tauri::command]
-fn retry_startup(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+async fn retry_startup(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     if app.try_state::<HostServer>().is_some() {
         let _ = window.close();
         return Ok(());
@@ -326,7 +616,7 @@ fn open_fresh_session_at_path(
     let workspace_id = launcher
         .metadata
         .lock()
-        .map_err(|_| "Picot metadata store is unavailable".to_string())?
+        .map_err(|_| "Pipline metadata store is unavailable".to_string())?
         .workspace_id_for_path(cwd)?;
 
     host.register_workspace(&workspace_id, cwd.to_path_buf())?;
@@ -366,7 +656,7 @@ fn open_workspace_at_path(
     let workspace_id = launcher
         .metadata
         .lock()
-        .map_err(|_| "Picot metadata store is unavailable".to_string())?
+        .map_err(|_| "Pipline metadata store is unavailable".to_string())?
         .workspace_id_for_path(cwd)?;
 
     host.register_workspace(&workspace_id, cwd.to_path_buf())?;
@@ -517,7 +807,7 @@ fn open_native_workspace_window(
     let icon = Image::from_bytes(include_bytes!("../icons/32x32.png"))
         .map_err(|error| format!("Failed to load window icon: {error}"))?;
     let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
-        .title("Picot")
+        .title("Pipline")
         .inner_size(1300.0, 860.0)
         .min_inner_size(800.0, 600.0)
         .icon(icon)
@@ -551,7 +841,7 @@ fn open_fresh_session_for_focused_workspace(app: &AppHandle) -> Result<(), Strin
                 .and_then(|state| state.0.lock().ok().and_then(|guard| guard.clone()))?;
             app.get_webview_window(&format!("native-workspace-{workspace_id}"))
         })
-        .ok_or_else(|| "No focused Picot workspace window".to_string())?;
+        .ok_or_else(|| "No focused Pipline workspace window".to_string())?;
 
     let label = focused_window.label().to_string();
     let workspace_id = app
@@ -674,7 +964,7 @@ fn open_bootstrap_window(app: &AppHandle, startup_error: &str) -> Result<(), Str
         .replace('\n', "%0A");
     let url = format!("bootstrap.html?startupError={encoded_error}");
     let builder = WebviewWindowBuilder::new(app, "bootstrap", WebviewUrl::App(url.into()))
-        .title("Picot")
+        .title("Pipline")
         .inner_size(900.0, 640.0)
         .min_inner_size(700.0, 480.0)
         .icon(icon)
@@ -733,9 +1023,9 @@ fn find_static_dir(app: &AppHandle) -> PathBuf {
 }
 
 fn agent_inbox_path() -> Result<PathBuf, String> {
-    dirs::home_dir()
-        .map(|home| home.join(".pi").join("agent").join("super-agent"))
-        .ok_or_else(|| "Cannot resolve home directory for Agent Inbox".to_string())
+    pi_agent_dir::agent_dir()
+        .map(|agent_dir| agent_dir.join("super-agent"))
+        .ok_or_else(|| "Cannot resolve Pi agent directory for Agent Inbox".to_string())
 }
 
 /// Encode a cwd the same way pi does for `~/.pi/agent/sessions/<dir>/`.
@@ -785,10 +1075,8 @@ fn ensure_agent_inbox_placeholder_session(cwd: &Path) -> Result<(), String> {
     if find_latest_session_for_cwd(cwd).is_some() {
         return Ok(());
     }
-    let sessions_root = dirs::home_dir()
-        .ok_or_else(|| "Cannot resolve home directory for Agent Inbox sessions".to_string())?
-        .join(".pi")
-        .join("agent")
+    let sessions_root = pi_agent_dir::agent_dir()
+        .ok_or_else(|| "Cannot resolve Pi agent directory for Agent Inbox sessions".to_string())?
         .join("sessions")
         .join(session_dir_name(cwd));
     fs::create_dir_all(&sessions_root)
@@ -815,7 +1103,7 @@ fn ensure_agent_inbox_placeholder_session(cwd: &Path) -> Result<(), String> {
 }
 
 fn find_latest_session_for_cwd(cwd: &Path) -> Option<PathBuf> {
-    let sessions_root = dirs::home_dir()?.join(".pi/agent/sessions");
+    let sessions_root = pi_agent_dir::sessions_dir()?;
     list_session_files(&sessions_root)
         .into_iter()
         .filter(|path| {
@@ -897,7 +1185,7 @@ fn choose_latest_existing_boot_target(
 }
 
 fn find_latest_session_boot_target() -> Option<(String, String)> {
-    let sessions_root = dirs::home_dir()?.join(".pi/agent/sessions");
+    let sessions_root = pi_agent_dir::sessions_dir()?;
     if !sessions_root.exists() {
         log::info!(
             "[picot-native] startup target skipped: sessions dir not found at {}",
@@ -934,7 +1222,7 @@ fn select_fresh_startup_target(
 }
 
 fn setup_native_runtime(app: &AppHandle, static_dir: PathBuf) -> Result<(), String> {
-    let home_cwd = dirs::home_dir()
+    let home_cwd = pi_agent_dir::home_dir()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
@@ -943,12 +1231,12 @@ fn setup_native_runtime(app: &AppHandle, static_dir: PathBuf) -> Result<(), Stri
     let metadata_path = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("Cannot resolve Picot app data directory: {error}"))?
+        .map_err(|error| format!("Cannot resolve Pipline app data directory: {error}"))?
         .join("picot.sqlite3");
     let metadata = Arc::new(Mutex::new(MetadataStore::open(&metadata_path)?));
     let workspace_id = metadata
         .lock()
-        .map_err(|_| "Picot metadata store is unavailable".to_string())?
+        .map_err(|_| "Pipline metadata store is unavailable".to_string())?
         .workspace_id_for_path(Path::new(&cwd))?;
     let session_id = format!("temporary-{}", uuid::Uuid::new_v4().simple());
     let target = RuntimeTarget::new(
@@ -1002,6 +1290,15 @@ fn setup_native_runtime(app: &AppHandle, static_dir: PathBuf) -> Result<(), Stri
 }
 
 fn main() {
+    #[cfg(all(feature = "workflow-code-runner-prototype", windows))]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--workflow-code-runner"))
+    {
+        // This private helper mode remains disconnected from workflow Runs.
+        // On Windows it acts as a trusted stdio shim that launches the actual
+        // QuickJS worker inside a zero-capability AppContainer.
+        std::process::exit(workflow_code_runner::run_stdio());
+    }
+
     if let Err(error) = fix_path_env::fix_all_vars() {
         eprintln!("[picot] failed to sync login-shell environment: {error}");
     }
@@ -1036,6 +1333,12 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            open_workflow_window,
+            close_workflow_window,
+            set_workflow_window_title,
+            send_workflow_context,
+            set_workflow_run_lock,
+            update_workflow_window_target,
             open_folder_as_workspace,
             open_remote_workspace,
             open_new_session_in_workspace,
@@ -1043,8 +1346,10 @@ fn main() {
             show_task_completion_notification,
             ensure_agent_inbox_session,
             retry_startup,
+            stable_updates_available,
             check_beta_update,
-            install_beta_update
+            install_beta_update,
+            export_app_logs
         ])
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -1064,9 +1369,9 @@ fn main() {
                     );
                     app.dialog()
                         .message(format!(
-                            "Picot could not start the embedded pi runtime.\n\n{error}\n\nThe Picot installation may be incomplete or corrupted. Please reinstall Picot and try again."
+                            "Pipline could not start the embedded pi runtime.\n\n{error}\n\nThe Pipline installation may be incomplete or corrupted. Please reinstall Pipline and try again."
                         ))
-                        .title("Picot startup failed")
+                        .title("Pipline startup failed")
                         .kind(MessageDialogKind::Error)
                         .show(|_| {});
                 }
@@ -1076,6 +1381,40 @@ fn main() {
         .on_window_event(|window, event| {
             let label = window.label();
             match event {
+                tauri::WindowEvent::CloseRequested { api, .. }
+                    if label.starts_with("native-workflow-") =>
+                {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    if let Some(workspace_id) = label.strip_prefix("native-workflow-") {
+                        let _ = notify_workflow_window_hidden(window.app_handle(), workspace_id);
+                    }
+                }
+                tauri::WindowEvent::Destroyed if label.starts_with("native-workflow-") => {
+                    if let Some(workspace_id) = label.strip_prefix("native-workflow-") {
+                        let origin = window
+                            .try_state::<HostServer>()
+                            .map(|host| host.origin().to_string());
+                        if let Some(origin) = origin {
+                            for chat_window in window.app_handle().webview_windows().into_values() {
+                                if !chat_window.label().starts_with("native-workspace-")
+                                    || !chat_window
+                                        .url()
+                                        .map(|url| {
+                                            url.origin().ascii_serialization() == origin
+                                                && url.path().contains(&format!("/workspaces/{workspace_id}/"))
+                                        })
+                                        .unwrap_or(false)
+                                {
+                                    continue;
+                                }
+                                let _ = chat_window.eval(
+                                    "window.dispatchEvent(new CustomEvent('pipline:workflow-window-closed')); window.dispatchEvent(new CustomEvent('pipline:workflow-run-lock', {detail:{running:false}}));",
+                                );
+                            }
+                        }
+                    }
+                }
                 tauri::WindowEvent::Focused(true) if label.starts_with("native-workspace-") => {
                     let workspace_id = window
                         .try_state::<WindowWorkspaceState>()
@@ -1175,9 +1514,11 @@ fn install_termination_handlers(_app_handle: tauri::AppHandle) {}
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::set_press_and_hold_enabled;
     use super::{
         choose_latest_existing_boot_target, resolve_static_dir, select_fresh_startup_target,
-        session_dir_name, set_press_and_hold_enabled,
+        session_dir_name,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1191,6 +1532,7 @@ mod tests {
         std::env::temp_dir().join(format!("picot-{label}-{suffix}"))
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn press_and_hold_helper_disables_accent_picker() {
         let mut value = true;

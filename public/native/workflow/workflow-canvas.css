@@ -1,0 +1,42 @@
+.pipline-flow-node {
+  min-width: 176px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-md);
+  background: var(--bg-solid);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.pipline-flow-node__label {
+  display: block;
+  padding: var(--space-1);
+  text-align: center;
+  font-size: var(--font-size-md);
+}
+
+.pipline-flow-node__port {
+  position: relative;
+  min-height: var(--control-height-sm);
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+.pipline-flow-node__port .react-flow__handle {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.pipline-flow-node__port--output {
+  justify-content: flex-end;
+}
+
+.pipline-flow-node .react-flow__handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--bg-solid);
+  background: var(--accent);
+}

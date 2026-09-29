@@ -32,7 +32,9 @@ describe("writePasteOffloadFile", () => {
     expect(result.relativePath).toBe(".pi/tmp/paste-20260821-143205.txt");
     expect(fs.readFileSync(result.absolutePath, "utf8")).toBe("hello\nworld");
     expect(fs.readFileSync(path.join(root, ".pi/tmp/.gitignore"), "utf8")).toBe("*\n!.gitignore\n");
-    expect(fs.statSync(result.absolutePath).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(result.absolutePath).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("allocates a suffix instead of overwriting same-second files", () => {

@@ -72,7 +72,7 @@
   white-space: nowrap;
 }
 
-/* "Terminal-only": this command drives a TUI surface Picot cannot render. */
+/* "Terminal-only": this command drives a TUI surface Pipline cannot render. */
 .skill-slash-badge {
   padding: 0 var(--space-2);
   font-size: var(--font-size-sm);

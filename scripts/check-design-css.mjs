@@ -7,11 +7,12 @@ const root = process.cwd();
 const publicDir = join(root, "public");
 const fix = process.argv.includes("--fix");
 const tokenSource = "public/style-theme.css";
+const relativeDisplayPath = (path) => relative(root, path).replaceAll("\\", "/");
 const cssFiles = (await walk(publicDir)).filter(
-  (path) => extname(path) === ".css" && !relative(root, path).startsWith("public/vendor/"),
+  (path) => extname(path) === ".css" && !relativeDisplayPath(path).startsWith("public/vendor/"),
 );
 const jsFiles = (await walk(publicDir)).filter(
-  (path) => extname(path) === ".js" && !relative(root, path).startsWith("public/vendor/"),
+  (path) => extname(path) === ".js" && !relativeDisplayPath(path).startsWith("public/vendor/"),
 );
 
 const exactTokens = new Map([
@@ -73,7 +74,7 @@ let warnings = 0;
 let fixes = 0;
 
 for (const path of cssFiles) {
-  const displayPath = relative(root, path);
+  const displayPath = relativeDisplayPath(path);
   let source = await readFile(path, "utf8");
   const original = source;
   const lines = source.split("\n");
@@ -114,7 +115,7 @@ const staticInlinePattern =
   /\.style\.(fontSize|height|minHeight|maxHeight|padding|gap|borderRadius)\s*=\s*["'`]([^"'`]*\d+(?:\.\d+)?px[^"'`]*)["'`]/g;
 for (const path of jsFiles) {
   const source = await readFile(path, "utf8");
-  const displayPath = relative(root, path);
+  const displayPath = relativeDisplayPath(path);
   for (const match of source.matchAll(staticInlinePattern)) {
     if (match[2].includes("${")) continue;
     warnings += 1;

@@ -1,13 +1,15 @@
-# Picot installer — Windows (PowerShell 5.1+)
+# Pipline installer — Windows 10 x64 (PowerShell 5.1+)
 # Usage:
-#   irm https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1 | iex
+#   $env:PIPLINE_GITHUB_REPOSITORY = 'owner/repository'
+#   irm "https://raw.githubusercontent.com/$env:PIPLINE_GITHUB_REPOSITORY/main/scripts/install.ps1" | iex
 # Or with a pinned version:
-#   & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/shixin-guo/picot/main/scripts/install.ps1'))) -Version v0.3.0
+#   & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/$env:PIPLINE_GITHUB_REPOSITORY/main/scripts/install.ps1"))) -Version v0.1.0
 # Or with MSI (for enterprise/GPO deployment):
-#   & ([scriptblock]::Create((irm '...'))) -MSI
+#   & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/$env:PIPLINE_GITHUB_REPOSITORY/main/scripts/install.ps1"))) -MSI
 [CmdletBinding()]
 param(
   [string]$Version = "",
+  [string]$Repository = $env:PIPLINE_GITHUB_REPOSITORY,
   # Use MSI installer instead of NSIS .exe (for enterprise/GPO deployment)
   [switch]$MSI,
   [switch]$Help
@@ -15,10 +17,11 @@ param(
 
 if ($Help) {
   Write-Host @"
-Picot Windows Installer
+Pipline Windows 10 x64 Installer
 
-Usage: install.ps1 [-Version <tag>] [-MSI]
-  -Version   Install a specific release tag (e.g. v0.3.0). Defaults to latest.
+Usage: install.ps1 -Repository <owner/repository> [-Version <tag>] [-MSI]
+  -Repository GitHub repository containing Pipline releases. May also be set with PIPLINE_GITHUB_REPOSITORY.
+  -Version   Install a specific release tag (e.g. v0.1.0). Defaults to latest.
   -MSI       Use MSI installer instead of NSIS .exe (for enterprise/GPO deployment).
   -Help      Show this help message.
 "@
@@ -36,16 +39,18 @@ function Fail([string]$msg) { Write-Host "  $ESC[31m✗$ESC[0m $msg" -Foreground
 # ── Detect arch ───────────────────────────────────────────────────────────────
 $CpuArch = $env:PROCESSOR_ARCHITECTURE
 $ArchNorm = switch ($CpuArch) {
-  "AMD64" { "x64"   }
-  "ARM64" { "arm64" }
-  default { Fail "Unsupported architecture: $CpuArch" }
+  "AMD64" { "x64" }
+  default { Fail "Pipline's first release supports Windows 10 x64 only. Detected architecture: $CpuArch" }
 }
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-$Repo       = "shixin-guo/picot"
+$Repo       = if ([string]::IsNullOrWhiteSpace($Repository)) { "" } else { $Repository.Trim() }
+if ($Repo -notmatch '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$') {
+  Fail "Set -Repository <owner/repository> or PIPLINE_GITHUB_REPOSITORY to the Pipline GitHub repository."
+}
 $ApiBase    = "https://api.github.com/repos/$Repo/releases"
 $DlBase     = "https://github.com/$Repo/releases/download"
-$AppName    = "Picot"
+$AppName    = "Pipline"
 
 # ── Resolve version ───────────────────────────────────────────────────────────
 Write-Header "🎯  $AppName Installer (Windows)"
@@ -55,7 +60,7 @@ if ($Version -ne "") {
 } else {
   Write-Info "Fetching latest release from GitHub..."
   try {
-    $release = Invoke-RestMethod -Uri "$ApiBase/latest" -Headers @{ "User-Agent" = "picot-installer" }
+    $release = Invoke-RestMethod -Uri "$ApiBase/latest" -Headers @{ "User-Agent" = "pipline-installer" }
     $Version = $release.tag_name
   } catch {
     Fail "Failed to fetch latest release: $_"

@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { appRoutePath, parseAppRoute, replaceTemporarySessionRoute } from "./router.js";
+import {
+  appEntryPath,
+  appRoutePath,
+  parseAppRoute,
+  replaceTemporarySessionRoute,
+} from "./router.js";
 
 describe("app router", () => {
-  it("round-trips app launcher, workspace launcher, and session routes", () => {
+  it("round-trips app launcher, workspace launcher, session, and workflow routes", () => {
     const appLauncher = { name: "app_launcher" };
     expect(parseAppRoute(appRoutePath(appLauncher))).toEqual(appLauncher);
     expect(parseAppRoute("/app/")).toEqual(appLauncher);
@@ -15,7 +20,16 @@ describe("app router", () => {
       sessionId: "session_B-2",
     };
     expect(parseAppRoute(appRoutePath(session))).toEqual(session);
+    const workflow = { name: "workflow", workspaceId: "workspace_A-1", workflowId: "workflow_B-2" };
+    expect(parseAppRoute(appRoutePath(workflow))).toEqual(workflow);
     expect(parseAppRoute("/app/settings")).toEqual({ name: "settings" });
+  });
+
+  it("resolves app routes to their bundled compatibility entrypoints", () => {
+    expect(appEntryPath("session")).toBe("./compat/native/app.js");
+    expect(appEntryPath("app_launcher")).toBe("./compat/native/features/app-launcher.js");
+    expect(appEntryPath("workflow")).toBe("./compat/native/workflow/workflow-window.js");
+    expect(() => appEntryPath("not_found")).toThrow("Unknown app entry route");
   });
 
   it("parses UUID workspace and session ids that begin with a digit", () => {
@@ -34,6 +48,7 @@ describe("app router", () => {
       "/app/workspaces//launcher",
       "/app/workspaces/3001/sessions//tmp/session.jsonl",
       "/app/workspaces/workspace%2Fescape/launcher",
+      "/app/workspaces/workspace-a/workflows/../sessions/other",
       "/not-an-app-route",
     ]) {
       expect(parseAppRoute(path)).toEqual({ name: "not_found" });

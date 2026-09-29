@@ -75,7 +75,10 @@ describe("HostRuntimeAdapter", () => {
     await expect(pending).resolves.toMatchObject({ acceptance: "accepted" });
 
     socket.receive({ type: "runtime_event", target, sequence: 1, event: { type: "agent_start" } });
-    expect(events).toHaveLength(1);
+    expect(events).toEqual([
+      { type: "runtime_connection", connected: true },
+      { type: "runtime_event", target, sequence: 1, event: { type: "agent_start" } },
+    ]);
   });
 
   it("sends a remote device token only in hello and resubscribes after reconnect", () => {

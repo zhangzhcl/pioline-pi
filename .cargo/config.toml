@@ -1,2 +1,5 @@
 [build]
 target-dir = "target"
+
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "11.0", force = false }

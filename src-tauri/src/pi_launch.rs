@@ -1,5 +1,6 @@
 use crate::native_pi_manager::NativeLaunchSpec;
 use serde::Serialize;
+#[cfg(target_os = "macos")]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -118,9 +119,11 @@ impl PiLaunchResolver {
         let binary = self.resolve_bundled_pi()?;
         let extensions =
             resolve_bundled_extensions(&self.static_dir, Path::new(cwd), session_path.is_some())?;
+        let cwd_path = PathBuf::from(strip_verbatim_prefix(cwd));
+        let pi_agent_dir = crate::pi_agent_dir::agent_dir();
         Ok(NativeLaunchSpec {
             binary,
-            cwd: PathBuf::from(strip_verbatim_prefix(cwd)),
+            cwd: cwd_path.clone(),
             session_path: session_path.map(|path| PathBuf::from(strip_verbatim_prefix(path))),
             extensions,
             pi_version: locked_pi_version().to_owned(),
@@ -129,6 +132,10 @@ impl PiLaunchResolver {
             // has already opted in; trust project-local resources for every
             // pi process Picot spawns.
             approve: true,
+            windows_powershell_fallback: crate::pi_shell_compat::windows_powershell_fallback(
+                &cwd_path,
+                pi_agent_dir.as_deref(),
+            ),
         })
     }
 
@@ -147,6 +154,9 @@ impl PiLaunchResolver {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(agent_dir) = crate::pi_agent_dir::agent_dir() {
+            command.env(crate::pi_agent_dir::PI_AGENT_DIR_ENV, agent_dir);
+        }
         let output = command.output().map_err(|error| {
             format!("Failed to run embedded pi command ({pi_bin_str} {args:?}): {error}")
         })?;
@@ -285,13 +295,6 @@ impl PiLaunchResolver {
             "pi"
         };
 
-        if let Ok(explicit) = std::env::var("PI_BIN") {
-            let candidate = PathBuf::from(explicit.trim());
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-
         let mut tried = Vec::new();
         if let Some(candidate) = self
             .static_dir
@@ -319,7 +322,7 @@ impl PiLaunchResolver {
             "Could not find embedded pi binary. Tried:\n{}\n\n\
              For dev: run `bun run fetch:pi` from the repo root.\n\
              For release: the .app bundle is missing `resources/pi/{bin_name}`. \
-             Reinstall Picot.",
+             Reinstall Pipline.",
             tried
                 .iter()
                 .map(|path| format!("  - {}", path.display()))
@@ -586,10 +589,8 @@ pub fn settings_path(scope: &str, cwd: &str) -> Result<PathBuf, String> {
         }
         Ok(path)
     } else {
-        let agent_dir = dirs::home_dir()
-            .ok_or_else(|| "Could not resolve home directory".to_string())?
-            .join(".pi")
-            .join("agent");
+        let agent_dir = crate::pi_agent_dir::agent_dir()
+            .ok_or_else(|| "Could not resolve Pi agent directory".to_string())?;
         Ok(agent_dir.join("settings.json"))
     }
 }
@@ -938,7 +939,40 @@ fn strip_verbatim_prefix(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_verbatim_prefix;
+    use super::{strip_verbatim_prefix, PiLaunchResolver};
+    use std::sync::Mutex;
+
+    static PI_BIN_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn resolves_the_bundled_pi_even_when_pi_bin_is_set() {
+        let _lock = PI_BIN_ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let resource_root = temp.path().join("resources");
+        let static_dir = resource_root.join("public");
+        let bin_name = if cfg!(target_os = "windows") {
+            "pi.exe"
+        } else {
+            "pi"
+        };
+        let bundled_pi = resource_root.join("pi").join(bin_name);
+        let external_pi = temp.path().join(format!("external-{bin_name}"));
+        std::fs::create_dir_all(&static_dir).unwrap();
+        std::fs::create_dir_all(bundled_pi.parent().unwrap()).unwrap();
+        std::fs::write(&bundled_pi, b"bundled").unwrap();
+        std::fs::write(&external_pi, b"external").unwrap();
+
+        let previous = std::env::var_os("PI_BIN");
+        std::env::set_var("PI_BIN", &external_pi);
+        let resolved = PiLaunchResolver::new(static_dir).bundled_pi_path().unwrap();
+        if let Some(value) = previous {
+            std::env::set_var("PI_BIN", value);
+        } else {
+            std::env::remove_var("PI_BIN");
+        }
+
+        assert_eq!(resolved, bundled_pi);
+    }
 
     // Windows `std::fs::canonicalize` returns `\\?\`-prefixed extended-length
     // paths. Bun (the embedded pi runtime) cannot resolve modules from such

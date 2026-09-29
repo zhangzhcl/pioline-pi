@@ -6,7 +6,7 @@
  */
 
 import { onLocaleChange, t } from "../i18n.js";
-import remend from "../vendor/remend.js";
+import remend from "remend";
 
 /**
  * Streaming-tolerant renderer for partial markdown. remend closes unterminated

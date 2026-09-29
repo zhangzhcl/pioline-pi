@@ -19,9 +19,9 @@ beforeEach(async () => {
             installFailed: "Install failed",
             uninstallFailed: "Uninstall failed",
             installFailedNote:
-              "This extension requires npm. Make sure npm is installed and available to Picot, then try again.",
+              "This extension requires npm. Make sure npm is installed and available to Pipline, then try again.",
             uninstallFailedNote:
-              "Picot could not remove this extension package. Check the error details, then try again.",
+              "Pipline could not remove this extension package. Check the error details, then try again.",
           },
         }),
       };
@@ -67,7 +67,7 @@ describe("package install failure status", () => {
   test("returns reusable failure content for notifications", () => {
     expect(getPackageInstallFailure(new Error("remove failed"), "uninstall")).toEqual({
       title: "Uninstall failed",
-      note: "Picot could not remove this extension package. Check the error details, then try again.",
+      note: "Pipline could not remove this extension package. Check the error details, then try again.",
       detail: "remove failed",
     });
   });

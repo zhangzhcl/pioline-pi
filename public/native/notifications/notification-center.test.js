@@ -8,7 +8,7 @@ describe("notification center", () => {
     const notification = center.notify({
       type: "error",
       title: "Uninstall failed",
-      message: "Picot could not remove this extension package.",
+      message: "Pipline could not remove this extension package.",
       detail: "Permission denied in ~/.pi/agent/npm.",
     });
 

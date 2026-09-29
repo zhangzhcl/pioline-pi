@@ -335,7 +335,7 @@ export function buildTelegramDoctorReport(
       label: "Config",
       status: checkStatus(configured),
       message: configured
-        ? "Telegram bot token is saved in Picot chat config."
+        ? "Telegram bot token is saved in Pipline chat config."
         : "Telegram is not connected.",
     },
     {

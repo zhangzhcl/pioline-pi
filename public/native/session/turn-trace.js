@@ -239,6 +239,11 @@ export function createTurnTraceRecorder({
 
   function startTurn(timeline, target, at) {
     const previous = currentTurn(timeline);
+    if (previous?.retrying) {
+      previous.retrying = false;
+      previous.retryError = null;
+      return previous;
+    }
     // A fresh agent_start without a settle means the previous turn's ending was
     // never observed (reconnect, process restart). Never call it a success.
     if (previous) closeTurn(previous, at, { status: "unknown", error: null });
@@ -277,10 +282,24 @@ export function createTurnTraceRecorder({
       case "agent_start":
         startTurn(timeline, frame.target, at);
         break;
-      case "agent_settled":
       case "agent_end": {
+        if (turn && event.willRetry === true) {
+          turn.retrying = true;
+          turn.retryError = runtimeEventError(event);
+          break;
+        }
         if (!turn) break;
         const error = runtimeEventError(event);
+        const aborted = turn.steps.some((step) => step.stopReason === "aborted");
+        closeTurn(turn, at, {
+          status: error ? "failed" : aborted ? "aborted" : "completed",
+          error,
+        });
+        break;
+      }
+      case "agent_settled": {
+        if (!turn) break;
+        const error = runtimeEventError(event) || turn.retryError || null;
         const aborted = turn.steps.some((step) => step.stopReason === "aborted");
         closeTurn(turn, at, {
           status: error ? "failed" : aborted ? "aborted" : "completed",

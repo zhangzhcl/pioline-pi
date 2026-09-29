@@ -108,8 +108,38 @@ pub fn pid_is_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-pub fn pid_is_alive(_pid: u32) -> bool {
-    false
+pub fn pid_is_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        windows_process::is_alive(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(not(windows))]
+fn process_start_time_unix(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+#[cfg(windows)]
+fn process_start_time_windows(pid: u32) -> Option<String> {
+    windows_process::start_time(pid)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,7 +157,12 @@ struct RuntimeRegistry {
 }
 
 fn registry_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".pi").join(REGISTRY_DIR))
+    pi_root_from_agent_dir(&crate::pi_agent_dir::agent_dir()?)
+        .map(|pi_root| pi_root.join(REGISTRY_DIR))
+}
+
+fn pi_root_from_agent_dir(agent_dir: &Path) -> Option<&Path> {
+    agent_dir.parent()
 }
 
 fn registry_path_for(supervisor_pid: u32) -> Option<PathBuf> {
@@ -137,18 +172,13 @@ fn registry_path_for(supervisor_pid: u32) -> Option<PathBuf> {
 /// Start time of `pid` as the OS reports it, used to tell a live runtime from
 /// an unrelated process that inherited its pid.
 pub fn process_start_time(pid: u32) -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    #[cfg(windows)]
+    {
+        process_start_time_windows(pid)
     }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
+    #[cfg(not(windows))]
+    {
+        process_start_time_unix(pid)
     }
 }
 
@@ -217,9 +247,9 @@ pub fn sweep_orphans() -> usize {
             libc::kill(-(pid as i32), libc::SIGKILL);
             libc::kill(pid as i32, libc::SIGKILL);
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            let _ = pid;
+            windows_process::terminate(pid);
         }
     })
 }
@@ -324,10 +354,73 @@ mod windows_job {
     }
 }
 
+#[cfg(windows)]
+mod windows_process {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, TerminateProcess,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+
+    pub fn is_alive(pid: u32) -> bool {
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut exit_code = 0;
+            let is_running = GetExitCodeProcess(process, &mut exit_code) != 0
+                && exit_code == STILL_ACTIVE as u32;
+            CloseHandle(process);
+            is_running
+        }
+    }
+
+    pub fn start_time(pid: u32) -> Option<String> {
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return None;
+            }
+            let mut creation = std::mem::zeroed::<FILETIME>();
+            let mut exit = std::mem::zeroed::<FILETIME>();
+            let mut kernel = std::mem::zeroed::<FILETIME>();
+            let mut user = std::mem::zeroed::<FILETIME>();
+            let succeeded =
+                GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) != 0;
+            CloseHandle(process);
+            succeeded.then(|| {
+                let ticks =
+                    (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+                ticks.to_string()
+            })
+        }
+    }
+
+    pub fn terminate(pid: u32) {
+        unsafe {
+            let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !process.is_null() {
+                TerminateProcess(process, 1);
+                CloseHandle(process);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn runtime_registry_follows_the_resolved_pi_agent_directory() {
+        let root = Path::new(r"C:\isolated\.pi\agent");
+        assert_eq!(
+            pi_root_from_agent_dir(root),
+            Some(Path::new(r"C:\isolated\.pi"))
+        );
+    }
 
     fn registry_with(dir: &Path, supervisor_pid: u32, entries: Vec<RuntimeEntry>) {
         write_registry(
@@ -425,6 +518,8 @@ mod tests {
 
     #[test]
     fn a_live_process_reads_as_alive() {
-        assert!(pid_is_alive(std::process::id()));
+        let pid = std::process::id();
+        assert!(pid_is_alive(pid));
+        assert!(process_start_time(pid).is_some());
     }
 }

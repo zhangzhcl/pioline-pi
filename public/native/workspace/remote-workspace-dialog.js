@@ -58,7 +58,7 @@ function createDialogDom() {
     <header class="remote-workspace-header">
       <strong data-i18n="remoteWorkspace.dialogTitle">Connect to a remote host</strong>
       <p class="remote-workspace-help" data-i18n="remoteWorkspace.dialogHelp">
-        Picot opens the project where it lives. Read, write, edit and bash run on the remote host over SSH — no local copy is required.
+        Pipline opens the project where it lives. Read, write, edit and bash run on the remote host over SSH — no local copy is required.
       </p>
     </header>
     <div class="remote-workspace-body">

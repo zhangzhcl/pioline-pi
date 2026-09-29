@@ -4,9 +4,11 @@ import { registerHostUiCapabilityReporter } from "./host-ui-capabilities";
 import { startOrphanWatchdog } from "./orphan-watchdog";
 import type { ConfigContext } from "./picot-config";
 import { handlePicotConfig } from "./picot-config";
+import { registerPicotWorkflowTools } from "./picot-workflow";
 import projectTrust from "./project-trust";
 import { registerAutomaticSessionTitle } from "./session-title-auto";
 import { readResolvedProjectSshRemoteSettings, registerSshRemoteExtension } from "./ssh-remote";
+import { activateNativePowerShellFallback } from "./windows-shell-fallback";
 
 type ConfigRequest = {
   id?: string;
@@ -15,6 +17,9 @@ type ConfigRequest = {
 };
 
 export default function picotBridge(pi: ExtensionAPI) {
+  pi.on("session_start", () => {
+    activateNativePowerShellFallback(pi, process.env.PIPLINE_WINDOWS_POWERSHELL_FALLBACK === "1");
+  });
   // Stop this runtime if Picot dies without taking it down — see
   // src-tauri/src/child_supervision.rs for the other layers.
   startOrphanWatchdog();
@@ -26,6 +31,7 @@ export default function picotBridge(pi: ExtensionAPI) {
   // Surfaces the `ctx.ui` surfaces that stay terminal-only, so a command that
   // silently does nothing in the GUI can say why.
   registerHostUiCapabilityReporter(pi);
+  registerPicotWorkflowTools(pi);
   // Remote workspace: delegates read/write/edit/bash to a remote host when the
   // trusted project's .pi/settings.json has sshRemote.enabled. A `hostRef`
   // binding is resolved against the global registry first, so the project file

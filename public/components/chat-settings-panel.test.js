@@ -100,7 +100,7 @@ describe("chat-settings-panel", () => {
       "Start automatically",
     );
     expect(panel.querySelector("#setting-super-agent .settings-label-sub")?.textContent).toBe(
-      "Launch Agent Inbox when Picot opens",
+      "Launch Agent Inbox when Pipline opens",
     );
     expect(panel.querySelector("#toggle-super-agent")).not.toBeNull();
     expect(panel.querySelector("[data-token-input]")?.classList.contains("ui-input")).toBe(true);

@@ -321,7 +321,7 @@ export function formatRemoteOperationsCommand(
     ).length;
     return respond(
       [
-        "Picot operations health:",
+        "Pipline operations health:",
         `Telegram workers: ${snapshot.workers.length} (${workerErrors} errors)`,
         `Agent Index tasks: ${snapshot.tasks.length}`,
         `Running instances: ${snapshot.instances.length}`,

@@ -129,7 +129,9 @@ describe("GitHistoryPanel", () => {
     const { panel } = makePanel();
     const relativeTime = vi
       .spyOn(Intl, "RelativeTimeFormat")
-      .mockImplementation(() => ({ format: (value, unit) => `${value} ${unit}` }));
+      .mockImplementation(function RelativeTimeFormatMock() {
+        return { format: (value, unit) => `${value} ${unit}` };
+      });
     const now = Date.now();
     expect(panel._relativeTime((now - 8 * 24 * 60 * 60 * 1000) / 1000)).toBe("-1 week");
     expect(panel._relativeTime((now - 60 * 24 * 60 * 60 * 1000) / 1000)).toBe("-2 month");

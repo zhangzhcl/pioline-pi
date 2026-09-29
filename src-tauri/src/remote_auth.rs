@@ -333,6 +333,7 @@ mod tests {
             auth.claim_device_request(&created.request_id, "device-phone", &"a".repeat(64), 14),
             Err(DeviceRequestError::NotFound)
         );
+        drop(auth);
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -358,6 +359,7 @@ mod tests {
         assert!(restarted.authorize(&token).unwrap());
         restarted.revoke("device-phone").unwrap();
         assert!(!restarted.authorize(&token).unwrap());
+        drop(restarted);
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -398,6 +400,7 @@ mod tests {
             auth.claim_device_request(&request.request_id, "device-phone", &"b".repeat(64), 3),
             Err(DeviceRequestError::WrongSecret)
         );
+        drop(auth);
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -412,6 +415,7 @@ mod tests {
             .unwrap();
         assert_ne!(first.request_id, replacement.request_id);
         assert_eq!(replacement_auth.list_device_requests(1).len(), 1);
+        drop(replacement_auth);
         fs::remove_dir_all(temp).unwrap();
 
         let (mut capacity_auth, capacity_temp) = auth();
@@ -428,6 +432,7 @@ mod tests {
             capacity_auth.create_device_request("overflow", "Phone", &"a".repeat(64), 183),
             Err(DeviceRequestError::Capacity)
         );
+        drop(capacity_auth);
         fs::remove_dir_all(capacity_temp).unwrap();
     }
 
@@ -457,6 +462,7 @@ mod tests {
             auth.claim_device_request(&expired.request_id, "device-other", &"a".repeat(64), 320),
             Err(DeviceRequestError::Expired)
         );
+        drop(auth);
         fs::remove_dir_all(temp).unwrap();
     }
 }

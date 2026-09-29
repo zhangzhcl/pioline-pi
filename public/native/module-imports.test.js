@@ -126,7 +126,7 @@ function firstImportAfterTopLevelAwait(filePath) {
 }
 
 describe("native application module graph", () => {
-  it("only loads module entry points that exist", () => {
+  it("loads bundled compatibility entrypoints as native ES modules", () => {
     const publicDir = resolve(process.cwd(), "public");
     const indexHtml = readFileSync(resolve(publicDir, "index.html"), "utf8");
     const moduleSources = [
@@ -136,6 +136,10 @@ describe("native application module graph", () => {
     expect(
       moduleSources.map((source) => resolve(publicDir, source)).filter((path) => !existsSync(path)),
     ).toEqual([]);
+    expect(moduleSources).toContain("compat/bootstrap-entry.js");
+    expect(indexHtml).not.toContain('type="module-shim"');
+    expect(indexHtml).not.toContain('type="importmap-shim"');
+    expect(indexHtml).not.toContain("vendor/es-module-shims.js");
   });
 
   it("does not request missing modules that the static fallback serves as HTML", () => {
@@ -156,14 +160,19 @@ describe("native application module graph", () => {
     expect(firstImportAfterTopLevelAwait(entryPath)).toBeNull();
   });
 
-  it("maps every browser package import to a same-origin vendor bundle", () => {
-    const entryPath = resolve(process.cwd(), "public/native/app.js");
-    const indexHtml = readFileSync(resolve(process.cwd(), "public/index.html"), "utf8");
-    const importMapSource = indexHtml.match(
-      /<script type="importmap">\s*([\s\S]*?)\s*<\/script>/,
-    )?.[1];
-    const importMap = JSON.parse(importMapSource).imports;
+  it("bundles all app entry dependencies without bare browser imports", () => {
+    const publicDir = resolve(process.cwd(), "public");
+    const entries = [
+      "compat/bootstrap-entry.js",
+      "compat/native/app.js",
+      "compat/native/features/app-launcher.js",
+      "compat/native/workflow/workflow-window.js",
+    ].map((path) => resolve(publicDir, path));
 
-    expect(collectBareImports(entryPath).filter((specifier) => !importMap[specifier])).toEqual([]);
+    for (const entryPath of entries) {
+      expect(existsSync(entryPath), `${entryPath} was not built`).toBe(true);
+      expect(collectMissingImports(entryPath)).toEqual([]);
+      expect(collectBareImports(entryPath)).toEqual([]);
+    }
   });
 });
