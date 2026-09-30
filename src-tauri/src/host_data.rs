@@ -124,6 +124,18 @@ pub enum WriteFileResult {
     Invalid,
 }
 
+/// A folder the user opened as a workspace during this app session. Feeds the
+/// sidebar's project groups so an opened folder is visible even before any of
+/// its chats has produced a session file.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredWorkspace {
+    pub workspace_id: String,
+    pub path: String,
+    pub folder_name: String,
+    pub is_default_workspace: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
@@ -140,6 +152,10 @@ pub struct SessionSummary {
     /// session runs against a remote host over SSH rather than a local folder.
     /// The sidebar renders a "remote" badge on such workspace groups.
     pub is_remote: bool,
+    /// True when `project_path` is the user's home directory — the default
+    /// workspace every window opens with. The sidebar labels this group
+    /// "Sessions" instead of the home folder name, which is not a project.
+    pub is_default_workspace: bool,
     /// True when this session belongs to the workspace the sidebar is showing.
     pub is_current_workspace: bool,
     /// Absolute path to the persisted JSONL session file.
@@ -1284,6 +1300,41 @@ impl HostDataPlane {
         self.list_all_sessions_with_current(current)
     }
 
+    /// The stable workspace id of the always-registered default (home)
+    /// workspace. "New plain chat" actions resolve this server-side so the
+    /// outcome never depends on which sidebar finished loading first.
+    pub fn default_workspace_id(&self) -> Option<String> {
+        let roots = self.workspace_roots.read().ok()?;
+        roots
+            .iter()
+            .find(|(_, root)| is_home_project_path(root))
+            .map(|(workspace_id, _)| workspace_id.clone())
+    }
+
+    /// Workspaces registered at runtime (every folder opened as a workspace in
+    /// this app session). The sidebar shows these as project groups even
+    /// before any chat has produced a session file inside them, matching the
+    /// "a project exists once the user opens it" sidebar model.
+    pub fn registered_workspaces(&self) -> Vec<RegisteredWorkspace> {
+        let Ok(roots) = self.workspace_roots.read() else {
+            return Vec::new();
+        };
+        let mut workspaces: Vec<RegisteredWorkspace> = roots
+            .iter()
+            .map(|(workspace_id, root)| RegisteredWorkspace {
+                workspace_id: workspace_id.clone(),
+                path: root.to_string_lossy().into_owned(),
+                folder_name: root
+                    .file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| root.to_string_lossy().into_owned()),
+                is_default_workspace: is_home_project_path(root),
+            })
+            .collect();
+        workspaces.sort_by(|a, b| a.path.cmp(&b.path));
+        workspaces
+    }
+
     /// List saved sessions for the targetless `/app` launcher. No workspace is
     /// marked current, so selecting any result follows the existing
     /// cross-project resolution flow before navigating to its canonical route.
@@ -1982,6 +2033,15 @@ fn same_dir(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// True when `project_path` is the user's home directory — the default
+/// workspace every window opens with, not a project the user chose.
+fn is_home_project_path(project_path: &Path) -> bool {
+    match dirs::home_dir() {
+        Some(home) => same_dir(&home, project_path),
+        None => false,
+    }
+}
+
 /// True when `project_path` lives under Picot's `~/.picot/remotes` anchor root,
 /// i.e. it represents a remote host workspace rather than a local project.
 /// Anchors are always created there by `open_remote_workspace`; comparing
@@ -2184,6 +2244,7 @@ fn parse_session_summary_with_metadata(
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| project_path.to_string_lossy().into_owned());
     let is_remote = is_remote_project_path(&project_path);
+    let is_default_workspace = is_home_project_path(&project_path);
     let activity_at_ms = last_user_message_at_ms
         .or_else(|| iso_timestamp_ms(&timestamp))
         .unwrap_or(modified_at_ms);
@@ -2196,6 +2257,7 @@ fn parse_session_summary_with_metadata(
         project_path: project_path.to_string_lossy().into_owned(),
         project_name,
         is_remote,
+        is_default_workspace,
         is_current_workspace: false,
         file_path: path.to_string_lossy().into_owned(),
         file_name: path

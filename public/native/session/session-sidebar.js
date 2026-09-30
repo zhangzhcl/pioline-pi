@@ -56,6 +56,7 @@ const STORAGE = {
   unread: "picot-unread",
   recent: "picot-recent-sessions",
   recentCollapsed: "picot-recent-collapsed",
+  sessionsCollapsed: "picot-sessions-collapsed",
 };
 
 // Cap on how many recently-accessed sessions the sidebar tracks. Mirrors the
@@ -264,6 +265,12 @@ export class SessionSidebar {
     this.projectsCollapsed = readObject(STORAGE.projectsCollapsed);
     this.recent = readArray(STORAGE.recent).slice(0, MAX_RECENT_SESSIONS);
     this.recentCollapsed = localStorage.getItem(STORAGE.recentCollapsed) !== "false";
+    // Runtime-registered workspaces (folders opened as workspaces in this app
+    // session) merged into the project groups by load().
+    this.registeredWorkspaces = [];
+    // Default-workspace sessions section starts expanded: it is the primary
+    // conversation list, unlike the recent shortcut section above it.
+    this.sessionsCollapsed = localStorage.getItem(STORAGE.sessionsCollapsed) === "true";
     // In-memory collapse state for PINNED and PROJECTS — resets every app
     // launch (mirrors feature-v3) so a previous session's expand choice
     // does not carry over.
@@ -347,27 +354,6 @@ export class SessionSidebar {
     if (JSON.stringify(next) === JSON.stringify(this.recent)) return;
     this.recent = next;
     this.#save(STORAGE.recent, this.recent);
-  }
-
-  // Join the stored recent ids against the loaded session list, dropping ids
-  // that no longer resolve to a visible (non-archived) session. The prune is
-  // lazy: we only rewrite storage when the set actually shrank, avoiding
-  // write churn on every render.
-  #resolveRecentSessions() {
-    if (this.recent.length === 0) return [];
-    const byId = new Map(this.sessions.map((session) => [session.id, session]));
-    const resolved = this.recent
-      .map((id) => byId.get(id))
-      .filter(
-        (session) =>
-          session && !this.isArchived(session.id) && !isSuperAgentProjectPath(session.projectPath),
-      );
-    const validIds = resolved.map((session) => session.id);
-    if (JSON.stringify(validIds) !== JSON.stringify(this.recent)) {
-      this.recent = validIds;
-      this.#save(STORAGE.recent, this.recent);
-    }
-    return resolved;
   }
 
   archiveProject(project) {
@@ -583,6 +569,13 @@ export class SessionSidebar {
       if (seq < this._loadCommitted) return;
       this._loadCommitted = seq;
       const receivedSessions = response.sessions ?? [];
+      // Workspace registry changes (a folder just opened as a workspace) must
+      // re-render even when the session list itself is unchanged.
+      const nextWorkspaces = Array.isArray(response.workspaces) ? response.workspaces : null;
+      const workspacesChanged =
+        nextWorkspaces != null &&
+        JSON.stringify(nextWorkspaces) !== JSON.stringify(this.registeredWorkspaces);
+      if (nextWorkspaces) this.registeredWorkspaces = nextWorkspaces;
       // The first request can race host/bootstrap registration and briefly
       // return an empty list. Do not let that transient response erase a
       // non-empty cache (including Agent Inbox); a post-bootstrap reload will
@@ -606,7 +599,7 @@ export class SessionSidebar {
       writeSessionCache(workspaceId, this.sessions);
       this.onSessionsLoaded?.(this.sessions);
       this.syncAgentInboxNav();
-      if (changed || (!quiet && !renderedFromCache)) this.render();
+      if (changed || workspacesChanged || (!quiet && !renderedFromCache)) this.render();
     } catch (error) {
       if (seq < this._loadCommitted) return;
       const retryDelay = LOAD_RETRY_DELAYS_MS[retryAttempt];
@@ -952,25 +945,82 @@ export class SessionSidebar {
       }
     }
 
-    // ── RECENT ──────────────────────────────────────────────────
-    const recentSessions = this.#resolveRecentSessions();
-    if (recentSessions.length > 0) {
+    // ── SESSIONS (default workspace) ─────────────────────────────
+    // Chats from the default (home) workspace are plain conversations, not a
+    // project the user chose. The section is always present (ZCode-style
+    // tasks section): it carries the new-plain-chat action, and in-flight
+    // sessions without a project path also land here.
+    const defaultWorkspaceSessions = regular.filter(
+      (session) => session.isDefaultWorkspace === true || !session.projectPath,
+    );
+    const projectSessions = regular.filter(
+      (session) => session.isDefaultWorkspace !== true && session.projectPath,
+    );
+    {
+      const defaultProject = {
+        path: "__default-workspace__",
+        name: t("sidebar.sessionList"),
+        isCurrent: defaultWorkspaceSessions.some(
+          (session) => session.isCurrentWorkspace || !session.projectPath,
+        ),
+        isDefaultWorkspace: true,
+        sessions: defaultWorkspaceSessions,
+      };
+      const canCreateDefaultSession = Boolean(
+        globalThis.__TAURI__?.core?.invoke || this.onCreateSession,
+      );
       const { section } = buildSidebarSection({
-        region: "recent",
-        titleKey: "sidebar.recent",
-        count: recentSessions.length,
-        expanded: !this.recentCollapsed,
+        region: "sessions",
+        titleKey: "sidebar.sessionList",
+        count: defaultWorkspaceSessions.length || null,
+        expanded: !this.sessionsCollapsed,
         onToggle: (expanded) => {
-          this.recentCollapsed = !expanded;
-          writeStorage(STORAGE.recentCollapsed, String(this.recentCollapsed));
+          this.sessionsCollapsed = !expanded;
+          writeStorage(STORAGE.sessionsCollapsed, String(this.sessionsCollapsed));
+        },
+        renderHeaderActions: (header) => {
+          if (!canCreateDefaultSession) return;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "project-new-chat-btn";
+          button.title = t("sidebar.startNewChat");
+          button.setAttribute("aria-label", t("sidebar.startNewChat"));
+          button.textContent = "+";
+          button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            this.#createDefaultWorkspaceSession();
+          });
+          header.appendChild(button);
         },
         renderSessions: (body) => {
-          for (const session of recentSessions) {
+          if (defaultWorkspaceSessions.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "session-loading";
+            empty.textContent = t("sidebar.noSavedSessions");
+            body.appendChild(empty);
+            return;
+          }
+          const visibleCount = this.#projectVisibleCount(
+            defaultProject,
+            defaultWorkspaceSessions.length,
+          );
+          const visible = this.searchQuery
+            ? defaultWorkspaceSessions
+            : defaultWorkspaceSessions.slice(0, visibleCount);
+          for (const session of visible) {
             body.appendChild(this.#buildItem(session));
+          }
+          if (!this.searchQuery) {
+            const toggle = this.#buildToggleRow(
+              defaultProject,
+              visible.length,
+              defaultWorkspaceSessions.length,
+            );
+            if (toggle) body.appendChild(toggle);
           }
         },
       });
-      section.classList.add("recent-group");
+      section.classList.add("sessions-group");
       this.container.appendChild(section);
     }
 
@@ -978,8 +1028,26 @@ export class SessionSidebar {
     this.#renderPinnedSection(pinState);
 
     // ── PROJECTS ────────────────────────────────────────────────
-    if (regular.length > 0) {
-      const projects = this.#groupByProject(regular);
+    // Groups come from two sources merged by path: sessions found on disk,
+    // plus workspaces registered at runtime (an opened folder shows up here
+    // immediately, even before any chat inside it has produced a session
+    // file). The ZCode-style sidebar has no cross-project "recent" section;
+    // recents data is still recorded for potential future use.
+    const projects = this.#groupByProject(projectSessions);
+    const knownPaths = new Set(projects.map((project) => project.path));
+    for (const workspace of this.registeredWorkspaces) {
+      if (workspace.isDefaultWorkspace) continue;
+      if (knownPaths.has(workspace.path)) continue;
+      projects.push({
+        path: workspace.path,
+        name: workspace.folderName || workspace.path,
+        isCurrent: workspace.workspaceId === this.getTarget()?.workspaceId,
+        isRemote: false,
+        isDefaultWorkspace: false,
+        sessions: [],
+      });
+    }
+    if (projects.length > 0) {
       const { section: projectsSection } = buildSidebarSection({
         region: "projects",
         titleKey: "sidebar.projects",
@@ -1193,11 +1261,13 @@ export class SessionSidebar {
           name: session.projectName || path,
           isCurrent: Boolean(session.isCurrentWorkspace),
           isRemote: false,
+          isDefaultWorkspace: false,
           sessions: [],
         });
         order.push(path);
       }
       byPath.get(path).isRemote ||= Boolean(session.isRemote);
+      byPath.get(path).isDefaultWorkspace ||= Boolean(session.isDefaultWorkspace);
       byPath.get(path).sessions.push(session);
     }
     return order.map((path) => byPath.get(path));
@@ -1209,6 +1279,20 @@ export class SessionSidebar {
     return stored === undefined ? !project.isCurrent : stored === true;
   }
 
+  // Start a plain chat in the default (home) workspace. Both transports
+  // resolve the target server-side ("default" / empty path), so the result
+  // never depends on whether the sidebar's workspace registry has loaded.
+  #createDefaultWorkspaceSession() {
+    const invoke = globalThis.__TAURI__?.core?.invoke ?? null;
+    if (invoke) {
+      invoke("open_new_session_in_workspace", { projectPath: "" }).catch((error) =>
+        console.error("[Sidebar] Failed to start new chat:", error),
+      );
+      return;
+    }
+    this.onCreateSession?.("default");
+  }
+
   #buildProjectGroup(project) {
     const group = document.createElement("div");
     group.className = `project-group${project.isCurrent ? " current-project" : ""}`;
@@ -1216,8 +1300,14 @@ export class SessionSidebar {
 
     const invoke = globalThis.__TAURI__?.core?.invoke ?? null;
     const canCreateSession = Boolean(invoke || (project.isCurrent && this.onCreateSession));
+    // The home directory is the default workspace, not a project the user
+    // chose; its group is labeled "Sessions" instead of the folder name.
+    const displayName = project.isDefaultWorkspace ? t("sidebar.sessionList") : project.name;
+    const newChatLabel = project.isDefaultWorkspace
+      ? t("sidebar.startNewChat")
+      : t("sidebar.newChatInProject", { name: project.name });
     const newChatButtonHtml = canCreateSession
-      ? `<button class="project-new-chat-btn" title="New chat in ${escapeHtml(project.name)}" aria-label="New chat in ${escapeHtml(project.name)}">
+      ? `<button class="project-new-chat-btn" title="${escapeHtml(newChatLabel)}" aria-label="${escapeHtml(newChatLabel)}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>`
       : "";
@@ -1231,7 +1321,7 @@ export class SessionSidebar {
         <svg class="folder-closed-icon" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
         <svg class="folder-open-icon" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
       </span>
-      <span class="project-name" title="${escapeHtml(project.path)}">${escapeHtml(project.name)}</span>
+      <span class="project-name" title="${escapeHtml(project.path)}">${escapeHtml(displayName)}</span>
       <span class="project-count">${project.sessions.length}</span>
       ${newChatButtonHtml}
       ${moreActionsButtonHtml}`,
@@ -1271,6 +1361,24 @@ export class SessionSidebar {
     visible.forEach((session) => {
       list.appendChild(this.#buildItem(session));
     });
+    // An explicit, labeled row distinguishes "new chat inside this project"
+    // from the header icon-only + and from the sidebar-level plain "New chat".
+    if (canCreateSession && !this.searchQuery) {
+      const newInProject = document.createElement("button");
+      newInProject.type = "button";
+      newInProject.className = "project-sessions-new-chat";
+      newInProject.textContent = t("sidebar.newChatInProject", { name: project.name });
+      newInProject.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const create = invoke
+          ? invoke("open_new_session_in_workspace", { projectPath: project.path })
+          : this.onCreateSession?.(this.getTarget()?.workspaceId);
+        create?.catch((error) => {
+          console.error("[Sidebar] Failed to start new chat:", error);
+        });
+      });
+      list.appendChild(newInProject);
+    }
     if (!this.searchQuery) {
       const toggle = this.#buildToggleRow(project, visible.length, project.sessions.length);
       if (toggle) list.appendChild(toggle);

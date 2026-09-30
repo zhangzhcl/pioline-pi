@@ -1675,7 +1675,14 @@ async function initializeApp() {
     desktopClient: remoteAuth.clientType === "desktop",
   });
   setupAppUpdater({ settingsPanel });
-  setupNewSessionButton({ workspaceId: target.workspaceId, onError: showError });
+  setupNewSessionButton({
+    // The header "New chat" action always starts a plain conversation in the
+    // default (home) workspace; the server resolves "default" so the outcome
+    // never depends on sidebar load timing. Per-project chats use the project
+    // row button.
+    workspaceId: "default",
+    onError: showError,
+  });
 
   // SPA session creation: when workspace-actions creates a new session via the
   // HTTP API, it emits picot:session-created with the new target. Adopt it
@@ -1727,7 +1734,10 @@ async function initializeApp() {
     });
   });
 
-  setupOpenFolderButton({ onError: showError });
+  setupOpenFolderButton({
+    onError: showError,
+    onWorkspaceOpened: () => sidebar?.load({ quiet: true }).catch(showError),
+  });
   // The connect dialog (built above, alongside the ssh-reauth notify hook) is the
   // only place a remote workspace is configured, so the header pill reopens it
   // on this workspace's binding rather than a settings tab.

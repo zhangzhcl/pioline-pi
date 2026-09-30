@@ -123,9 +123,12 @@ export async function openSessionInProjectViaHost(session) {
  * @param {(error: Error) => void} [options.onError]
  * @returns {boolean}
  */
-export function setupNewSessionButton({ workspaceId, onError } = {}) {
+export function setupNewSessionButton({ workspaceId, getWorkspaceId, onError } = {}) {
   const button = document.getElementById("new-session-btn");
   if (!button) return false;
+
+  const resolveWorkspaceId = () =>
+    (typeof getWorkspaceId === "function" ? getWorkspaceId() : null) ?? workspaceId;
 
   button.addEventListener("click", async () => {
     button.disabled = true;
@@ -133,7 +136,7 @@ export function setupNewSessionButton({ workspaceId, onError } = {}) {
       // SPA navigation: always use the HTTP API so the page never reloads.
       // The Tauri command `open_new_session_in_workspace` causes a full
       // window.navigate() which flickers the entire UI.
-      await createSessionViaHost(workspaceId);
+      await createSessionViaHost(resolveWorkspaceId());
     } catch (error) {
       onError?.(error instanceof Error ? error : new Error(String(error)));
     } finally {
@@ -161,7 +164,7 @@ function isTypingTarget(target) {
   return target.closest('[contenteditable="true"]') !== null;
 }
 
-export function setupOpenFolderButton({ onError } = {}) {
+export function setupOpenFolderButton({ onError, onWorkspaceOpened } = {}) {
   const button = document.getElementById("open-folder-btn");
   if (!button) return false;
 
@@ -177,6 +180,9 @@ export function setupOpenFolderButton({ onError } = {}) {
     button.disabled = true;
     try {
       await invoke("open_folder_as_workspace");
+      // The folder now exists as a registered workspace; let the sidebar pick
+      // it up as an (initially empty) project group right away.
+      onWorkspaceOpened?.();
     } catch (error) {
       onError?.(error instanceof Error ? error : new Error(String(error)));
     } finally {

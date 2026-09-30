@@ -360,6 +360,29 @@
   color: var(--text-primary);
 }
 
+/* Labeled "new chat inside this project" row: makes the per-project + action
+   explicit next to the sidebar-level plain "New chat" entry. */
+.project-sessions-new-chat {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin-top: var(--space-1);
+  padding: var(--space-1) 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1.4;
+  text-align: start;
+  cursor: pointer;
+}
+
+.project-sessions-new-chat:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-primary);
+}
+
 .project-sessions.collapsed {
   max-height: 0;
   opacity: 0;

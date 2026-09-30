@@ -178,77 +178,6 @@
           <div class="sidebar-actions">
             <button
               class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
-              id="new-session-btn"
-              title="New session"
-              data-i18n-title="migrated.index.title.newSession"
-              aria-label="New session"
-              data-i18n-aria-label="migrated.index.title.newSession"
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-            </button>
-            <button
-              class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
-              id="open-folder-btn"
-              title="Open folder as workspace"
-              data-i18n-title="sidebar.openFolder"
-              aria-label="Open folder"
-              data-i18n-aria-label="sidebar.openFolderAria"
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path
-                  d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
-                />
-                <line x1="12" y1="12" x2="12" y2="18" />
-                <line x1="9" y1="15" x2="15" y2="15" />
-              </svg>
-            </button>
-            <button
-              class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
-              id="open-remote-btn"
-              title="Connect to a remote host"
-              data-i18n-title="remoteWorkspace.openRemote"
-              aria-label="Connect to a remote host"
-              data-i18n-aria-label="remoteWorkspace.openRemote"
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <rect x="2" y="3" width="20" height="7" rx="2" />
-                <rect x="2" y="14" width="20" height="7" rx="2" />
-                <line x1="6" y1="6.5" x2="6.01" y2="6.5" />
-                <line x1="6" y1="17.5" x2="6.01" y2="17.5" />
-              </svg>
-            </button>
-            <button
-              class="ui-icon-button ui-icon-button--sm ui-icon-button--ghost icon-btn"
               id="refresh-sessions-btn"
               title="Refresh sessions"
               data-i18n-title="sidebar.refreshSessions"
@@ -318,6 +247,80 @@
               </g>
             </svg>
             <span data-i18n="migrated.index.text.skills">Skills</span>
+          </button>
+          <button
+            type="button"
+            class="sidebar-primary-nav-item"
+            id="new-session-btn"
+            title="新建会话"
+            data-i18n-title="sidebar.startNewChat"
+            aria-label="新建会话"
+            data-i18n-aria-label="sidebar.startNewChat"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <g
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+              >
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </g>
+            </svg>
+            <span data-i18n="sidebar.startNewChat">New chat</span>
+          </button>
+          <button
+            type="button"
+            class="sidebar-primary-nav-item"
+            id="open-folder-btn"
+            title="打开文件夹作为工作区"
+            data-i18n-title="sidebar.openFolder"
+            aria-label="打开文件夹"
+            data-i18n-aria-label="sidebar.openFolderAria"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <g
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+              >
+                <path
+                  d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+                />
+                <line x1="12" y1="12" x2="12" y2="18" />
+                <line x1="9" y1="15" x2="15" y2="15" />
+              </g>
+            </svg>
+            <span data-i18n="sidebar.openFolderShort">Open folder</span>
+          </button>
+          <button
+            type="button"
+            class="sidebar-primary-nav-item"
+            id="open-remote-btn"
+            title="连接远程主机"
+            data-i18n-title="remoteWorkspace.openRemote"
+            aria-label="连接远程主机"
+            data-i18n-aria-label="remoteWorkspace.openRemote"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <g
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+              >
+                <rect x="2" y="3" width="20" height="7" rx="2" />
+                <rect x="2" y="14" width="20" height="7" rx="2" />
+                <line x1="6" y1="6.5" x2="6.01" y2="6.5" />
+                <line x1="6" y1="17.5" x2="6.01" y2="17.5" />
+              </g>
+            </svg>
+            <span data-i18n="remoteWorkspace.openRemote">Connect remote</span>
           </button>
           <button
             type="button"

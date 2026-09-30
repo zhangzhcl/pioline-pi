@@ -1,5 +1,11 @@
 import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../i18n.js", () => ({
+  onLocaleChange: () => {},
+  t: (key, params) => (params?.shortcut ? `${key} (${params.shortcut})` : key),
+}));
+
 import { setupSessionSearchDialog } from "./session-search-dialog.js";
 
 describe("session search dialog", () => {

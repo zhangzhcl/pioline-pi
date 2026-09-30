@@ -1106,9 +1106,9 @@ describe("SessionSidebar.pinned", () => {
     expect(sidebar.pinnedStore.isWorkspacePinned("/ghost-ws")).toBe(false);
   });
 
-  it("keeps the Agent Inbox out of the RECENT section", async () => {
+  it("keeps the Agent Inbox out of the recents record", async () => {
     setSuperAgentEnabled(true);
-    const { sidebar, container } = makeSidebar([
+    const { sidebar } = makeSidebar([
       {
         id: "agent-inbox",
         filePath: "/sessions/agent-inbox.jsonl",
@@ -1129,20 +1129,16 @@ describe("SessionSidebar.pinned", () => {
     sidebar.setActive("s-1");
     await sidebar.load();
     expect(sidebar.recent).toEqual(["s-1"]);
-    const recentGroup = container.querySelector(".recent-group");
-    const recentIds = Array.from(recentGroup.querySelectorAll(".session-item")).map(
-      (node) => node.dataset.sessionId,
-    );
-    expect(recentIds).toEqual(["s-1"]);
   });
 
-  it("renders the PINNED section between RECENT and PROJECTS", async () => {
+  it("renders the PINNED section between SESSIONS and PROJECTS", async () => {
     const { sidebar, container } = makeSidebar([
       {
         id: "s-1",
         filePath: "/sessions/s-1.jsonl",
         timestamp: new Date().toISOString(),
         name: "Hello",
+        isDefaultWorkspace: true,
       },
       {
         id: "s-other",
@@ -1155,11 +1151,10 @@ describe("SessionSidebar.pinned", () => {
       },
     ]);
     await sidebar.load();
-    // Touch the active session so it lands in the RECENT bucket.
-    sidebar.setActive("s-1");
-    // Pin only /ws-1; /other-ws stays in PROJECTS so the test can assert
-    // the PINNED section sits between RECENT and PROJECTS.
-    sidebar.pinnedStore.pinWorkspace("/ws-1", "/ws-1");
+    // Pin a workspace with no sessions so s-1 stays in SESSIONS and
+    // /other-ws stays in PROJECTS; the assertion is that PINNED renders
+    // between the two.
+    sidebar.pinnedStore.pinWorkspace("/pinned-ws", "/pinned-ws");
     await sidebar.load();
     // Sections now carry a `sidebar-section` prefix class, so check for
     // membership instead of exact className[0].
@@ -1167,11 +1162,11 @@ describe("SessionSidebar.pinned", () => {
       (node) =>
         node.className.split(" ").find((c) => c.endsWith("-group")) || node.className.split(" ")[0],
     );
-    const recentIdx = order.indexOf("recent-group");
+    const sessionsIdx = order.indexOf("sessions-group");
     const pinnedIdx = order.indexOf("pinned-group");
     const projectIdx = order.indexOf("projects-group");
-    expect(recentIdx).toBeGreaterThanOrEqual(0);
-    expect(pinnedIdx).toBeGreaterThan(recentIdx);
+    expect(sessionsIdx).toBeGreaterThanOrEqual(0);
+    expect(pinnedIdx).toBeGreaterThan(sessionsIdx);
     expect(projectIdx).toBeGreaterThan(pinnedIdx);
   });
 });

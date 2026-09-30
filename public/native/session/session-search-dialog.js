@@ -1,4 +1,4 @@
-import { t } from "../../i18n.js";
+import { onLocaleChange, t } from "../../i18n.js";
 import { bindDialogEscape } from "../../ui/dialog-escape.js";
 import { createLoadingPlaceholder } from "../../ui/loading-placeholder.js";
 
@@ -38,7 +38,7 @@ function normalizeQuery(query) {
 }
 
 function sessionTitle(session) {
-  return session?.name || session?.firstMessage || "Empty session";
+  return session?.name || session?.firstMessage || t("sidebar.emptySession");
 }
 
 function sessionSearchText(session) {
@@ -77,7 +77,13 @@ export function setupSessionSearchDialog({
     return { open() {}, close() {} };
   }
 
-  triggerInput.placeholder = `Search... (${shortcutHintLabel()})`;
+  const updateTriggerPlaceholder = () => {
+    triggerInput.placeholder = t("sidebar.searchWithShortcut", {
+      shortcut: shortcutHintLabel(),
+    });
+  };
+  updateTriggerPlaceholder();
+  onLocaleChange(updateTriggerPlaceholder);
 
   let query = "";
   let messageMatches = [];
@@ -200,7 +206,7 @@ export function setupSessionSearchDialog({
     } else if (list.children.length === 0) {
       const empty = document.createElement("div");
       empty.className = "session-search-empty";
-      empty.textContent = normalized ? "No tasks or messages found" : "No saved tasks";
+      empty.textContent = normalized ? t("sidebar.searchNoResults") : t("sidebar.noSavedSessions");
       list.appendChild(empty);
     }
 

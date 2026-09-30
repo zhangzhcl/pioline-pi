@@ -461,10 +461,17 @@ async fn open_new_session_in_workspace(
     window: WebviewWindow,
     project_path: String,
 ) -> Result<(), String> {
-    let cwd = PathBuf::from(&project_path);
-    if !cwd.is_dir() {
-        return Err(format!("Project folder no longer exists: {project_path}"));
-    }
+    // An empty path targets the default (home) workspace: plain new chats are
+    // resolved server-side instead of trusting the sidebar's load timing.
+    let cwd = if project_path.trim().is_empty() {
+        dirs::home_dir().ok_or_else(|| "User home directory is unavailable".to_string())?
+    } else {
+        let path = PathBuf::from(&project_path);
+        if !path.is_dir() {
+            return Err(format!("Project folder no longer exists: {project_path}"));
+        }
+        path
+    };
     open_fresh_session_at_path(&app, Some(&window), &cwd)
 }
 
@@ -1248,12 +1255,33 @@ fn setup_native_runtime(app: &AppHandle, static_dir: PathBuf) -> Result<(), Stri
     let launch = launch_resolver.native_launch_spec(&cwd, session_path.as_deref())?;
     let runtimes = NativePiManager::new(256);
     let remote_auth = Arc::new(Mutex::new(RemoteAuth::new(metadata.clone())));
+    let mut workspace_roots =
+        std::collections::HashMap::from([(target.workspace_id.clone(), PathBuf::from(&cwd))]);
+    // Plain (non-project) chats always live in the user's home directory, so
+    // the default workspace must stay resolvable even when the main window
+    // starts inside a project folder; every sidebar uses it for the "new
+    // plain chat" action.
+    if let Some(home) = dirs::home_dir() {
+        let home = home.canonicalize().unwrap_or(home);
+        let cwd_path = PathBuf::from(&cwd)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(&cwd));
+        if home != cwd_path {
+            if let Ok(home_id) = remote_auth
+                .lock()
+                .map_err(|_| "auth poisoned")?
+                .resolve_workspace(&home)
+            {
+                workspace_roots.insert(home_id, home);
+            }
+        }
+    }
     let host = tauri::async_runtime::block_on(async {
         let host = HostServer::start_with_workspaces(
             static_dir,
             runtimes.clone(),
             remote_auth,
-            std::collections::HashMap::from([(target.workspace_id.clone(), PathBuf::from(&cwd))]),
+            workspace_roots,
             Some(app.clone()),
             Some(Arc::clone(&metadata)),
         )

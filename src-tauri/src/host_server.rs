@@ -736,7 +736,11 @@ async fn list_all_sessions_http(
     if let Ok(statuses) = state.runtimes.statuses() {
         annotate_live_sessions(&mut sessions, statuses);
     }
-    Ok(Json(json!({ "sessions": sessions })))
+    let workspaces = serde_json::to_value(state.data.registered_workspaces())
+        .map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "serialization_failed"))?;
+    Ok(Json(
+        json!({ "sessions": sessions, "workspaces": workspaces }),
+    ))
 }
 
 async fn bootstrap_target(
@@ -1028,13 +1032,22 @@ async fn new_session(
     State(state): State<Arc<HostState>>,
     Json(body): Json<NewSessionRequest>,
 ) -> Result<Json<RuntimeTarget>, (StatusCode, Json<Value>)> {
+    // "default" (or empty) targets the always-registered home workspace so a
+    // plain new chat never depends on client-side workspace-id resolution.
+    let workspace_id = match body.workspace_id.trim() {
+        "" | "default" => state
+            .data
+            .default_workspace_id()
+            .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "default_workspace_unavailable"))?,
+        explicit => explicit.to_owned(),
+    };
     let cwd = state
         .data
-        .workspace_root_path(&body.workspace_id)
+        .workspace_root_path(&workspace_id)
         .map_err(|_| api_error(StatusCode::NOT_FOUND, "workspace_not_found"))?;
     let session_id = format!("temporary-{}", uuid::Uuid::new_v4().simple());
     let instance_id = format!("instance-{}", uuid::Uuid::new_v4().simple());
-    let target = RuntimeTarget::new(body.workspace_id.clone(), session_id, instance_id);
+    let target = RuntimeTarget::new(workspace_id, session_id, instance_id);
     let cwd_str = cwd.to_string_lossy().into_owned();
     let launch = state
         .pi_launch
@@ -1814,6 +1827,7 @@ async fn dispatch(
                     "requestId": request_id,
                     "operation": "list_all_sessions",
                     "sessions": sessions,
+                    "workspaces": state.data.registered_workspaces(),
                 }))
             }
             Some("list_launcher_sessions") => {
@@ -1831,6 +1845,7 @@ async fn dispatch(
                     "requestId": request_id,
                     "operation": "list_launcher_sessions",
                     "sessions": sessions,
+                    "workspaces": state.data.registered_workspaces(),
                 }))
             }
             Some("search_sessions") => {
