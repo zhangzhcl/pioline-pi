@@ -4,12 +4,12 @@ import {
   applyNodeChanges,
   Background,
   Controls,
-  MiniMap,
   ReactFlow,
   useEdgesState,
   useNodesState,
+  useReactFlow,
 } from "@xyflow/react";
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@xyflow/react/dist/style.css";
 import "./workflow-canvas.css";
@@ -22,6 +22,40 @@ import {
 import { WorkflowNodeView } from "./workflow-node-view.jsx";
 
 const nodeTypes = { workflow: WorkflowNodeView };
+
+// ReactFlow renders inside Canvas, so Canvas itself cannot call useReactFlow;
+// this bridge hands the viewport-aware coordinate converter up to it.
+function FlowPositionBridge({ onReady }) {
+  const { screenToFlowPosition } = useReactFlow();
+  useEffect(() => {
+    onReady(screenToFlowPosition);
+  }, [onReady, screenToFlowPosition]);
+  return null;
+}
+
+const NODE_MENU_WIDTH = 200;
+const NODE_MENU_ITEM_HEIGHT = 34;
+
+function CanvasNodeMenu({ clientX, clientY, addableNodes, onPick }) {
+  const left = Math.max(8, Math.min(clientX, window.innerWidth - NODE_MENU_WIDTH - 8));
+  const height = Math.min(addableNodes.length, 10) * NODE_MENU_ITEM_HEIGHT + 8;
+  const top = Math.max(8, Math.min(clientY, window.innerHeight - height - 8));
+  return (
+    <div className="ui-select-popover workflow-canvas-node-menu" role="menu" style={{ left, top }}>
+      {addableNodes.map((node) => (
+        <button
+          key={node.key}
+          type="button"
+          role="menuitem"
+          className="ui-select-option"
+          onClick={() => onPick(node.key)}
+        >
+          {node.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function graphFor(workflow, run, nodeMetas, viewMode, observation, translate) {
   if (viewMode === "pi-subtasks") {
@@ -90,6 +124,9 @@ function Canvas({
   viewMode = "workflow",
   observation = { nodes: [], edges: [] },
   translate,
+  addableNodes = [],
+  canAddNodes = false,
+  onAddNodeAt,
   onMoveNode,
   onConnect,
   onRemoveNode,
@@ -138,30 +175,87 @@ function Canvas({
     setEdges((current) => addEdge(connection, current));
   };
 
+  // Right-click on empty canvas opens the add-node menu; the picked node lands
+  // at the flow coordinates under the cursor, so zoom/pan stay accounted for.
+  const screenToFlowRef = useRef(null);
+  const rememberConverter = useCallback((convert) => {
+    screenToFlowRef.current = convert;
+  }, []);
+  const [nodeMenu, setNodeMenu] = useState(null);
+  const closeNodeMenu = useCallback(() => setNodeMenu(null), []);
+  const handlePaneContextMenu = useCallback(
+    (event) => {
+      if (!canAddNodes || addableNodes.length === 0) return;
+      event.preventDefault();
+      const convert = screenToFlowRef.current;
+      if (!convert) return;
+      setNodeMenu({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        flow: convert({ x: event.clientX, y: event.clientY }),
+      });
+    },
+    [canAddNodes, addableNodes.length],
+  );
+  const pickNodeFromMenu = (key) => {
+    const flow = nodeMenu?.flow;
+    setNodeMenu(null);
+    if (flow) onAddNodeAt?.(key, flow);
+  };
+
+  useEffect(() => {
+    if (!nodeMenu) return;
+    const onPointerDown = (event) => {
+      if (event.target.closest?.(".workflow-canvas-node-menu")) return;
+      setNodeMenu(null);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setNodeMenu(null);
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [nodeMenu]);
+
   return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={nodeTypes}
-      ariaLabelConfig={workflowCanvasAccessibilityLabels(translate)}
-      onNodesChange={handleNodesChange}
-      onEdgesChange={handleEdgesChange}
-      onNodeDragStop={
-        viewMode === "workflow" ? (_event, node) => onMoveNode(node.id, node.position) : undefined
-      }
-      onConnect={handleConnect}
-      onNodeClick={(_event, node) => onSelectNode(node.id)}
-      nodesDraggable={viewMode === "workflow" && !readOnly}
-      nodesConnectable={viewMode === "workflow" && !readOnly}
-      elementsSelectable
-      deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
-      fitView
-      proOptions={{ hideAttribution: true }}
-    >
-      <Background />
-      <MiniMap pannable zoomable />
-      <Controls aria-label={translate("workflow.canvasA11y.controls")} />
-    </ReactFlow>
+    <>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        ariaLabelConfig={workflowCanvasAccessibilityLabels(translate)}
+        onNodesChange={handleNodesChange}
+        onEdgesChange={handleEdgesChange}
+        onNodeDragStop={
+          viewMode === "workflow" ? (_event, node) => onMoveNode(node.id, node.position) : undefined
+        }
+        onConnect={handleConnect}
+        onNodeClick={(_event, node) => onSelectNode(node.id)}
+        onPaneContextMenu={handlePaneContextMenu}
+        onMove={closeNodeMenu}
+        nodesDraggable={viewMode === "workflow" && !readOnly}
+        nodesConnectable={viewMode === "workflow" && !readOnly}
+        elementsSelectable
+        deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
+        fitView
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background />
+        <Controls aria-label={translate("workflow.canvasA11y.controls")} />
+        <FlowPositionBridge onReady={rememberConverter} />
+      </ReactFlow>
+      {nodeMenu ? (
+        <CanvasNodeMenu
+          clientX={nodeMenu.clientX}
+          clientY={nodeMenu.clientY}
+          addableNodes={addableNodes}
+          onPick={pickNodeFromMenu}
+        />
+      ) : null}
+    </>
   );
 }
 

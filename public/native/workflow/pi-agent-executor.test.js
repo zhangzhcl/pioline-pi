@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../../i18n.js", () => ({ t: (key) => key }));
+
 import { createPiAgentExecutor } from "./pi-agent-executor.js";
 
 function createRuntime(responseText, onPrompt) {
@@ -128,7 +131,7 @@ describe("Pi Agent structured output", () => {
       (prompt) => prompts.push(prompt),
     );
 
-    expect(prompts[0]).toContain("Return one valid JSON object only, without Markdown fences.");
+    expect(prompts[0]).toContain("workflow.piAgentPromptJsonOnly");
   });
 
   it("aborts the active Pi session and settles the node as cancelled", async () => {

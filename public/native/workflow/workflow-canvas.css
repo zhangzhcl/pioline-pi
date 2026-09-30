@@ -25,9 +25,15 @@
   overflow-wrap: anywhere;
 }
 
-.pipline-flow-node__port .react-flow__handle {
-  top: 50%;
-  transform: translateY(-50%);
+/* Handles anchor to the port row, whose positioning context sits inside the
+   node padding; pull them out so they straddle the node edge. Keep xyflow's
+   default translate so the dot centers on the edge instead of covering text. */
+.pipline-flow-node__port--input .react-flow__handle {
+  left: calc(-1px - var(--space-2));
+}
+
+.pipline-flow-node__port--output .react-flow__handle {
+  right: calc(-1px - var(--space-2));
 }
 
 .pipline-flow-node__port--output {
@@ -39,4 +45,26 @@
   height: 9px;
   border: 2px solid var(--bg-solid);
   background: var(--accent);
+}
+
+/* React Flow's Controls ship light-only defaults that render as a stray
+   white block in dark themes; map them onto theme tokens so every theme
+   (light or dark) renders them consistently. Custom properties inherit, so
+   scoping on the canvas stage reaches the .react-flow subtree. */
+.workflow-canvas {
+  --xy-controls-button-background-color: var(--bg-solid);
+  --xy-controls-button-background-color-hover: var(--bg-glass-hover);
+  --xy-controls-button-color: var(--text-primary);
+  --xy-controls-button-color-hover: var(--text-primary);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-box-shadow: var(--shadow-md);
+}
+
+/* Right-click add-node menu reuses the ui-select-popover/ui-select-option
+   primitives from design-system.css; only sizing needs adjusting here. */
+.workflow-canvas-node-menu {
+  min-width: 160px;
+  max-height: 50vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }

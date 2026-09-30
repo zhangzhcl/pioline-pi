@@ -1,5 +1,6 @@
 // ABOUTME: Runs workflow Pi Agent nodes through the active native Pi RPC session.
 
+import { t } from "../../i18n.js";
 import { extractRuntimeEventError } from "../session/assistant-error.js";
 import { randomId } from "../utils/random-id.js";
 import { nodeMetaKey } from "./builtin-node-registry.js";
@@ -101,19 +102,18 @@ export function createPiAgentExecutor({
       workflow.edges.some(
         (edge) => edge.sourceNodeId === node.instanceId && edge.sourcePort === "json",
       );
+    // The prompt body is user-visible in the chat session, so every line is
+    // localized; a localized prompt also steers the model to reply in kind.
+    // Graph/JSON payloads stay structural and are not translated.
     const prompt = [
-      "This request is a Pi Agent node in a user-started Pipline workflow. Execute only this node's focused task using your normal Pi tools and workspace permissions.",
-      `Workflow graph (JSON):\n${JSON.stringify(topology)}`,
-      `Workflow node: ${node.instanceId}`,
-      `Run: ${workflow.id} at revision ${workflow.revision}`,
-      `Task:\n${params.prompt}`,
-      `Input context (JSON):\n${JSON.stringify(inputs.context ?? {})}`,
-      ...(structuredOutputRequested
-        ? [
-            "The downstream workflow consumes this node's JSON output. Return one valid JSON object only, without Markdown fences.",
-          ]
-        : []),
-      "Return the node result clearly. Do not claim work that was not completed.",
+      t("workflow.piAgentPromptIntro"),
+      `${t("workflow.piAgentPromptGraph")}\n${JSON.stringify(topology)}`,
+      t("workflow.piAgentPromptNode", { id: node.instanceId }),
+      t("workflow.piAgentPromptRun", { run: workflow.id, revision: workflow.revision }),
+      `${t("workflow.piAgentPromptTask")}\n${params.prompt}`,
+      `${t("workflow.piAgentPromptContext")}\n${JSON.stringify(inputs.context ?? {})}`,
+      ...(structuredOutputRequested ? [t("workflow.piAgentPromptJsonOnly")] : []),
+      t("workflow.piAgentPromptClosing"),
     ].join("\n\n");
     const settleController = new AbortController();
     const cancelWait = () => settleController.abort();

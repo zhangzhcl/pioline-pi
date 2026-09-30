@@ -28,18 +28,16 @@ function buildShell() {
   revision.className = "workflow-panel__revision";
   revision.id = "workflow-revision";
   heading.append(title, revision);
-  const close = document.createElement("button");
-  close.type = "button";
-  close.id = "workflow-close";
-  close.className = "ui-icon-button ui-icon-button--sm ui-icon-button--ghost";
-  close.setAttribute("aria-label", t("workflow.close"));
-  close.textContent = "×";
+  // No in-page close button here: this shell only renders inside standalone
+  // workflow windows, whose OS title bar already provides an equivalent close
+  // (the host intercepts CloseRequested, hides the window, and notifies the
+  // main window — the exact behaviour of the removed button).
   const unusedModeButton = document.createElement("button");
   unusedModeButton.type = "button";
   unusedModeButton.id = "workflow-mode-toggle";
   unusedModeButton.className = "hidden";
   unusedModeButton.setAttribute("aria-expanded", "true");
-  header.append(heading, close);
+  header.append(heading);
   const body = document.createElement("div");
   body.className = "workflow-panel__body";
   body.id = "workflow-panel-body";

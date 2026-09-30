@@ -1,6 +1,7 @@
 // ABOUTME: Creates the workflow run input, start/cancel controls, and run log view.
 
 import { onLocaleChange, t } from "../../i18n.js";
+import { enhanceSelect } from "../../ui/select-menu.js";
 import { randomId } from "../utils/random-id.js";
 import { nodeMetaKey } from "./builtin-node-registry.js";
 import { localizeNodeMeta } from "./node-meta-localization.js";
@@ -141,6 +142,13 @@ export function createWorkflowRunControls({
     retry,
   );
   section.append(input, actions, log);
+  // Native <select> popups are OS-drawn on Windows and ignore theme tokens, so
+  // the option lists render as light blocks in dark themes. Enhanced here
+  // while the section is still detached; the menus attach once the canvas
+  // mounts this section, and programmatic value writes below call sync().
+  const concurrencyMenu = enhanceSelect(concurrency);
+  const historyMenu = enhanceSelect(history);
+  enhanceSelect(retryTarget);
 
   async function refreshHistory() {
     const selected = history.value;
@@ -153,14 +161,20 @@ export function createWorkflowRunControls({
       option.textContent = `${statusLabel} · r${item.workflowRevision} · ${item.updatedAt}`;
       history.append(option);
     }
-    if (runs?.some((item) => item.id === selected)) history.value = selected;
+    if (runs?.some((item) => item.id === selected)) {
+      history.value = selected;
+      historyMenu?.sync();
+    }
     return runs ?? [];
   }
 
   async function refreshHistorySelection(runId) {
     try {
       const runs = await refreshHistory();
-      if (runs.some((item) => item.id === runId)) history.value = runId;
+      if (runs.some((item) => item.id === runId)) {
+        history.value = runId;
+        historyMenu?.sync();
+      }
     } catch (error) {
       console.warn("[Workflow] Could not refresh run history after persistence recovery", error);
     }
@@ -315,8 +329,10 @@ export function createWorkflowRunControls({
       retry.disabled =
         !retrySource || !retryTarget.value || observedRunActive || Boolean(controller);
     };
-    if (Number.isSafeInteger(rerunSource?.maxConcurrency))
+    if (Number.isSafeInteger(rerunSource?.maxConcurrency)) {
       concurrency.value = String(rerunSource.maxConcurrency);
+      concurrencyMenu?.sync();
+    }
     status.textContent = t(`workflow.runStatus.${run.status}`);
     input.value = JSON.stringify(run.input ?? {}, null, 2);
     log.textContent = events
@@ -333,6 +349,7 @@ export function createWorkflowRunControls({
     const selected = runs.find((item) => item.id === history.value) ?? runs[0];
     if (selected) {
       history.value = selected.id;
+      historyMenu?.sync();
       await loadRun(selected.id);
     }
   }
@@ -383,6 +400,7 @@ export function createWorkflowRunControls({
     }
     if (controller && executingRunId === candidate.id) return;
     history.value = candidate.id;
+    historyMenu?.sync();
     await loadRun(candidate.id);
   };
 
@@ -581,6 +599,7 @@ export function createWorkflowRunControls({
     const selected = runs.find((item) => ["queued", "running"].includes(item.status)) ?? runs[0];
     if (selected) {
       history.value = selected.id;
+      historyMenu?.sync();
       await loadRun(selected.id);
     }
   };

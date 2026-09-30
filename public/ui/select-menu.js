@@ -76,6 +76,16 @@ export function enhanceSelect(select) {
   let activeIndex = Math.max(0, select.selectedIndex);
   let open = false;
   let destroyed = false;
+  // Enhancement may be created while the select is still detached (widget
+  // building its DOM); only a connected -> disconnected transition means the
+  // control was actually removed from the page and should tear down.
+  let wasConnected = select.isConnected;
+  const droppedFromDocument = () => {
+    const connected = select.isConnected;
+    const dropped = wasConnected && !connected;
+    wasConnected = connected;
+    return dropped;
+  };
 
   function syncTrigger() {
     valueEl.textContent = selectedLabel(select);
@@ -202,7 +212,7 @@ export function enhanceSelect(select) {
   }
 
   function onPointerDown(event) {
-    if (!select.isConnected) {
+    if (droppedFromDocument()) {
       destroy();
       return;
     }
@@ -263,7 +273,7 @@ export function enhanceSelect(select) {
   }
 
   function syncFromNative() {
-    if (!select.isConnected) {
+    if (droppedFromDocument()) {
       destroy();
       return;
     }
@@ -303,7 +313,7 @@ export function enhanceSelect(select) {
   });
 
   const removalObserver = new MutationObserver(() => {
-    if (!select.isConnected) destroy();
+    if (droppedFromDocument()) destroy();
   });
   const removalRoot = select.closest("#settings-panel") || document.body;
   removalObserver.observe(removalRoot, { childList: true, subtree: true });

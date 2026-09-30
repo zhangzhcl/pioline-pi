@@ -160,7 +160,10 @@
 .message.user .message-content.user-message-collapsible {
   position: relative;
   max-height: calc(1.6em * 6 + var(--space-2) * 2);
-  overflow: hidden;
+  /* Collapsed preview stays scrollable so mid-message content can be read
+     without expanding; the toggle below still reveals the full text. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .message.user .message-content.user-message-collapsible.expanded {

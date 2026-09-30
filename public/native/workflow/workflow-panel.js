@@ -2,6 +2,7 @@
 // this module, React, React Flow, or canvas styles.
 
 import { getLocale, onLocaleChange, t } from "../../i18n.js";
+import { enhanceSelect } from "../../ui/select-menu.js";
 import { randomId } from "../utils/random-id.js";
 import { BUILTIN_NODE_METAS, createStarterWorkflow, nodeMetaKey } from "./builtin-node-registry.js";
 import { nodeMetaApprovalPreview } from "./node-meta-approval-preview.js";
@@ -90,7 +91,6 @@ const workflowModeTargetSynchronizer = createWorkflowModeTargetSynchronizer({
 onLocaleChange(() => {
   const panel = document.getElementById("workflow-panel");
   if (!panel || panel.classList.contains("hidden")) return;
-  populateNodeSelector(document.getElementById("workflow-add-node"));
   canvas?.update(canvasProps());
   updateWorkflowHeader();
   renderWorkflowDetails();
@@ -288,14 +288,6 @@ async function showCanvas() {
   toolbar.className = "workflow-panel__toolbar";
   const actions = document.createElement("div");
   actions.className = "workflow-panel__actions";
-  const addNode = document.createElement("select");
-  addNode.className = "ui-select workflow-panel__add-node";
-  addNode.setAttribute("aria-label", t("workflow.addNode"));
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = t("workflow.addNode");
-  addNode.append(placeholder);
-  populateNodeSelector(addNode);
   const workflowView = document.createElement("button");
   workflowView.type = "button";
   workflowView.id = "workflow-view-workflow";
@@ -310,12 +302,6 @@ async function showCanvas() {
   piSubtaskView.textContent = t("workflow.piSubtasks");
   piSubtaskView.disabled = subtaskObserver.snapshot().nodes.length === 0;
   piSubtaskView.addEventListener("click", () => setViewMode("pi-subtasks"));
-  addNode.addEventListener("change", () => {
-    const selected = addNode.value;
-    addNode.value = "";
-    if (selected) addWorkflowNode(selected);
-  });
-  addNode.id = "workflow-add-node";
   const sendContext = document.createElement("button");
   sendContext.type = "button";
   sendContext.className = "ui-button ui-button--sm ui-button--secondary";
@@ -350,16 +336,7 @@ async function showCanvas() {
   const saveStatus = document.createElement("span");
   saveStatus.className = "workflow-panel__save-status";
   saveStatus.id = "workflow-save-status";
-  actions.append(
-    addNode,
-    workflowView,
-    piSubtaskView,
-    autoLayout,
-    undo,
-    redo,
-    sendContext,
-    syncLatest,
-  );
+  actions.append(workflowView, piSubtaskView, autoLayout, undo, redo, sendContext, syncLatest);
   toolbar.append(actions, saveStatus);
 
   const stage = document.createElement("div");
@@ -470,6 +447,9 @@ function canvasProps() {
     viewMode,
     observation: subtaskObserver.snapshot(),
     translate: t,
+    addableNodes: addableNodeTemplates(),
+    canAddNodes: viewMode === "workflow" && !hasActiveWorkflowRun(),
+    onAddNodeAt: (metaKey, position) => addWorkflowNode(metaKey, position),
     onMoveNode: (instanceId, position) =>
       submitCommand({ type: "move_node", instanceId, position }),
     onConnect: (edge) => submitCommand({ type: "connect", edge: { ...edge, id: randomId() } }),
@@ -509,8 +489,6 @@ function updateCanvasViewControls() {
   if (autoLayout)
     autoLayout.disabled =
       editLocked || commandQueuePending > 0 || !activeRecord?.workflow.nodes.length;
-  const addNode = document.getElementById("workflow-add-node");
-  if (addNode) addNode.disabled = viewMode !== "workflow" || hasActiveWorkflowRun();
   document
     .querySelector(".workflow-run-controls")
     ?.classList.toggle("hidden", viewMode !== "workflow");
@@ -566,7 +544,6 @@ async function reloadNodeMetaRegistry() {
     else console.warn("[Workflow] Ignoring invalid stored NodeMeta:", errors);
   }
   activeNodeMetaCatalogRevision = templateCatalog.catalogRevision;
-  populateNodeSelector(document.getElementById("workflow-add-node"));
   canvas?.update(canvasProps());
   updateWorkflowHeader();
 }
@@ -773,7 +750,7 @@ document.addEventListener("keydown", (event) => {
   redoWorkflow();
 });
 
-function addWorkflowNode(metaKey) {
+function addWorkflowNode(metaKey, position) {
   const meta = activeNodeMetas.get(metaKey);
   if (!meta) return;
   const offset = activeRecord.workflow.nodes.length * 36;
@@ -782,7 +759,7 @@ function addWorkflowNode(metaKey) {
     node: {
       instanceId: randomId(),
       meta: { id: meta.id, version: meta.version },
-      position: { x: 220 + offset, y: 280 + offset },
+      position: position ?? { x: 220 + offset, y: 280 + offset },
       paramValues: Object.fromEntries(
         meta.params
           .filter((param) => param.defaultValue !== undefined)
@@ -793,17 +770,15 @@ function addWorkflowNode(metaKey) {
   });
 }
 
-function populateNodeSelector(select) {
-  if (!select) return;
-  const placeholder = select.options[0];
-  select.replaceChildren(placeholder);
+// Node templates offered by the canvas context menu: every visible template
+// except the structural start/end pair, which a workflow already owns.
+function addableNodeTemplates() {
+  const templates = [];
   for (const meta of activeNodeMetas.values()) {
     if (meta.catalogHidden === true || meta.type === "start" || meta.type === "end") continue;
-    const option = document.createElement("option");
-    option.value = nodeMetaKey(meta);
-    option.textContent = localizeNodeMeta(meta).label;
-    select.append(option);
+    templates.push({ key: nodeMetaKey(meta), label: localizeNodeMeta(meta).label });
   }
+  return templates;
 }
 
 function sendWorkflowContext() {
@@ -1285,7 +1260,6 @@ export async function handleAgentWorkflowRequest(request, { dismissSignal } = {}
       return { ok: false, error: "This NodeMeta version already exists or could not be saved." };
     activeNodeMetas.set(nodeMetaKey(candidate), structuredClone(candidate));
     activeNodeMetaCatalogRevision = saved.catalogRevision;
-    populateNodeSelector(document.getElementById("workflow-add-node"));
     canvas?.update(canvasProps());
     renderWorkflowDetails();
     showSaveStatus(t("workflow.nodeMetaSaved"));
@@ -1582,6 +1556,9 @@ function renderWorkflowDetails() {
         }),
       );
       label.append(caption, select);
+      // Native <select> popups are OS-drawn on Windows and ignore theme
+      // tokens; enhanceSelect re-renders the dropdown with theme styling.
+      enhanceSelect(select);
       const description = createInspectorDescription(param.description);
       if (description) label.append(description);
       if (missing)
