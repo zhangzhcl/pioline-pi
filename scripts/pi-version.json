@@ -1,5 +1,5 @@
 {
-  "version": "0.85.1",
+  "version": "1.0.4",
   "runtimeDependencyLock": {
     "file": "licenses/pi-runtime/0.85.1/npm-shrinkwrap.json",
     "sourceUrl": "https://raw.githubusercontent.com/earendil-works/pi/v0.85.1/packages/coding-agent/npm-shrinkwrap.json",
