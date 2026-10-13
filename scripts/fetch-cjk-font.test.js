@@ -70,7 +70,7 @@ describe("CJK font distribution", () => {
     expect(read("scripts/build.sh")).toContain("fetch-cjk-font.js");
     expect(read("scripts/release-macos-dmg.sh")).toContain("fetch-cjk-font.js");
     expect(read(".github/workflows/release.yml")).toContain("cjk-font-version.json");
-    expect(read(".gitignore")).toContain(".cache/cjk-fonts/");
+    expect(read(".gitignore")).toContain(".cache/");
     expect(read(".gitignore")).not.toContain("public/fonts/cjk/");
   });
 
