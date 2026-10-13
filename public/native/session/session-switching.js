@@ -302,6 +302,7 @@ export function setupSessionSwitchingController({
     if (!target?.sessionId) return;
     sidebar?.upsertSession({
       id: target.sessionId,
+      workspaceId: target.workspaceId,
       firstMessage,
       timestamp: new Date().toISOString(),
       modifiedAtMs: Date.now(),

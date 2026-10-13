@@ -181,6 +181,63 @@ export function mergeSessionSummary(existing, incoming) {
   };
 }
 
+export function isDefaultWorkspaceId(workspaceId, registeredWorkspaces, sessions) {
+  if (!workspaceId || workspaceId === "default") return true;
+  const matched = registeredWorkspaces?.find((ws) => ws.workspaceId === workspaceId);
+  if (matched) return Boolean(matched.isDefaultWorkspace);
+  const existing = sessions?.find((s) => s.workspaceId === workspaceId);
+  if (existing) return Boolean(existing.isDefaultWorkspace);
+  return false;
+}
+
+export function buildUpsertSessionSummary({
+  existing,
+  session,
+  currentWorkspaceId,
+  registeredWorkspaces,
+  sessions,
+}) {
+  const matchedWorkspace = registeredWorkspaces?.find(
+    (ws) => ws.workspaceId === currentWorkspaceId,
+  );
+  const isDefaultWorkspace =
+    session.isDefaultWorkspace === true ||
+    existing?.isDefaultWorkspace === true ||
+    matchedWorkspace?.isDefaultWorkspace === true ||
+    isDefaultWorkspaceId(currentWorkspaceId, registeredWorkspaces, sessions);
+
+  const projectFallback =
+    existing ??
+    (isDefaultWorkspace
+      ? sessions.find((candidate) => candidate.isDefaultWorkspace === true)
+      : sessions.find(
+          (candidate) =>
+            (candidate.isCurrentWorkspace || candidate.workspaceId === currentWorkspaceId) &&
+            !candidate.isDefaultWorkspace,
+        )) ??
+    {};
+
+  const defaultPath = registeredWorkspaces?.find((ws) => ws.isDefaultWorkspace)?.path ?? "";
+
+  const resolvedProjectPath = isDefaultWorkspace
+    ? (projectFallback.projectPath ?? defaultPath)
+    : (matchedWorkspace?.path ?? projectFallback.projectPath ?? (currentWorkspaceId || "unknown"));
+
+  const resolvedProjectName = isDefaultWorkspace
+    ? ""
+    : (matchedWorkspace?.folderName ?? projectFallback.projectName ?? resolvedProjectPath);
+
+  return mergeSessionSummary(existing, {
+    workspaceId: currentWorkspaceId || projectFallback.workspaceId || "",
+    projectPath: resolvedProjectPath,
+    projectName: resolvedProjectName,
+    isDefaultWorkspace,
+    isCurrentWorkspace: true,
+    fileName: "",
+    ...session,
+  });
+}
+
 export function recordRecentSessionIds(recent, id, sessions) {
   if (!id) return null;
   const session = sessions.find((entry) => entry.id === id);

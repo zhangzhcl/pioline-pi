@@ -14,13 +14,14 @@ import {
 } from "./session-sidebar-sections.js";
 import {
   asSuperAgentSession,
+  buildUpsertSessionSummary,
   cssEscape,
   formatSessionTime,
   hydrateSidebarStatuses,
+  isDefaultWorkspaceId,
   LOAD_RETRY_DELAYS_MS,
   latestSession,
   MAX_RECENT_SESSIONS,
-  mergeSessionSummary,
   readArray,
   readObject,
   readSessionCache,
@@ -312,22 +313,20 @@ export class SessionSidebar {
     }
   }
 
+  isDefaultWorkspaceId(workspaceId) {
+    return isDefaultWorkspaceId(workspaceId, this.registeredWorkspaces, this.sessions);
+  }
+
   upsertSession(session) {
     if (!session?.id) return;
     const index = this.sessions.findIndex((existing) => existing.id === session.id);
     const existing = index >= 0 ? this.sessions[index] : null;
-    const projectFallback =
-      existing ??
-      this.sessions.find((candidate) => candidate.isCurrentWorkspace) ??
-      this.sessions[0] ??
-      {};
-    const next = mergeSessionSummary(existing, {
-      workspaceId: this.getTarget()?.workspaceId ?? projectFallback.workspaceId ?? "",
-      projectPath: projectFallback.projectPath ?? this.getTarget()?.workspaceId ?? "unknown",
-      projectName: projectFallback.projectName ?? projectFallback.projectPath ?? "Current project",
-      isCurrentWorkspace: true,
-      fileName: "",
-      ...session,
+    const next = buildUpsertSessionSummary({
+      existing,
+      session,
+      currentWorkspaceId: this.getTarget()?.workspaceId ?? session?.workspaceId ?? "",
+      registeredWorkspaces: this.registeredWorkspaces,
+      sessions: this.sessions,
     });
 
     if (index >= 0) this.sessions.splice(index, 1);

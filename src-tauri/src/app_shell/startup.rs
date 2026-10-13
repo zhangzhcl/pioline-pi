@@ -260,16 +260,12 @@ fn find_latest_session_boot_target() -> Option<(String, String)> {
     choose_latest_existing_boot_target(candidates)
 }
 
+// 普通独立会话固定落于用户主目录，应用冷启动创建空白临时会话时默认归属用户主目录
 pub(crate) fn select_fresh_startup_target(
     home_cwd: String,
-    latest_session: Option<(String, String)>,
+    _latest_session: Option<(String, String)>,
 ) -> (String, Option<String>) {
-    let cwd = latest_session
-        .and_then(|(session_cwd, _session_path)| {
-            Path::new(&session_cwd).is_dir().then_some(session_cwd)
-        })
-        .unwrap_or(home_cwd);
-    (cwd, None)
+    (home_cwd, None)
 }
 
 pub(crate) fn setup_native_runtime(app: &AppHandle, static_dir: PathBuf) -> Result<(), String> {
@@ -424,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_latest_workspace_but_never_resumes_its_session_on_app_start() {
+    fn always_targets_home_on_fresh_app_start() {
         let workspace = unique_temp_dir("startup-ws");
         fs::create_dir_all(&workspace).unwrap();
         let cwd = workspace.to_string_lossy().into_owned();
@@ -432,7 +428,7 @@ mod tests {
             "/home/user".to_string(),
             Some((cwd.clone(), "/sessions/old-session.jsonl".to_string())),
         );
-        assert_eq!(selected, (cwd, None));
+        assert_eq!(selected, ("/home/user".to_string(), None));
         let _ = fs::remove_dir_all(workspace);
     }
 
