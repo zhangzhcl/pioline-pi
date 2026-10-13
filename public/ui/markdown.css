@@ -164,16 +164,6 @@ pre {
   border-radius: 0;
 }
 
-pre code {
-  background: none;
-  padding: 0;
-  border-radius: 0;
-  font-size: inherit;
-  color: var(--text-primary);
-  border: none;
-}
-
-/* biome-ignore lint/style/noDescendingSpecificity: base code styles; scoped .settings-help code defined earlier intentionally */
 code {
   background: var(--bg-glass-strong);
   border: 1px solid var(--border);
@@ -181,4 +171,13 @@ code {
   border-radius: var(--radius-sm);
   font-size: var(--font-size-sm);
   color: var(--accent-text);
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: var(--text-primary);
+  border: none;
 }

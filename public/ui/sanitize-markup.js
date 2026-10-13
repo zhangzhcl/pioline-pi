@@ -14,6 +14,13 @@ const BLOCKED_TAGS = new Set([
   "USE",
 ]);
 
+let sharedDomParser = null;
+
+function getDomParser() {
+  sharedDomParser ??= new DOMParser();
+  return sharedDomParser;
+}
+
 /** Strip dangerous elements and attributes from an already-parsed DOM subtree, in place. */
 export function sanitizeMarkup(root) {
   root.querySelectorAll("*").forEach((element) => {
@@ -21,7 +28,9 @@ export function sanitizeMarkup(root) {
       element.remove();
       return;
     }
-    for (const attribute of Array.from(element.attributes)) {
+    const attrs = element.attributes;
+    for (let i = attrs.length - 1; i >= 0; i -= 1) {
+      const attribute = attrs[i];
       const name = attribute.name.toLowerCase();
       const value = attribute.value.trim();
       if (
@@ -40,9 +49,9 @@ export function sanitizeMarkup(root) {
 
 /** Parse an HTML string and return a sanitized DocumentFragment of its body. */
 export function parseSanitizedMarkup(markup) {
-  const parsed = new DOMParser().parseFromString(String(markup || ""), "text/html");
+  const parsed = getDomParser().parseFromString(String(markup || ""), "text/html");
   sanitizeMarkup(parsed.body);
   const fragment = document.createDocumentFragment();
-  fragment.append(...Array.from(parsed.body.childNodes));
+  fragment.append(...parsed.body.childNodes);
   return fragment;
 }

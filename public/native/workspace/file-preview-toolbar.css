@@ -1,0 +1,162 @@
+/* File preview toolbar, mode switch, and conflict dialog
+   (extracted from public/native/workspace/file-preview-panel.css) */
+
+.file-preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-height: 36px;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-app-region: no-drag;
+}
+
+.file-preview-toolbar.hidden {
+  display: none;
+}
+
+.file-preview-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.file-preview-toolbar button,
+.file-preview-mode button {
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.file-preview-go-to-line-input {
+  width: 72px;
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.file-preview-go-to-line-input:focus {
+  border-color: var(--accent);
+}
+
+.file-preview-toolbar button:hover:not(:disabled),
+.file-preview-mode button.active {
+  border-color: var(--border-hover);
+  background: var(--bg-glass-hover);
+  color: var(--text-primary);
+}
+
+.file-preview-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.file-preview-mode {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.file-preview-mode button:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.file-preview-mode button:last-child {
+  margin-left: -1px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.file-preview-toolbar-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.file-preview-toolbar-check input {
+  margin: 0;
+}
+
+.file-preview-status {
+  min-width: 72px;
+  margin-left: auto;
+  overflow: hidden;
+  font-size: var(--font-size-sm);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+}
+
+.file-preview-dialog {
+  width: min(420px, 100%);
+  padding: var(--space-4);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-lg);
+  background: var(--bg-solid);
+  box-shadow: var(--shadow-lg);
+}
+
+.file-preview-dialog h3 {
+  margin: 0 0 var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--font-size-lg);
+}
+
+.file-preview-dialog p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+}
+
+.file-preview-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.file-preview-dialog-button {
+  padding: var(--space-1-5) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.file-preview-dialog-button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+}

@@ -3,15 +3,23 @@
 // ABOUTME: Rendered for desktop and remote/LAN/mobile clients alike.
 
 import { t } from "./i18n.js";
+import {
+  applyFullscreenBoundsToRoot,
+  clearFullscreenBoundsFromRoot,
+  createTerminalPanelDom,
+  createTerminalTabButton,
+  isTerminalShortcut,
+  nextRovingTerminalId,
+  showRestartNoticeInBody,
+  showStartErrorInBody,
+  startFullscreenBoundsTracking,
+  startTerminalPointerResize,
+  terminalShortcutLabel,
+} from "./terminal-panel-dom.js";
 
 const MIN_HEIGHT_PX = 160;
 const DEFAULT_HEIGHT_RATIO = 0.4;
 const MAX_HEIGHT_RATIO = 0.7;
-const SVG_BASE =
-  'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"';
-const CLOSE_ICON_SVG = `<svg ${SVG_BASE}><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
-const EXPAND_ICON_SVG = `<svg ${SVG_BASE}><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`;
-const PLUS_ICON_SVG = `<svg ${SVG_BASE}><path d="M5 12h14"/><path d="M12 5v14"/></svg>`;
 const FULLSCREEN_SCOPE_CHAT = "chat";
 
 /**
@@ -66,30 +74,24 @@ export class TerminalPanel {
     if (!this.native || !toggleContainer || !panelContainer) {
       return;
     }
-    this.toggleEl = document.createElement("button");
-    this.toggleEl.type = "button";
-    this.toggleEl.className = "terminal-toggle panel-toggle-btn";
-    this.toggleEl.dataset.terminalToggle = "";
-    this.toggleEl.setAttribute("aria-pressed", "false");
-    this.toggleEl.setAttribute("aria-label", t("terminal.toggle"));
-    this.toggleEl.setAttribute("title", t("terminal.toggle"));
-    this.toggleEl.innerHTML = `
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      >
-        <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
-        <path d="M7 15h10" />
-      </svg>
-    `;
-    this.toggleEl.addEventListener("click", () => this.toggle());
+    const dom = createTerminalPanelDom({
+      onToggle: () => this.toggle(),
+      onBeginResize: (event) => this._beginResize(event),
+      onKeyboardResize: (event) => this._keyboardResize(event),
+      onRefitAll: () => this.client?.refitAll?.(),
+      onCollapse: () => this.collapse(),
+      onToggleEnlarge: () => this.toggleEnlarge(),
+      onNewTab: () => {
+        if (!this.locked) this.client?.create?.("default");
+      },
+    });
+    this.toggleEl = dom.toggleEl;
+    this.root = dom.root;
+    this.tabBarEl = dom.tabBarEl;
+    this.bodyEl = dom.bodyEl;
+    this.enlargeButton = dom.enlargeButton;
+    this.resizeObserver = dom.resizeObserver;
+
     this._terminalKeydownHandler = (event) => {
       if (!isTerminalShortcut(event)) return;
       event.preventDefault();
@@ -97,58 +99,6 @@ export class TerminalPanel {
     };
     document.addEventListener("keydown", this._terminalKeydownHandler);
 
-    this.root = document.createElement("section");
-    this.root.className = "terminal-panel hidden";
-    this.root.dataset.terminalPanel = "";
-    this.root.setAttribute("aria-label", t("terminal.panelLabel"));
-
-    const resizer = document.createElement("div");
-    resizer.className = "terminal-resizer";
-    resizer.setAttribute("role", "separator");
-    resizer.setAttribute("aria-orientation", "horizontal");
-    resizer.tabIndex = 0;
-    resizer.setAttribute("aria-label", t("terminal.ariaResizer"));
-    resizer.addEventListener("pointerdown", (event) => this._beginResize(event));
-    resizer.addEventListener("keydown", (event) => this._keyboardResize(event));
-
-    this.tabBarEl = document.createElement("div");
-    this.tabBarEl.className = "terminal-tab-bar";
-    this.tabBarEl.setAttribute("role", "tablist");
-
-    this.bodyEl = document.createElement("div");
-    this.bodyEl.className = "terminal-body";
-    if (typeof ResizeObserver !== "undefined") {
-      this.resizeObserver = new ResizeObserver(() => this.client?.refitAll?.());
-      this.resizeObserver.observe(this.bodyEl);
-    }
-
-    const closeButton = document.createElement("button");
-    closeButton.type = "button";
-    closeButton.className = "terminal-collapse";
-    closeButton.dataset.terminalCollapse = "";
-    closeButton.innerHTML = CLOSE_ICON_SVG;
-    closeButton.addEventListener("click", () => this.collapse());
-
-    this.enlargeButton = document.createElement("button");
-    this.enlargeButton.type = "button";
-    this.enlargeButton.className = "terminal-enlarge";
-    this.enlargeButton.dataset.terminalEnlarge = "";
-    this.enlargeButton.title = t("terminal.enlarge");
-    this.enlargeButton.setAttribute("aria-label", t("terminal.enlarge"));
-    this.enlargeButton.innerHTML = EXPAND_ICON_SVG;
-    this.enlargeButton.addEventListener("click", () => this.toggleEnlarge());
-
-    const newTabButton = document.createElement("button");
-    newTabButton.type = "button";
-    newTabButton.className = "terminal-new-tab";
-    newTabButton.dataset.terminalNewTab = "";
-    newTabButton.innerHTML = PLUS_ICON_SVG;
-    newTabButton.title = t("terminal.newTab");
-    newTabButton.addEventListener("click", () => {
-      if (!this.locked) this.client?.create?.("default");
-    });
-    this.tabBarEl.append(newTabButton, this.enlargeButton, closeButton);
-    this.root.append(resizer, this.tabBarEl, this.bodyEl);
     toggleContainer.appendChild(this.toggleEl);
     panelContainer.appendChild(this.root);
     this.applyLocale();
@@ -214,8 +164,8 @@ export class TerminalPanel {
       this.root?.classList.remove("enlarged");
       this._stopFullscreenBoundsTracking();
       this._clearFullscreenBounds();
-      const available = this.getAvailableHeight() || 800;
-      this.setHeight(Math.round(available * DEFAULT_HEIGHT_RATIO));
+      this.heightPx = null;
+      this.layoutHeight();
     }
     this.enlargeButton?.classList.toggle("enlarged", this.enlarged);
     const labelKey = this.enlarged ? "terminal.restore" : "terminal.enlarge";
@@ -295,9 +245,7 @@ export class TerminalPanel {
   /** Replace tab metadata from a terminal_listed response. */
   setTabs(tabs) {
     this.tabs = Array.isArray(tabs) ? tabs : [];
-    if (this.activeTerminalId && !this.tabs.some((t) => t.terminalId === this.activeTerminalId)) {
-      this.activeTerminalId = this.tabs[0]?.terminalId ?? null;
-    } else if (!this.activeTerminalId) {
+    if (!this.activeTerminalId || !this.tabs.some((t) => t.terminalId === this.activeTerminalId)) {
       this.activeTerminalId = this.tabs[0]?.terminalId ?? null;
     }
     this._renderTabBar();
@@ -315,14 +263,7 @@ export class TerminalPanel {
 
   /** Surface a host-side start failure inside the open panel. */
   showStartError(message) {
-    this.clearStartError();
-    if (!this.bodyEl || !message) return;
-    const el = document.createElement("div");
-    el.className = "terminal-start-error";
-    el.dataset.terminalStartError = "";
-    el.setAttribute("role", "alert");
-    el.textContent = message;
-    this.bodyEl.prepend(el);
+    showStartErrorInBody(this.bodyEl, message);
   }
 
   clearStartError() {
@@ -365,33 +306,17 @@ export class TerminalPanel {
     this.tabButtons.clear();
     const newTabBtn = this.tabBarEl.querySelector("[data-terminal-new-tab]");
     for (const tab of this.tabs) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "terminal-tab";
-      btn.dataset.terminalId = tab.terminalId;
-      btn.setAttribute("role", "tab");
-      const active = tab.terminalId === this.activeTerminalId;
-      btn.classList.toggle("active", active);
-      btn.setAttribute("aria-selected", active ? "true" : "false");
-      btn.tabIndex = active ? 0 : -1;
-      btn.addEventListener("keydown", (event) => this._tabKeydown(event, tab.terminalId));
-      const label = document.createElement("span");
-      label.className = "terminal-tab-label";
-      label.textContent = tab.label || tab.terminalId;
-      btn.appendChild(label);
-      const close = document.createElement("button");
-      close.type = "button";
-      close.className = "terminal-tab-close";
-      close.innerHTML = CLOSE_ICON_SVG;
-      close.setAttribute("aria-label", t("migrated.terminalPanel.ariaLabel.closeTerminalTab"));
-      close.addEventListener("click", (event) => {
-        event.stopPropagation();
-        const live = tab.status === "running" || tab.status === "creating";
-        if (live && !window.confirm(`Close ${tab.label || "terminal"}?`)) return;
-        this.client?.close?.(tab.terminalId, tab.generation);
+      const btn = createTerminalTabButton({
+        tab,
+        active: tab.terminalId === this.activeTerminalId,
+        onKeydown: (event) => this._tabKeydown(event, tab.terminalId),
+        onSelect: () => this.setActiveTerminalId(tab.terminalId),
+        onClose: () => {
+          const live = tab.status === "running" || tab.status === "creating";
+          if (live && !window.confirm(`Close ${tab.label || "terminal"}?`)) return;
+          this.client?.close?.(tab.terminalId, tab.generation);
+        },
       });
-      btn.appendChild(close);
-      btn.addEventListener("click", () => this.setActiveTerminalId(tab.terminalId));
       this.tabButtons.set(tab.terminalId, btn);
       if (newTabBtn) {
         this.tabBarEl.insertBefore(btn, newTabBtn);
@@ -468,79 +393,32 @@ export class TerminalPanel {
   }
 
   layoutHeight() {
-    if (this.heightPx == null) {
-      const available = this.getAvailableHeight() || 800;
-      this.setHeight(Math.round(available * DEFAULT_HEIGHT_RATIO));
-    } else {
-      this.setHeight(this.heightPx);
-    }
+    const available = this.getAvailableHeight() || 800;
+    this.setHeight(this.heightPx ?? Math.round(available * DEFAULT_HEIGHT_RATIO));
   }
 
   _showRestartNotice() {
-    if (!this.bodyEl || this._restartNoticeShown) {
-      return;
-    }
+    if (!this.bodyEl || this._restartNoticeShown) return;
     this._restartNoticeShown = true;
-    const notice = document.createElement("div");
-    notice.className = "terminal-restart-notice";
-    notice.textContent = t("terminal.restartNotice");
-    this.bodyEl.prepend(notice);
-    // Auto-dismiss so it doesn't outlive the session that produced it.
-    setTimeout(() => notice.remove(), 8000);
+    showRestartNoticeInBody(this.bodyEl);
   }
 
   _applyFullscreenBounds() {
-    if (!this.root) return;
-    this.root.dataset.fullscreenScope = this.fullscreenScope;
-    const bounds = this.getFullscreenBounds?.();
-    if (!bounds) {
-      this._clearFullscreenBounds();
-      return;
-    }
-    const left = Number.isFinite(bounds.left) ? bounds.left : 0;
-    const top = Number.isFinite(bounds.top) ? bounds.top : 0;
-    const right = Number.isFinite(bounds.right) ? bounds.right : 0;
-    this.root.style.setProperty("--terminal-fullscreen-left", `${Math.max(0, Math.round(left))}px`);
-    this.root.style.setProperty("--terminal-fullscreen-top", `${Math.max(0, Math.round(top))}px`);
-    this.root.style.setProperty(
-      "--terminal-fullscreen-right",
-      `${Math.max(0, Math.round(right))}px`,
-    );
+    applyFullscreenBoundsToRoot(this.root, this.fullscreenScope, this.getFullscreenBounds);
   }
 
   _clearFullscreenBounds() {
-    if (!this.root) return;
-    delete this.root.dataset.fullscreenScope;
-    this.root.style.removeProperty("--terminal-fullscreen-left");
-    this.root.style.removeProperty("--terminal-fullscreen-top");
-    this.root.style.removeProperty("--terminal-fullscreen-right");
+    clearFullscreenBoundsFromRoot(this.root);
   }
 
   _startFullscreenBoundsTracking() {
     if (this._fullscreenBoundsCleanup) return;
-    const update = () => {
+    this._fullscreenBoundsCleanup = startFullscreenBoundsTracking(() => {
       if (this.enlarged) {
         this._applyFullscreenBounds();
         this.client?.refitAll?.();
       }
-    };
-    window.addEventListener("resize", update);
-    const cleanups = [() => window.removeEventListener("resize", update)];
-
-    // The workspace's `.main` panel can change width without a window resize
-    // (e.g. closing the diff/file sidebar just toggles a CSS class), so track
-    // it directly rather than relying on `--terminal-fullscreen-right` staying
-    // fresh only on window resize.
-    if (typeof ResizeObserver !== "undefined") {
-      const main = document.querySelector(".workspace .main");
-      if (main) {
-        const observer = new ResizeObserver(update);
-        observer.observe(main);
-        cleanups.push(() => observer.disconnect());
-      }
-    }
-
-    this._fullscreenBoundsCleanup = () => cleanups.forEach((fn) => fn());
+    });
   }
 
   _stopFullscreenBoundsTracking() {
@@ -550,26 +428,20 @@ export class TerminalPanel {
 
   _beginResize(event) {
     if (this.locked) return;
-    event.preventDefault();
-    const startY = event.clientY;
-    const startHeight = this.heightPx || this.root?.clientHeight || 400;
-    const move = (e) => {
-      const dy = startY - e.clientY;
-      this.setHeight(startHeight + dy);
-      this._scheduleDragRefit();
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (this._dragRefitTimer) {
-        clearTimeout(this._dragRefitTimer);
-        this._dragRefitTimer = null;
-      }
-      this.client?.refitAll?.();
-      this.client?.setPanelHeight?.(this.heightPx);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    startTerminalPointerResize({
+      event,
+      startHeight: this.heightPx || this.root?.clientHeight || 400,
+      onResizeHeight: (nextHeight) => this.setHeight(nextHeight),
+      onScheduleDragRefit: () => this._scheduleDragRefit(),
+      onFinishResize: () => {
+        if (this._dragRefitTimer) {
+          clearTimeout(this._dragRefitTimer);
+          this._dragRefitTimer = null;
+        }
+        this.client?.refitAll?.();
+        this.client?.setPanelHeight?.(this.heightPx);
+      },
+    });
   }
 
   _scheduleDragRefit() {
@@ -584,24 +456,14 @@ export class TerminalPanel {
     if (this.locked) return;
     const step = event.shiftKey ? 80 : 20;
     const current = this.heightPx || 400;
-    if (event.key === "ArrowUp") {
-      this.setHeight(current + step);
-      event.preventDefault();
-    } else if (event.key === "ArrowDown") {
-      this.setHeight(current - step);
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      this.setHeight(current + (event.key === "ArrowUp" ? step : -step));
       event.preventDefault();
     }
   }
 
   _tabKeydown(event, terminalId) {
-    const ids = this.tabs.map((tab) => tab.terminalId);
-    const idx = ids.indexOf(terminalId);
-    if (idx === -1) return;
-    let next = null;
-    if (event.key === "ArrowRight") next = ids[(idx + 1) % ids.length];
-    else if (event.key === "ArrowLeft") next = ids[(idx - 1 + ids.length) % ids.length];
-    else if (event.key === "Home") next = ids[0];
-    else if (event.key === "End") next = ids[ids.length - 1];
+    const next = nextRovingTerminalId(this.tabs, terminalId, event.key);
     if (next) {
       this.setActiveTerminalId(next);
       this.tabButtons.get(next)?.focus();
@@ -617,27 +479,4 @@ export class TerminalPanel {
     this.toggleEl?.setAttribute("title", `${toggleLabel} (${shortcutLabel})`);
     this._renderTabBar();
   }
-}
-
-function isMacOSPlatform() {
-  return navigator.platform.startsWith("Mac") || navigator.userAgent.includes("Macintosh");
-}
-
-function terminalShortcutLabel() {
-  return isMacOSPlatform() ? "Ctrl+`" : "Ctrl+`";
-}
-
-function isTerminalShortcut(event) {
-  if (event.defaultPrevented || event.isComposing) return false;
-  if (event.metaKey || event.altKey || event.shiftKey) return false;
-  if (event.key !== "`") return false;
-  if (!event.ctrlKey) return false;
-  // Don't fire when typing in a text field
-  const target = event.target;
-  if (!(target instanceof Element)) return false;
-  if (target.closest("input, textarea, select")) return false;
-  if (target.closest('[contenteditable="true"]') !== null) return false;
-  // Don't swallow shortcuts inside the terminal itself
-  if (target.closest(".terminal-body")) return false;
-  return true;
 }

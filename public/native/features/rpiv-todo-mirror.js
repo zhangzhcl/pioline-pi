@@ -194,7 +194,7 @@ function renderTask(task, showId) {
   if (Array.isArray(task.blockedBy) && task.blockedBy.length > 0) {
     const blocked = document.createElement("span");
     blocked.className = "rpiv-todo-panel__meta";
-    blocked.textContent = `⛓ ${task.blockedBy.map((id) => `#${id}`).join(",")}`;
+    blocked.textContent = `blocked: ${task.blockedBy.map((id) => `#${id}`).join(",")}`;
     item.append(blocked);
   }
 

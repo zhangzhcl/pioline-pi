@@ -3,8 +3,10 @@
 
 export const PASTE_OFFLOAD_BYTE_THRESHOLD = 4 * 1024;
 
+const TEXT_ENCODER = new TextEncoder();
+
 function utf8ByteLength(text) {
-  return new TextEncoder().encode(text).byteLength;
+  return TEXT_ENCODER.encode(text).byteLength;
 }
 
 function formatSize(bytes) {
@@ -71,20 +73,22 @@ export function setupComposerPasteOffload({
 
   const onPaste = (event) => {
     const text = pastedText(event);
-    if (!text || utf8ByteLength(text) < PASTE_OFFLOAD_BYTE_THRESHOLD) return;
+    if (!text) return;
+    const bytes = utf8ByteLength(text);
+    if (bytes < PASTE_OFFLOAD_BYTE_THRESHOLD) return;
     const start = textarea.selectionStart ?? textarea.value.length;
     const end = textarea.selectionEnd ?? start;
-    pasteCapture = { before: textarea.value, text, start, end };
+    pasteCapture = { before: textarea.value, text, start, end, bytes };
   };
 
   const onInput = () => {
     if (applyingReplacement || busy) return;
     if (pasteCapture) {
-      const { before, text, start, end } = pasteCapture;
+      const { before, text, start, end, bytes } = pasteCapture;
       const expected = `${before.slice(0, start)}${text}${before.slice(end)}`;
       pasteCapture = null;
       if (textarea.value === expected) {
-        pending = { text, start, end: start + text.length, bytes: utf8ByteLength(text) };
+        pending = { text, start, end: start + text.length, bytes };
         renderPending();
         return;
       }

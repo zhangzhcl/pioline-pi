@@ -170,7 +170,11 @@ test("model switch handler reconciles thinking level via get_state (source contr
   // is the Model object (src-tauri/resources/pi/docs/rpc.md), which has no
   // thinkingLevel field. The authoritative thinking level lives at the top
   // level of get_state's data. See the handler comment in app.js.
-  const source = readFileSync(join(process.cwd(), "public/native/app.js"), "utf8");
+  const appSource = readFileSync(join(process.cwd(), "public/native/app.js"), "utf8");
+  const source = readFileSync(
+    join(process.cwd(), "public/native/composer/composer-model-picker.js"),
+    "utf8",
+  );
 
   // Locate the model-dropdown item click handler and assert the
   // reconciliation calls appear inside it (after set_model, before the
@@ -185,7 +189,10 @@ test("model switch handler reconciles thinking level via get_state (source contr
   expect(handlerBody).toContain('"set_model"');
   // ...followed by a get_state fetch of the server's thinking level...
   expect(handlerBody).toContain('"get_state"');
-  // ...consumed from response.data.thinkingLevel via updateComposerThinking.
+  // ...consumed from response.data.thinkingLevel via onThinkingLevelSelected / updateComposerThinking.
   expect(handlerBody).toMatch(/response\?\.data\?\.thinkingLevel/);
-  expect(handlerBody).toContain("updateComposerThinking(level)");
+  expect(handlerBody).toMatch(
+    /onThinkingLevelSelected\?\.\(level\)|updateComposerThinking\(level\)/,
+  );
+  expect(appSource).toContain("updateComposerThinking");
 });

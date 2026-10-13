@@ -20,11 +20,6 @@ deferred release tasks and are not development prerequisites.
 - Read the applicable `ARCHITECTURE.md` section and its linked design documents
   before changing UI behavior, persistence, workspace I/O, or cross-process
   communication.
-- **Before porting any feature-v3 feature**, read and follow
-  [`docs/feature-v3-migration-playbook.md`](docs/feature-v3-migration-playbook.md).
-  It documents the two-architecture identifier mapping, the verbatim-port
-  protocol, and the seven most common pitfalls (missing CSS, missing backend
-  routes, custom re-implementations that broke visual style, etc.).
 - Update `ARCHITECTURE.md` when an implementation materially changes its
   architecture, invariants, lifecycle, security boundary, or validation
   contract. Changes to LAN access, cross-platform paths, or static serving also
@@ -109,7 +104,7 @@ bun run build:extensions # compile picot-bridge and pi-chat extensions into exte
 bun run build            # full release build (runs prebuild: fetch:pi + build:extensions)
 ```
 
-Single test file: `bun run vitest run public/settings-save-status.test.js`
+Single test file: `bun run vitest run public/native/settings/settings-save-status.test.js`
 
 These are on-demand commands, not a per-task checklist. Run only the ones
 relevant to what you changed, or when the user asks for them.
@@ -159,7 +154,7 @@ The frontend (`public/`) is vanilla JS with **no framework**. Keep it modular. S
 
 - **One concern per file.** Each module owns a single responsibility (e.g. WebSocket client, session sidebar, file browser, theme switching). Do not add unrelated logic to an existing file just because it is convenient.
 - **Avoid growing orchestration files.** `public/native/app.js` and `src-tauri/src/main.rs` are composition roots / entrypoints. New feature logic belongs in dedicated modules that are imported and wired there, not implemented inline.
-- **New file threshold.** If a feature adds more than ~50 lines of logic, extract it into its own module in the appropriate `public/native/<subdir>/` (e.g. `public/native/features/my-feature.js`) and import it from the appropriate entry point.
+- **New file threshold.** If a feature adds more than ~50 lines of logic, extract it into its own module in the appropriate `public/native/<subdir>/` (e.g. `public/native/features/app-updater.js`) and import it from the appropriate entry point.
 - **Large-file guardrail.** Before adding code to any file over 500 lines, first prefer extracting a focused module. If adding to the large file is still the smallest safe change, keep the addition minimal and mention the exception in the final response.
 - **CSS by feature.** Do not keep adding feature styles to `public/style.css`. Put component/feature styles in a nearby stylesheet and import it from `style.css`; keep `style.css` for imports, reset, and global shell rules.
 - **HTML by owner.** Avoid growing `public/index.html` with large feature markup. Prefer feature-owned DOM construction/templates in the module that owns the behavior, while preserving accessibility and focus management.
@@ -200,6 +195,9 @@ Picot is a Tauri v2 app. The three main layers:
 | `workspace/` | Header, project info, file browser: `project-header`, `header-open-app`, `workspace-actions`, `context-usage`, `file-browser` |
 | `extensions/` | Extension UI, dialogs, command palette: `dialog`, `extension-ui-host`, `inline-extension-prompt`, `command-palette`, `custom-ui-panel`, `extension-command-compatibility` |
 | `features/` | Independent self-contained features: `app-updater`, `remote-auth`, `rpiv-todo-mirror` |
+| `workflow/` | Workflow canvas, runner, node panels, graph compiler, and standalone workflow window integration |
+| `acp/` | Agent Client Protocol (ACP) session picker, controls, and timeline rendering |
+| `notifications/` | Task completion and desktop notification triggers |
 | `utils/` | Pure utilities (no DOM, no side-effects): `random-id`, `router`, `keyboard-shortcuts` |
 
 CSS-only files without a JS pair (`sidebar.css`, `header.css`, `messages.css`, `composer.css`, `instance-swap.css`) stay at the `native/` root and are imported from `public/style.css`.
@@ -272,7 +270,7 @@ bun run build:extensions
 Useful focused test form:
 
 ```bash
-bun run vitest run public/settings-save-status.test.js
+bun run vitest run public/native/settings/settings-save-status.test.js
 ```
 
 ## Frontend and extension checks

@@ -24,7 +24,6 @@ export function createFileRenderer({
   onModeChange,
   onError,
   rawUrlForPath,
-  renderAs,
   gitDiff,
 } = {}) {
   // If a diff is requested and available, return diff renderer
@@ -32,16 +31,6 @@ export function createFileRenderer({
     return createDiffRenderer({ patch: gitDiff.patch || "" });
   }
   const classification = classifyFilePath(filePath || "");
-  if (renderAs === "markdown" && classification.contentType === "convertible") {
-    return createMarkdownRenderer({
-      filePath,
-      content,
-      mode: "preview",
-      readOnly: true,
-      onError,
-      convertedDocument: true,
-    });
-  }
 
   switch (classification.contentType) {
     case "markdown":
@@ -84,21 +73,11 @@ export function createFileRenderer({
     case "pdf":
       return createPdfRenderer({ filePath, onError, rawUrlForPath });
 
-    case "text":
-      return createTextRenderer({
-        filePath,
-        content,
-        readOnly,
-        wrapLines,
-        onChange,
-        onError,
-      });
-
     default:
       return createTextRenderer({
         filePath,
         content,
-        readOnly: true,
+        readOnly: classification.contentType === "text" ? readOnly : true,
         wrapLines,
         onChange,
         onError,
@@ -125,6 +104,16 @@ function createMarkdownRenderer({
   let currentContent = content || "";
   let currentWrap = wrapLines;
 
+  function teardownCurrent({ syncEditorContent = false } = {}) {
+    cleanupCopy?.();
+    cleanupCopy = null;
+    if (editor) {
+      if (syncEditorContent) currentContent = editor.getValue();
+      editor.destroy();
+      editor = null;
+    }
+  }
+
   return {
     mount(container) {
       mountedContainer = container;
@@ -137,29 +126,13 @@ function createMarkdownRenderer({
       if (props.wrapLines !== undefined) currentWrap = props.wrapLines;
 
       if (modeChanged && mountedContainer) {
-        // Re-render on mode change.
-        if (cleanupCopy) {
-          cleanupCopy();
-          cleanupCopy = null;
-        }
-        if (editor) {
-          currentContent = editor.getValue();
-          editor.destroy();
-          editor = null;
-        }
+        teardownCurrent({ syncEditorContent: true });
         renderCurrent(mountedContainer);
       }
     },
 
     destroy() {
-      if (cleanupCopy) {
-        cleanupCopy();
-        cleanupCopy = null;
-      }
-      if (editor) {
-        editor.destroy();
-        editor = null;
-      }
+      teardownCurrent();
       mountedContainer = null;
     },
 
@@ -173,21 +146,9 @@ function createMarkdownRenderer({
     },
 
     setMode(newMode, container) {
-      if (convertedDocument) return;
-      if (currentMode === newMode) return;
+      if (convertedDocument || currentMode === newMode) return;
       currentMode = newMode;
-
-      // Clean up previous renderer.
-      if (cleanupCopy) {
-        cleanupCopy();
-        cleanupCopy = null;
-      }
-      if (editor) {
-        currentContent = editor.getValue();
-        editor.destroy();
-        editor = null;
-      }
-
+      teardownCurrent({ syncEditorContent: true });
       renderCurrent(container);
       if (typeof onModeChange === "function") {
         onModeChange(newMode);
@@ -391,15 +352,7 @@ function createDiffRenderer({ patch = "" } = {}) {
     wrap.className = "file-diff-view";
     container.appendChild(wrap);
 
-    if (!patch?.trim()) {
-      const empty = document.createElement("div");
-      empty.className = "file-diff-empty";
-      empty.textContent = "No changes";
-      wrap.appendChild(empty);
-      return;
-    }
-
-    const lines = flattenDiffLines(patch);
+    const lines = patch?.trim() ? flattenDiffLines(patch) : [];
     const hasChanges = lines.some((l) => l.type !== "unchanged");
     if (!hasChanges) {
       const empty = document.createElement("div");

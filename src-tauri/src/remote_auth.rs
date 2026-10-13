@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::metadata_store::MetadataStore;
 use rand::RngCore;
 use serde::Serialize;
@@ -60,7 +58,7 @@ enum Decision {
 struct PendingDeviceRequest {
     device_id: String,
     device_name: String,
-    claim_hash: Vec<u8>,
+    claim_hash: [u8; 32],
     created_at: u64,
     expires_at: u64,
     decision: Decision,
@@ -114,6 +112,10 @@ impl RemoteAuth {
         self.create_attempts.push_back(now);
         self.device_requests
             .retain(|_, request| request.device_id != device_id);
+        if self.device_requests.len() >= MAX_DEVICE_REQUESTS {
+            self.device_requests
+                .retain(|_, request| !matches!(request.decision, Decision::Denied));
+        }
         if self.device_requests.len() >= MAX_DEVICE_REQUESTS {
             return Err(DeviceRequestError::Capacity);
         }
@@ -244,8 +246,8 @@ impl RemoteAuth {
             .verify_device_token(device_token)
     }
 
-    #[allow(dead_code)]
-    pub fn revoke(&mut self, device_id: &str) -> Result<(), String> {
+    #[cfg(test)]
+    pub fn revoke(&self, device_id: &str) -> Result<(), String> {
         self.store
             .lock()
             .map_err(|_| "metadata store poisoned".to_string())?
@@ -265,7 +267,7 @@ fn validate_device_request_fields(
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         || device_name.is_empty()
         || device_name.chars().count() > MAX_DEVICE_NAME_CHARS
-        || device_name.chars().any(|ch| ch.is_control())
+        || device_name.chars().any(char::is_control)
         || claim_secret.len() != 64
         || !claim_secret
             .bytes()
@@ -282,8 +284,8 @@ fn new_device_token() -> String {
     format!("picot_device_{}", hex::encode(bytes))
 }
 
-fn hash(token: &str) -> Vec<u8> {
-    Sha256::digest(token.as_bytes()).to_vec()
+fn hash(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
 }
 
 #[cfg(test)]
@@ -321,12 +323,11 @@ mod tests {
         );
         auth.decide_device_request(&created.request_id, true, 12)
             .unwrap();
-        let token = match auth
+        let DeviceClaim::Approved(token) = auth
             .claim_device_request(&created.request_id, "device-phone", &"a".repeat(64), 13)
             .unwrap()
-        {
-            DeviceClaim::Approved(token) => token,
-            _ => panic!(),
+        else {
+            panic!();
         };
         assert!(auth.authorize(&token).unwrap());
         assert_eq!(
@@ -345,17 +346,16 @@ mod tests {
             .unwrap();
         auth.decide_device_request(&request.request_id, true, 11)
             .unwrap();
-        let token = match auth
+        let DeviceClaim::Approved(token) = auth
             .claim_device_request(&request.request_id, "device-phone", &"a".repeat(64), 12)
             .unwrap()
-        {
-            DeviceClaim::Approved(token) => token,
-            _ => panic!("approved request did not issue a token"),
+        else {
+            panic!("approved request did not issue a token");
         };
         drop(auth);
 
         let reopened_store = MetadataStore::open(&temp.join("picot.sqlite3")).unwrap();
-        let mut restarted = RemoteAuth::new(Arc::new(Mutex::new(reopened_store)));
+        let restarted = RemoteAuth::new(Arc::new(Mutex::new(reopened_store)));
         assert!(restarted.authorize(&token).unwrap());
         restarted.revoke("device-phone").unwrap();
         assert!(!restarted.authorize(&token).unwrap());
@@ -387,7 +387,7 @@ mod tests {
             Err(DeviceRequestError::Invalid)
         );
         assert!(auth
-            .create_device_request("device-unicode", &"📱".repeat(128), &"a".repeat(64), 1)
+            .create_device_request("device-unicode", &"测".repeat(128), &"a".repeat(64), 1)
             .is_ok());
         let request = auth
             .create_device_request("device-phone", "Phone", &"a".repeat(64), 2)

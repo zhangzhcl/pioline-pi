@@ -1,0 +1,320 @@
+/* Git Panel — right sidebar git status, history, and directory tree */
+
+.git-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-0);
+  min-height: 0;
+  padding: var(--space-1-5) var(--space-2);
+  overflow: auto;
+}
+.git-panel-toolbar {
+  display: flex;
+  flex: none;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-1);
+  padding: var(--space-1-5) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-glass-strong) 88%, transparent);
+}
+.git-panel-details {
+  min-width: 0;
+  flex: 1;
+}
+.git-panel-summary,
+.git-panel-stats {
+  margin: 0;
+}
+.git-panel-summary {
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.git-panel-stats {
+  margin-top: var(--space-0-5);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.35;
+}
+.git-panel-push-error {
+  margin: var(--space-0-5) 0 0;
+  color: var(--danger, #e54);
+  font-size: var(--font-size-sm);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.git-panel-toolbar-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-1);
+}
+.git-group-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: nowrap;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+}
+.git-group-actions button {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  line-height: 1;
+  min-height: var(--control-height-xs);
+  padding: 0 var(--space-1-5);
+  white-space: nowrap;
+}
+.git-group-actions button:hover {
+  background: var(--bg-glass-hover);
+}
+.git-subtab-bar {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+.git-subtab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  padding: var(--space-1) var(--space-2);
+}
+.git-subtab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+}
+.git-subtab-pane {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: auto;
+}
+.git-history-pane {
+  overflow: hidden;
+}
+.git-history-section {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-1) 0;
+}
+.git-history-list-section,
+.git-history-detail-section {
+  flex: var(--history-flex, 1) 1 0;
+}
+.git-history-divider {
+  position: relative;
+  z-index: 1;
+  height: 8px;
+  flex: 0 0 8px;
+  cursor: row-resize;
+  border-top: 2px solid var(--border);
+  background: var(--bg-glass-strong);
+}
+.git-history-divider:hover,
+.git-history-divider:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.git-history-list,
+.git-history-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.git-history-row,
+.git-history-file {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  padding: var(--space-1) var(--space-1-5);
+  text-align: left;
+}
+.git-history-row:hover,
+.git-history-row.selected,
+.git-history-file:hover {
+  background: var(--bg-glass-hover);
+}
+.git-history-subject,
+.git-history-file > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-history-meta {
+  flex: none;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+.git-history-detail-body {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: var(--space-2);
+}
+.git-history-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.git-history-oid-short {
+  cursor: pointer;
+  margin-left: -2px;
+  border-radius: var(--radius-sm);
+}
+.git-history-oid-short:hover,
+.git-history-oid-short:focus-visible {
+  background: var(--bg-glass-hover);
+  outline: 1px solid var(--accent);
+}
+.git-history-message {
+  margin: 0;
+  color: var(--text-primary);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.git-history-message-truncated,
+.git-history-files-truncated {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+.git-history-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.git-history-file-status {
+  flex: none;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm);
+}
+.git-panel section:not(.git-history-section) {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-1);
+}
+.git-group + .git-group {
+  border-top: 1px solid var(--border);
+}
+.git-panel section > button,
+.git-entry {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* Git group headings reuse the Session List section-header treatment so both
+   sidebars share one disclosure-arrow + muted-label vocabulary. Spacing is
+   heading padding only — session-list headers add margin-top, and a border on
+   every <section> used to make space above each label larger than below. */
+.git-group-heading.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height-xs);
+  padding: var(--space-1) var(--space-2);
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  line-height: 1.25;
+  cursor: pointer;
+  user-select: none;
+}
+.git-group-heading .sidebar-section-count {
+  margin-left: auto;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.git-tree-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: var(--space-2);
+  min-height: var(--control-height-sm);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  line-height: 1.25;
+  transition: background var(--duration) var(--ease);
+  user-select: none;
+}
+.git-tree-row:hover {
+  background: var(--bg-glass-hover);
+}
+.git-tree-row:active {
+  transform: scale(0.99);
+}
+.git-tree-folder-icon,
+.git-tree-file-icon {
+  flex: none;
+  width: 20px;
+  text-align: center;
+  opacity: 0.6;
+}
+.git-tree-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-tree-count {
+  margin-left: auto;
+  font-size: var(--font-size-sm);
+}
+.git-entry {
+  overflow: hidden;
+}
+.git-entry-selected {
+  background: var(--accent-subtle);
+}
+.git-directory {
+  margin-left: 0;
+}
+.git-directory-heading {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+}
+.git-directory-heading:hover {
+  background: var(--bg-glass-hover);
+}
+.git-directory-body {
+  margin-left: var(--space-3);
+}
+.git-truncation-notice {
+  font-size: var(--font-size-sm);
+  opacity: 0.7;
+  padding: var(--space-1) var(--space-1-5);
+}

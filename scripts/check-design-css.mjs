@@ -8,11 +8,15 @@ const publicDir = join(root, "public");
 const fix = process.argv.includes("--fix");
 const tokenSource = "public/style-theme.css";
 const relativeDisplayPath = (path) => relative(root, path).replaceAll("\\", "/");
+const isBundledOutput = (path) => {
+  const rel = relativeDisplayPath(path);
+  return rel.startsWith("public/vendor/") || rel.startsWith("public/compat/");
+};
 const cssFiles = (await walk(publicDir)).filter(
-  (path) => extname(path) === ".css" && !relativeDisplayPath(path).startsWith("public/vendor/"),
+  (path) => extname(path) === ".css" && !isBundledOutput(path),
 );
 const jsFiles = (await walk(publicDir)).filter(
-  (path) => extname(path) === ".js" && !relativeDisplayPath(path).startsWith("public/vendor/"),
+  (path) => extname(path) === ".js" && !isBundledOutput(path),
 );
 
 const exactTokens = new Map([

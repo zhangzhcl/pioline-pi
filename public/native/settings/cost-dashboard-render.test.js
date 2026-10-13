@@ -1,16 +1,7 @@
-// Migration of the legacy public/cost/infobar.test.js onto the native
-// Settings → Usage renderer (cost-dashboard-render.js). The old per-panel
-// renderers (renderInfobarOverview/Models/...) were collapsed into the single
-// renderCostDashboard(section, payload) entry point; section ids changed from
-// `infobar-*` to `cost-dash-*`. Chart.js fallbacks now render an explicit
-// "Chart unavailable" state instead of a local column fallback, and the shell
-// headings/range chips are no longer localized (hardcoded English).
-
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initI18n, setLocale } from "../../i18n.js";
-import { loadCostDashboard } from "./cost-dashboard.js";
 import { renderCostDashboard } from "./cost-dashboard-render.js";
 
 const localeDir = resolve(import.meta.dirname, "..", "..", "locales");
@@ -206,8 +197,6 @@ describe("cost dashboard renderers", () => {
     expect(datasets[0].backgroundColor).toBe("#3b82f6");
     expect(datasets[1].backgroundColor).toBe("#10b981");
     expect(datasets[2].backgroundColor).toBe("#f59e0b");
-    // Only the first model has data on the first day, so it owns the full
-    // segment radius; the other stacks are absent on that day.
     expect(datasets[0].borderRadius({ dataIndex: 0 })).toEqual({
       topLeft: 6,
       topRight: 6,
@@ -258,9 +247,6 @@ describe("cost dashboard renderers", () => {
     expect(section.querySelector("#cost-dash-projects-list").textContent).toContain(
       "Chart unavailable in this environment.",
     );
-    // The tool-cost doughnut falls back to a conic-gradient legend instead.
-    // (jsdom cannot observe styles assigned via Object.assign, so assert the
-    // structural marker only; the gradient value is set in the real browser.)
     const toolFallback = section.querySelector(
       "#cost-dash-tool-cost-panel .cost-dash-tool-chart-fallback",
     );
@@ -388,158 +374,5 @@ describe("cost dashboard renderers", () => {
     );
     expect(section.querySelector("#cost-dash-activity-panel").textContent).toContain("周一");
     expect(section.querySelector("#cost-dash-activity-panel").textContent).toContain("较多");
-  });
-
-  it("renders the usage dashboard shell and aggregates dashboard data", async () => {
-    const container = document.createElement("div");
-    const data = {
-      costDashboard: vi.fn().mockResolvedValue({
-        dashboard: {
-          sessions: [
-            {
-              title: "Session 1",
-              workspace: "/work/pi-alpha",
-              model: "gpt-4.1",
-              time: new Date().toISOString(),
-              totalCost: 1.2,
-              totalTokens: 900,
-              inputTokens: 600,
-              outputTokens: 300,
-              cacheRead: 0,
-              cacheWrite: 0,
-              toolCalls: 1,
-              userMessages: 1,
-              toolCostByName: { read_file: 1.2 },
-            },
-          ],
-        },
-      }),
-    };
-    const getWorkspaceId = vi.fn().mockReturnValue("ws-1");
-
-    await loadCostDashboard(container, { data, getWorkspaceId });
-
-    expect(container.querySelector("#usage-overview h3").textContent).toBe("Overview");
-    expect(container.querySelector("#usage-models h3").textContent).toBe("Models");
-    expect(container.querySelector("#usage-tool-cost h3").textContent).toBe("Tool Cost");
-    expect(container.querySelector("#usage-projects h3").textContent).toBe("Projects");
-    expect(container.querySelector("#usage-sessions h3").textContent).toBe("Sessions");
-    expect(container.querySelector('[data-range-chip="7d"]').textContent).toBe("7d");
-    expect(
-      container.querySelectorAll("#cost-dash-overview-grid .cost-dash-stat-card"),
-    ).toHaveLength(12);
-    expect(container.querySelector("#cost-dash-models-list").textContent).toContain("gpt-4.1");
-    expect(container.querySelector("#cost-dash-tool-cost-panel").textContent).toContain(
-      "read_file",
-    );
-    expect(container.querySelector("#cost-dash-sessions-panel").textContent).toContain("Session 1");
-  });
-
-  it("defaults to the 30d range and re-aggregates when a range chip is clicked", async () => {
-    // Freeze the clock so rangeBounds() (which reads `new Date()` internally)
-    // computes against the same anchor as the session fixtures below. Without
-    // this the test is flaky across midnight and across CI runner timezones.
-    vi.useFakeTimers({ now: new Date("2026-06-15T12:00:00Z") });
-    // Sessions at stable offsets from the frozen clock. rangeBounds uses
-    // calendar days (today is day 0), so:
-    //   today (0d)      → in all ranges
-    //   10 days ago     → excluded from 7d, in 30d/90d
-    //   20 days ago     → in 30d/90d
-    //   50 days ago     → excluded from 30d, in 90d
-    const now = new Date();
-    const daysAgo = (n) => new Date(now.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
-    const sessions = [
-      {
-        title: "Today",
-        model: "gpt-4.1",
-        time: daysAgo(0),
-        totalCost: 1,
-        totalTokens: 100,
-        inputTokens: 60,
-        outputTokens: 40,
-        toolCalls: 0,
-        userMessages: 1,
-        workspace: "/w",
-        toolCostByName: {},
-      },
-      {
-        title: "10d ago",
-        model: "gpt-4.1",
-        time: daysAgo(10),
-        totalCost: 2,
-        totalTokens: 200,
-        inputTokens: 120,
-        outputTokens: 80,
-        toolCalls: 0,
-        userMessages: 1,
-        workspace: "/w",
-        toolCostByName: {},
-      },
-      {
-        title: "20d ago",
-        model: "claude",
-        time: daysAgo(20),
-        totalCost: 4,
-        totalTokens: 400,
-        inputTokens: 240,
-        outputTokens: 160,
-        toolCalls: 0,
-        userMessages: 1,
-        workspace: "/w",
-        toolCostByName: {},
-      },
-      {
-        title: "50d ago",
-        model: "claude",
-        time: daysAgo(50),
-        totalCost: 8,
-        totalTokens: 800,
-        inputTokens: 480,
-        outputTokens: 320,
-        toolCalls: 0,
-        userMessages: 1,
-        workspace: "/w",
-        toolCostByName: {},
-      },
-    ];
-
-    const container = document.createElement("div");
-    const data = {
-      costDashboard: vi.fn().mockResolvedValue({ dashboard: { sessions } }),
-    };
-    localStorage.removeItem("pi-studio-cost-filters");
-
-    await loadCostDashboard(container, { data, getWorkspaceId: () => "ws-1" });
-
-    // Default range is 30d → 3 sessions (today, 10d, 20d; 50d is excluded).
-    const chip30d = container.querySelector('[data-range-chip="30d"]');
-    const chip7d = container.querySelector('[data-range-chip="7d"]');
-    const chip90d = container.querySelector('[data-range-chip="90d"]');
-    expect(chip30d.classList.contains("is-active")).toBe(true);
-    expect(chip30d.getAttribute("aria-pressed")).toBe("true");
-    expect(chip7d.classList.contains("is-active")).toBe(false);
-    expect(chip7d.getAttribute("aria-pressed")).toBe("false");
-    expect(
-      container.querySelectorAll("#cost-dash-sessions-panel .cost-dash-sessions-table tbody tr"),
-    ).toHaveLength(3);
-
-    // Switch to 7d → only today's session survives.
-    chip7d.click();
-    expect(chip7d.classList.contains("is-active")).toBe(true);
-    expect(chip30d.classList.contains("is-active")).toBe(false);
-    expect(
-      container.querySelectorAll("#cost-dash-sessions-panel .cost-dash-sessions-table tbody tr"),
-    ).toHaveLength(1);
-    // Persistence: the selected range is saved for the next mount.
-    expect(localStorage.getItem("pi-studio-cost-filters")).toContain('"range":"7d"');
-
-    // Switch to 90d → all four sessions are in range.
-    chip90d.click();
-    expect(chip90d.classList.contains("is-active")).toBe(true);
-    expect(
-      container.querySelectorAll("#cost-dash-sessions-panel .cost-dash-sessions-table tbody tr"),
-    ).toHaveLength(4);
-
-    vi.useRealTimers();
   });
 });

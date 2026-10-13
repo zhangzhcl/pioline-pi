@@ -4,9 +4,13 @@ use std::collections::HashMap;
 pub(super) fn validate_known_node_edges(
     nodes: &[Value],
     edges: &[Value],
-    metas_by_node: &HashMap<String, &Value>,
+    metas_by_node: &HashMap<&str, &Value>,
 ) -> Result<(), String> {
-    let mut incoming = HashMap::<(String, String), usize>::new();
+    let nodes_by_id: HashMap<&str, &Value> = nodes
+        .iter()
+        .filter_map(|node| Some((node.get("instanceId")?.as_str()?, node)))
+        .collect();
+    let mut incoming = HashMap::<(&str, &str), usize>::with_capacity(edges.len());
     for edge in edges {
         let source_id = edge
             .get("sourceNodeId")
@@ -36,10 +40,9 @@ pub(super) fn validate_known_node_edges(
             .transpose()?;
 
         if let Some(port) = target_port {
-            let key = (target_id.to_string(), target_port_name.to_string());
-            let count = incoming.entry(key).or_default();
+            let count = incoming.entry((target_id, target_port_name)).or_default();
             *count += 1;
-            if node_has_static_binding(nodes, target_id, target_port_name) {
+            if node_has_static_binding(&nodes_by_id, target_id, target_port_name) {
                 return Err(format!(
                     "Workflow input cannot have both a static value and connection: {target_port_name}"
                 ));
@@ -86,17 +89,19 @@ fn find_port<'a>(meta: &'a Value, group: &str, name: &str) -> Result<&'a Value, 
         .ok_or_else(|| format!("Workflow node references unknown {group} port: {name}"))
 }
 
-fn node_has_static_binding(nodes: &[Value], node_id: &str, port_name: &str) -> bool {
-    nodes.iter().any(|node| {
-        node.get("instanceId").and_then(Value::as_str) == Some(node_id)
-            && node
-                .get("portValues")
-                .and_then(Value::as_object)
-                .and_then(|bindings| bindings.get(port_name))
-                .and_then(|binding| binding.get("mode"))
-                .and_then(Value::as_str)
-                == Some("static")
-    })
+fn node_has_static_binding(
+    nodes_by_id: &HashMap<&str, &Value>,
+    node_id: &str,
+    port_name: &str,
+) -> bool {
+    nodes_by_id
+        .get(node_id)
+        .and_then(|node| node.get("portValues"))
+        .and_then(Value::as_object)
+        .and_then(|bindings| bindings.get(port_name))
+        .and_then(|binding| binding.get("mode"))
+        .and_then(Value::as_str)
+        == Some("static")
 }
 
 fn type_name(value_type: &Value) -> Option<&str> {
@@ -175,7 +180,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::collections::HashMap;
 
-    fn validate_edge(source_type: Value, target_type: Value) -> Result<(), String> {
+    fn validate_edge(source_type: &Value, target_type: &Value) -> Result<(), String> {
         let source_meta = json!({
             "inputs": [],
             "outputs": [{ "name": "output", "type": source_type }]
@@ -194,18 +199,15 @@ mod tests {
             "targetNodeId": "target",
             "targetPort": "input"
         })];
-        let metas = HashMap::from([
-            ("source".to_string(), &source_meta),
-            ("target".to_string(), &target_meta),
-        ]);
+        let metas = HashMap::from([("source", &source_meta), ("target", &target_meta)]);
         validate_known_node_edges(&nodes, &edges, &metas)
     }
 
     #[test]
     fn compares_array_item_types_recursively() {
         let result = validate_edge(
-            json!({ "kind": "array", "items": "number" }),
-            json!({ "kind": "array", "items": "string" }),
+            &json!({ "kind": "array", "items": "number" }),
+            &json!({ "kind": "array", "items": "string" }),
         );
 
         assert!(result.unwrap_err().contains("incompatible port types"));
@@ -214,14 +216,14 @@ mod tests {
     #[test]
     fn compares_nested_object_property_types_recursively() {
         let result = validate_edge(
-            json!({
+            &json!({
                 "kind": "object",
                 "schema": {
                     "properties": { "payload": { "kind": "array", "items": "number" } },
                     "required": ["payload"]
                 }
             }),
-            json!({
+            &json!({
                 "kind": "object",
                 "schema": {
                     "properties": { "payload": { "kind": "array", "items": "string" } },

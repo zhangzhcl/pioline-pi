@@ -1,9 +1,7 @@
-#![allow(dead_code)]
-
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ExitStatus};
+use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -24,6 +22,7 @@ pub enum BridgeError {
 }
 
 impl BridgeError {
+    #[cfg(test)]
     pub fn is_process_closed(&self) -> bool {
         matches!(self, Self::ProcessClosed)
     }
@@ -46,16 +45,22 @@ pub struct PiRpcBridge {
     inner: Arc<BridgeInner>,
 }
 
+#[cfg(test)]
 pub struct InMemoryPiProcess {
     outbound: mpsc::Receiver<Value>,
-    incoming: Option<mpsc::Sender<Vec<u8>>>,
+    incoming: Option<mpsc::Sender<RawFrame>>,
+}
+
+enum RawFrame {
+    Bytes(Vec<u8>),
+    Oversized,
 }
 
 pub struct PiRpcProcess {
     child: Arc<StdMutex<Child>>,
     /// Present for a real spawned process; `None` for the in-memory test double.
     tree: Option<Arc<StdMutex<crate::child_supervision::ChildTree>>>,
-    diagnostics: std::sync::mpsc::Receiver<String>,
+    diagnostics: Arc<StdMutex<VecDeque<String>>>,
 }
 
 impl PiRpcBridge {
@@ -77,7 +82,7 @@ impl PiRpcBridge {
             .take()
             .ok_or_else(|| "Pi RPC process stderr is not piped".to_string())?;
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Value>(64);
-        let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (incoming_tx, incoming_rx) = mpsc::channel::<RawFrame>(64);
         let (frame_tx, frame_rx) = mpsc::channel(64);
         let inner = Arc::new(BridgeInner {
             next_id: AtomicU64::new(1),
@@ -100,10 +105,14 @@ impl PiRpcBridge {
         std::thread::Builder::new()
             .name("picot-pi-rpc-writer".into())
             .spawn(move || {
+                let mut buffer = Vec::with_capacity(512);
                 while let Some(frame) = outbound_rx.blocking_recv() {
-                    let mut encoded = frame.to_string();
-                    encoded.push('\n');
-                    if stdin.write_all(encoded.as_bytes()).is_err() || stdin.flush().is_err() {
+                    buffer.clear();
+                    if serde_json::to_writer(&mut buffer, &frame).is_err() {
+                        continue;
+                    }
+                    buffer.push(b'\n');
+                    if stdin.write_all(&buffer).is_err() || stdin.flush().is_err() {
                         break;
                     }
                 }
@@ -112,16 +121,30 @@ impl PiRpcBridge {
 
         std::thread::Builder::new()
             .name("picot-pi-rpc-reader".into())
-            .spawn(move || read_jsonl_stdout(&mut stdout, incoming_tx, max_frame_bytes))
+            .spawn(move || read_jsonl_stdout(&mut stdout, &incoming_tx, max_frame_bytes))
             .map_err(|error| format!("Cannot start Pi RPC reader: {error}"))?;
 
-        let (diagnostic_tx, diagnostic_rx) = std::sync::mpsc::sync_channel(64);
+        let diagnostics = Arc::new(StdMutex::new(VecDeque::with_capacity(
+            DIAGNOSTIC_TAIL_LINES,
+        )));
+        let diagnostics_for_stderr = Arc::clone(&diagnostics);
         std::thread::Builder::new()
             .name("picot-pi-rpc-stderr".into())
             .spawn(move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    let bounded: String = line.chars().take(4096).collect();
-                    let _ = diagnostic_tx.try_send(bounded);
+                for mut line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    if line.len() > 4096 {
+                        let end = line
+                            .char_indices()
+                            .nth(4096)
+                            .map_or(line.len(), |(idx, _)| idx);
+                        line.truncate(end);
+                    }
+                    if let Ok(mut ring) = diagnostics_for_stderr.lock() {
+                        if ring.len() >= DIAGNOSTIC_TAIL_LINES {
+                            ring.pop_front();
+                        }
+                        ring.push_back(line);
+                    }
                 }
             })
             .map_err(|error| format!("Cannot start Pi RPC stderr reader: {error}"))?;
@@ -133,7 +156,7 @@ impl PiRpcBridge {
                     crate::child_supervision::ChildTree::attach(child_pid),
                 ))),
                 child: Arc::new(StdMutex::new(child)),
-                diagnostics: diagnostic_rx,
+                diagnostics,
             },
         ))
     }
@@ -213,25 +236,9 @@ impl PiRpcBridge {
 }
 
 impl PiRpcProcess {
-    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>, String> {
-        self.child
-            .lock()
-            .map_err(|_| "Pi RPC process lock poisoned".to_string())?
-            .try_wait()
-            .map_err(|error| format!("Cannot inspect Pi RPC process: {error}"))
-    }
-
-    pub fn wait(&mut self) -> Result<ExitStatus, String> {
-        self.child
-            .lock()
-            .map_err(|_| "Pi RPC process lock poisoned".to_string())?
-            .wait()
-            .map_err(|error| format!("Cannot wait for Pi RPC process: {error}"))
-    }
-
     /// Stop the runtime and everything it spawned. Killing only the direct
     /// child would leave its descendants running with no one to reap them.
-    pub fn kill(&mut self) -> Result<(), String> {
+    pub fn kill(&self) -> Result<(), String> {
         if let Some(tree) = &self.tree {
             if let Ok(mut tree) = tree.lock() {
                 tree.terminate();
@@ -255,19 +262,18 @@ impl PiRpcProcess {
     /// When the process dies at startup its reason lands here — without this
     /// the caller can only say `ProcessClosed`, which explains nothing.
     pub fn drain_diagnostics(&self) -> Option<String> {
-        let lines: Vec<String> = self.diagnostics.try_iter().collect();
-        if lines.is_empty() {
+        let mut ring = self.diagnostics.lock().ok()?;
+        if ring.is_empty() {
             return None;
         }
-        // Keep the tail: a crashing runtime's last words beat its banner.
-        let start = lines.len().saturating_sub(DIAGNOSTIC_TAIL_LINES);
-        Some(lines[start..].join("\n"))
+        let lines: Vec<String> = ring.drain(..).collect();
+        Some(lines.join("\n"))
     }
 }
 
 fn read_jsonl_stdout(
     stdout: &mut impl Read,
-    incoming: mpsc::Sender<Vec<u8>>,
+    incoming: &mpsc::Sender<RawFrame>,
     max_frame_bytes: usize,
 ) {
     let mut chunk = [0_u8; 8192];
@@ -278,30 +284,33 @@ fn read_jsonl_stdout(
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
-        for byte in &chunk[..read] {
-            if *byte == b'\n' {
-                if oversized {
-                    if incoming
-                        .blocking_send(vec![0; max_frame_bytes + 1])
-                        .is_err()
-                    {
-                        return;
-                    }
+        for segment in chunk[..read].split_inclusive(|&b| b == b'\n') {
+            let has_newline = segment.last() == Some(&b'\n');
+            let payload = if has_newline {
+                &segment[..segment.len() - 1]
+            } else {
+                segment
+            };
+            if !oversized {
+                if frame.len() + payload.len() > max_frame_bytes {
+                    frame.clear();
+                    oversized = true;
+                } else {
+                    frame.extend_from_slice(payload);
+                }
+            }
+            if has_newline {
+                let item = if oversized {
+                    oversized = false;
+                    RawFrame::Oversized
                 } else {
                     if frame.last() == Some(&b'\r') {
                         frame.pop();
                     }
-                    if incoming.blocking_send(std::mem::take(&mut frame)).is_err() {
-                        return;
-                    }
-                }
-                frame.clear();
-                oversized = false;
-            } else if !oversized {
-                frame.push(*byte);
-                if frame.len() > max_frame_bytes {
-                    frame.clear();
-                    oversized = true;
+                    RawFrame::Bytes(std::mem::take(&mut frame))
+                };
+                if incoming.blocking_send(item).is_err() {
+                    return;
                 }
             }
         }
@@ -309,20 +318,23 @@ fn read_jsonl_stdout(
 }
 
 async fn read_frames(
-    mut incoming: mpsc::Receiver<Vec<u8>>,
+    mut incoming: mpsc::Receiver<RawFrame>,
     frames: mpsc::Sender<BridgeFrame>,
     inner: Arc<BridgeInner>,
     max_frame_bytes: usize,
 ) {
-    while let Some(raw) = incoming.recv().await {
-        if raw.len() > max_frame_bytes {
-            let _ = frames
-                .send(BridgeFrame::ProtocolError(format!(
-                    "Pi RPC frame exceeded {max_frame_bytes} bytes"
-                )))
-                .await;
-            continue;
-        }
+    while let Some(incoming_frame) = incoming.recv().await {
+        let raw = match incoming_frame {
+            RawFrame::Bytes(raw) if raw.len() <= max_frame_bytes => raw,
+            RawFrame::Bytes(_) | RawFrame::Oversized => {
+                let _ = frames
+                    .send(BridgeFrame::ProtocolError(format!(
+                        "Pi RPC frame exceeded {max_frame_bytes} bytes"
+                    )))
+                    .await;
+                continue;
+            }
+        };
         let parsed = match serde_json::from_slice::<Value>(&raw) {
             Ok(value) => value,
             Err(error) => {
@@ -335,7 +347,8 @@ async fn read_frames(
             }
         };
         if let Some(id) = parsed.get("id").and_then(Value::as_str) {
-            if let Some(sender) = inner.pending.lock().await.remove(id) {
+            let pending_sender = inner.pending.lock().await.remove(id);
+            if let Some(sender) = pending_sender {
                 let _ = sender.send(Ok(parsed));
                 continue;
             }
@@ -352,7 +365,14 @@ async fn read_frames(
         let _ = frames.send(frame).await;
     }
 
-    for (_, sender) in inner.pending.lock().await.drain() {
+    let pending: Vec<PendingSender> = inner
+        .pending
+        .lock()
+        .await
+        .drain()
+        .map(|(_, sender)| sender)
+        .collect();
+    for sender in pending {
         let _ = sender.send(Err(BridgeError::ProcessClosed));
     }
 }
@@ -367,15 +387,17 @@ impl InMemoryPiProcess {
         self.outbound.try_recv().ok()
     }
 
-    pub(crate) async fn write_frame(&mut self, value: Value) -> Result<(), BridgeError> {
-        self.write_raw(format!("{}\n", value)).await
+    pub(crate) async fn write_frame(&self, value: Value) -> Result<(), BridgeError> {
+        self.write_raw(format!("{value}\n")).await
     }
 
-    async fn write_raw(&mut self, raw: String) -> Result<(), BridgeError> {
+    async fn write_raw(&self, raw: String) -> Result<(), BridgeError> {
         self.incoming
             .as_ref()
             .ok_or(BridgeError::ProcessClosed)?
-            .send(raw.trim_end_matches('\n').as_bytes().to_vec())
+            .send(RawFrame::Bytes(
+                raw.trim_end_matches('\n').as_bytes().to_vec(),
+            ))
             .await
             .map_err(|_| BridgeError::ProcessClosed)
     }

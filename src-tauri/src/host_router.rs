@@ -1,7 +1,8 @@
-#![cfg_attr(not(test), allow(dead_code))]
-
 use serde_json::Value;
 use std::collections::HashMap;
+
+#[cfg(test)]
+mod tests;
 
 pub const PROTOCOL_VERSION: u64 = 2;
 
@@ -11,7 +12,7 @@ pub enum ClientKind {
     Remote,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutedAction {
     Runtime {
         client_id: String,
@@ -72,6 +73,7 @@ impl HostRouter {
         }
     }
 
+    #[cfg(test)]
     pub fn connect(&mut self, client_id: &str, hello: &Value) -> Result<(), RouterError> {
         let kind = match hello.get("clientType").and_then(Value::as_str) {
             Some("desktop") => ClientKind::Desktop,
@@ -120,7 +122,20 @@ impl HostRouter {
         self.clients.get(client_id).copied()
     }
 
+    pub fn disconnect(&mut self, client_id: &str) {
+        self.clients.remove(client_id);
+    }
+
+    #[cfg(test)]
     pub fn route(&self, client_id: &str, frame: &Value) -> Result<RoutedAction, RouterError> {
+        self.route_owned(client_id, frame.clone())
+    }
+
+    pub fn route_owned(
+        &self,
+        client_id: &str,
+        mut frame: Value,
+    ) -> Result<RoutedAction, RouterError> {
         let _kind = self.client_kind(client_id).ok_or_else(|| {
             RouterError::new("unauthorized_client", "Client has not completed handshake")
         })?;
@@ -146,7 +161,7 @@ impl HostRouter {
                 Ok(RoutedAction::Git {
                     client_id: client_id.to_owned(),
                     request_id,
-                    frame: frame.clone(),
+                    frame,
                 })
             }
             "terminal_command" => {
@@ -161,13 +176,17 @@ impl HostRouter {
                 Ok(RoutedAction::Terminal {
                     client_id: client_id.to_owned(),
                     request_id,
-                    frame: frame.clone(),
+                    frame,
                 })
             }
             "runtime_subscribe" => {
-                let target = frame.get("target").cloned().ok_or_else(|| {
-                    RouterError::new("invalid_target", "Runtime target is required")
-                })?;
+                let target = frame
+                    .get_mut("target")
+                    .map(Value::take)
+                    .filter(|value| !value.is_null())
+                    .ok_or_else(|| {
+                        RouterError::new("invalid_target", "Runtime target is required")
+                    })?;
                 validate_target(&target)?;
                 Ok(RoutedAction::Subscribe {
                     client_id: client_id.to_owned(),
@@ -180,7 +199,7 @@ impl HostRouter {
             | "runtime_capabilities_request"
             | "runtime_rebind_session_request" => {
                 if frame_type == "runtime_request" {
-                    validate_runtime_request(frame)?;
+                    validate_runtime_request(&frame)?;
                 }
                 if frame_type == "runtime_rebind_session_request" {
                     let target = frame.get("target").ok_or_else(|| {
@@ -190,8 +209,7 @@ impl HostRouter {
                     if frame
                         .get("newSessionId")
                         .and_then(Value::as_str)
-                        .filter(|id| !id.is_empty())
-                        .is_none()
+                        .is_none_or(str::is_empty)
                     {
                         return Err(RouterError::new(
                             "invalid_session_id",
@@ -202,28 +220,28 @@ impl HostRouter {
                 Ok(RoutedAction::Runtime {
                     client_id: client_id.to_owned(),
                     request_id,
-                    frame: frame.clone(),
+                    frame,
                 })
             }
             "host_request" => {
-                let operation =
-                    frame
-                        .get("operation")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            RouterError::new("invalid_host_request", "operation is required")
-                        })?;
+                let operation = frame
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        RouterError::new("invalid_host_request", "operation is required")
+                    })?
+                    .to_owned();
                 Ok(RoutedAction::Host {
                     client_id: client_id.to_owned(),
                     request_id,
-                    operation: operation.to_owned(),
-                    frame: frame.clone(),
+                    operation,
+                    frame,
                 })
             }
             "data_request" => Ok(RoutedAction::Data {
                 client_id: client_id.to_owned(),
                 request_id,
-                frame: frame.clone(),
+                frame,
             }),
             _ => Err(RouterError::new(
                 "unknown_frame_type",
@@ -247,8 +265,7 @@ fn validate_runtime_request(frame: &Value) -> Result<(), RouterError> {
         && frame
             .get("idempotencyKey")
             .and_then(Value::as_str)
-            .filter(|key| !key.is_empty())
-            .is_none()
+            .is_none_or(str::is_empty)
     {
         return Err(RouterError::new(
             "idempotency_key_required",
@@ -291,213 +308,4 @@ fn is_mutation(command_type: &str) -> bool {
             | "set_steering_mode"
             | "set_follow_up_mode"
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{ClientKind, HostRouter, RoutedAction, PROTOCOL_VERSION};
-    use serde_json::json;
-
-    #[test]
-    fn requires_an_exact_v2_handshake() {
-        let mut router = HostRouter::new();
-        assert!(router
-            .connect(
-                "client-a",
-                &json!({ "type": "hello", "protocolVersion": 1, "clientType": "desktop" }),
-            )
-            .is_err());
-        assert!(router
-            .connect(
-                "client-a",
-                &json!({
-                    "type": "hello",
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "clientType": "desktop",
-                }),
-            )
-            .is_ok());
-        assert_eq!(router.client_kind("client-a"), Some(ClientKind::Desktop));
-    }
-
-    #[test]
-    fn legacy_auth_frames_are_not_routable() {
-        let mut router = HostRouter::new();
-        router
-            .connect(
-                "desktop",
-                &json!({ "type": "hello", "protocolVersion": 2, "clientType": "desktop" }),
-            )
-            .unwrap();
-        let error = router
-            .route(
-                "desktop",
-                &json!({
-                    "type": "auth_request",
-                    "requestId": "auth-1",
-                }),
-            )
-            .unwrap_err();
-        assert_eq!(error.code, "unknown_frame_type");
-    }
-
-    #[test]
-    fn keeps_runtime_and_host_routes_separate() {
-        let mut router = HostRouter::new();
-        router
-            .connect(
-                "desktop",
-                &json!({ "type": "hello", "protocolVersion": 2, "clientType": "desktop" }),
-            )
-            .unwrap();
-        let runtime = router
-            .route(
-                "desktop",
-                &json!({
-                    "type": "runtime_request",
-                    "requestId": "request-1",
-                    "idempotencyKey": "intent-1",
-                    "target": {
-                        "workspaceId": "workspace-a",
-                        "sessionId": "session-a",
-                        "instanceId": "instance-a"
-                    },
-                    "command": { "type": "prompt", "message": "secret" }
-                }),
-            )
-            .unwrap();
-        assert!(matches!(runtime, RoutedAction::Runtime { .. }));
-
-        let host = router
-            .route(
-                "desktop",
-                &json!({
-                    "type": "host_request",
-                    "requestId": "request-2",
-                    "operation": "pick_folder"
-                }),
-            )
-            .unwrap();
-        assert!(matches!(host, RoutedAction::Host { .. }));
-    }
-
-    #[test]
-    fn allows_previously_dangerous_host_operations_for_remote_clients() {
-        let mut router = HostRouter::new();
-        router
-            .connect(
-                "phone",
-                &json!({ "type": "hello", "protocolVersion": 2, "clientType": "remote" }),
-            )
-            .unwrap();
-        for operation in [
-            "pick_folder",
-            "open_app",
-            "install_package",
-            "install_pi_package",
-            "remove_pi_package",
-            "check_for_updates",
-            "delete_workspace",
-        ] {
-            assert!(router
-                .route(
-                    "phone",
-                    &json!({
-                        "type": "host_request",
-                        "requestId": "request",
-                        "operation": operation,
-                    }),
-                )
-                .is_ok());
-        }
-    }
-
-    #[test]
-    fn allows_git_commands_for_remote_clients() {
-        let mut router = HostRouter::new();
-        router
-            .connect(
-                "phone",
-                &json!({ "type": "hello", "protocolVersion": 2, "clientType": "remote" }),
-            )
-            .unwrap();
-        let command = router.route(
-            "phone",
-            &json!({
-                "type": "git_command",
-                "requestId": "git-1",
-                "workspaceId": "workspace-a",
-            }),
-        );
-        assert!(matches!(command, Ok(RoutedAction::Git { .. })));
-    }
-
-    #[test]
-    fn routes_terminal_commands_for_desktop_and_remote_clients() {
-        let mut router = HostRouter::new();
-        for (client_id, client_type) in [("window", "desktop"), ("phone", "remote")] {
-            router
-                .connect(
-                    client_id,
-                    &json!({
-                        "type": "hello",
-                        "protocolVersion": 2,
-                        "clientType": client_type,
-                    }),
-                )
-                .unwrap();
-        }
-        let command = json!({
-            "type": "terminal_command",
-            "requestId": "terminal-1",
-            "workspaceId": "workspace-a",
-            "payload": { "type": "terminal_list" },
-        });
-        assert!(matches!(
-            router.route("window", &command),
-            Ok(RoutedAction::Terminal { .. })
-        ));
-        assert!(matches!(
-            router.route("phone", &command),
-            Ok(RoutedAction::Terminal { .. })
-        ));
-    }
-
-    #[test]
-    fn routes_a_well_formed_rebind_session_request_and_rejects_a_missing_new_session_id() {
-        let mut router = HostRouter::new();
-        router
-            .connect(
-                "desktop",
-                &json!({ "type": "hello", "protocolVersion": 2, "clientType": "desktop" }),
-            )
-            .unwrap();
-        let target = json!({
-            "workspaceId": "workspace-a",
-            "sessionId": "session-a",
-            "instanceId": "instance-a"
-        });
-        let routed = router
-            .route(
-                "desktop",
-                &json!({
-                    "type": "runtime_rebind_session_request",
-                    "requestId": "request-1",
-                    "target": target,
-                    "newSessionId": "session-b",
-                }),
-            )
-            .unwrap();
-        assert!(matches!(routed, RoutedAction::Runtime { .. }));
-
-        let missing_new_id = router.route(
-            "desktop",
-            &json!({
-                "type": "runtime_rebind_session_request",
-                "requestId": "request-2",
-                "target": target,
-            }),
-        );
-        assert!(missing_new_id.is_err());
-    }
 }

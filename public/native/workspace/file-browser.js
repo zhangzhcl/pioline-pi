@@ -76,13 +76,14 @@ export class NativeFileBrowser {
     // away from must not clobber a newer, faster response.
     this.#requestId += 1;
     const requestId = this.#requestId;
+    const workspaceId = this.#resolveWorkspaceId();
 
     try {
-      const [response] = await Promise.all([
-        this.#gateway.listFiles(this.#workspaceId, relativePath, this.showHidden),
-        this.#loadGitStatus(),
-        this.#loadGitStat(),
-      ]);
+      const tasks = [this.#gateway.listFiles(workspaceId, relativePath, this.showHidden)];
+      if (this.#showViewSwitch || this.#view === "diff") {
+        tasks.push(this.#loadGitStatus(workspaceId), this.#loadGitStat(workspaceId));
+      }
+      const [response] = await Promise.all(tasks);
       if (requestId !== this.#requestId) return;
       this.currentPath = relativePath;
       this.#entries = response.entries ?? [];
@@ -94,6 +95,10 @@ export class NativeFileBrowser {
       if (requestId !== this.#requestId) return;
       this.#container.replaceChildren(messageRow(error?.message || t("files.failedLoad")));
     }
+  }
+
+  #resolveWorkspaceId() {
+    return typeof this.#workspaceId === "function" ? this.#workspaceId() : this.#workspaceId;
   }
 
   getParentPath() {
@@ -128,6 +133,7 @@ export class NativeFileBrowser {
       this.#container.append(messageRow(t("files.empty")));
       return;
     }
+    const fragment = document.createDocumentFragment();
     for (const entry of this.#entries) {
       const isDirectory = entry.kind === "directory";
       const item = document.createElement("div");
@@ -181,8 +187,9 @@ export class NativeFileBrowser {
         item.addEventListener("click", () => this.#onFileSelect?.(entry));
         item.addEventListener("dblclick", () => this.#onFileOpen?.(entry));
       }
-      this.#container.append(item);
+      fragment.append(item);
     }
+    this.#container.append(fragment);
   }
 
   #renderViewSwitch() {
@@ -207,10 +214,10 @@ export class NativeFileBrowser {
     this.#container.append(switcher);
   }
 
-  async #loadGitStatus() {
+  async #loadGitStatus(workspaceId = this.#resolveWorkspaceId()) {
     try {
       const url = new URL("/api/git/status", window.location.origin);
-      url.searchParams.set("workspaceId", this.#workspaceId);
+      url.searchParams.set("workspaceId", workspaceId);
       const response = await fetch(url);
       const data = response.ok ? await response.json() : null;
       this.#gitFiles = data?.isGitRepository && Array.isArray(data.files) ? data.files : [];
@@ -219,10 +226,10 @@ export class NativeFileBrowser {
     }
   }
 
-  async #loadGitStat() {
+  async #loadGitStat(workspaceId = this.#resolveWorkspaceId()) {
     try {
       const url = new URL("/api/git/stat", window.location.origin);
-      url.searchParams.set("workspaceId", this.#workspaceId);
+      url.searchParams.set("workspaceId", workspaceId);
       const response = await fetch(url);
       this.#gitStat = response.ok ? await response.json() : null;
     } catch {

@@ -1,5 +1,6 @@
 import { onLocaleChange, t } from "../i18n.js";
 import { isSuperAgentEnabled, setSuperAgentEnabled } from "../super-agent/settings.js";
+import { esc } from "./super-agent-runtime-cards.js";
 
 /**
  * <chat-settings-panel> Web Component
@@ -112,13 +113,13 @@ class ChatSettingsPanel extends HTMLElement {
       }
     });
 
-    document.querySelectorAll(".settings-nav-item").forEach((btn) => {
-      if (btn.dataset.settingsTab === "chat") {
-        btn.addEventListener("click", () => this._load());
-      }
-    });
-
     this._handleConfigGatewayReady = () => this._load();
+    this._chatNavButtons = Array.from(document.querySelectorAll(".settings-nav-item")).filter(
+      (btn) => btn.dataset.settingsTab === "chat",
+    );
+    for (const btn of this._chatNavButtons) {
+      btn.addEventListener("click", this._handleConfigGatewayReady);
+    }
     window.addEventListener("picot-config-gateway-ready", this._handleConfigGatewayReady);
     this._unsubscribeLocale = onLocaleChange(() => {
       this._renderAccounts(this._textarea?.value);
@@ -129,6 +130,9 @@ class ChatSettingsPanel extends HTMLElement {
 
   disconnectedCallback() {
     if (this._handleConfigGatewayReady) {
+      for (const btn of this._chatNavButtons || []) {
+        btn.removeEventListener("click", this._handleConfigGatewayReady);
+      }
       window.removeEventListener("picot-config-gateway-ready", this._handleConfigGatewayReady);
     }
     this._unsubscribeLocale?.();
@@ -356,7 +360,7 @@ class ChatSettingsPanel extends HTMLElement {
       </ol>
       ${
         link
-          ? `<a class="ui-button ui-button--secondary telegram-open-link" href="${escAttr(link)}" target="_blank" rel="noreferrer">${esc(t("inbox.openTelegram"))}</a>`
+          ? `<a class="ui-button ui-button--secondary telegram-open-link" href="${esc(link)}" target="_blank" rel="noreferrer">${esc(t("inbox.openTelegram"))}</a>`
           : ""
       }
     `;
@@ -378,24 +382,22 @@ class ChatSettingsPanel extends HTMLElement {
     this.querySelector('[data-action="cancel-telegram"]').hidden = !isBusy;
   }
 
-  // ── Status helpers ────────────────────────────────────────────────────────
+  _showStatus(msg, color = "") {
+    this._statusEl.textContent = msg;
+    this._statusEl.style.color = color;
+    this._statusEl.classList.remove("hidden");
+  }
 
   _showError(msg) {
-    this._statusEl.textContent = msg;
-    this._statusEl.style.color = "";
-    this._statusEl.classList.remove("hidden");
+    this._showStatus(msg);
   }
 
   _showInfo(msg) {
-    this._statusEl.textContent = msg;
-    this._statusEl.style.color = "var(--text-secondary)";
-    this._statusEl.classList.remove("hidden");
+    this._showStatus(msg, "var(--text-secondary)");
   }
 
   _showSuccess(msg) {
-    this._statusEl.textContent = msg;
-    this._statusEl.style.color = "var(--color-success, #4ade80)";
-    this._statusEl.classList.remove("hidden");
+    this._showStatus(msg, "var(--color-success, #4ade80)");
   }
 
   _clearStatus() {
@@ -403,93 +405,60 @@ class ChatSettingsPanel extends HTMLElement {
   }
 }
 
-async function postJson(url, payload, options = {}) {
+async function requestJson(url, { method = "GET", payload, signal, errorMessage } = {}) {
   const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: options.signal,
+    method,
+    headers: payload !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: payload !== undefined ? JSON.stringify(payload) : undefined,
+    signal,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.success === false) throw new Error(data.error || "Request failed");
+  if (!res.ok || data.success === false) {
+    throw new Error(data.error || errorMessage || "Request failed");
+  }
   return data;
 }
 
 async function callPicotConfig(op, params = {}, options = {}) {
-  if (typeof window.__picotConfigCall !== "function") return null;
   const result = await window.__picotConfigCall(op, params, options);
   if (!result?.ok) throw new Error(result?.error || `${op} failed`);
   return result.data || {};
 }
 
-async function readChatConfig() {
-  if (typeof window.__picotConfigCall === "function") {
-    return callPicotConfig("read_chat_config");
-  }
-  const res = await fetch("/api/chat-config");
-  if (!res.ok) throw new Error("Failed to load chat config");
-  return res.json();
+function callChatConfigApi(op, fallbackUrl, options = {}) {
+  return typeof window.__picotConfigCall === "function"
+    ? callPicotConfig(op, options.payload ?? {}, options.signal ? { signal: options.signal } : {})
+    : requestJson(fallbackUrl, options);
 }
 
-async function writeChatConfig(content) {
-  if (typeof window.__picotConfigCall === "function") {
-    return callPicotConfig("write_chat_config", { content });
-  }
-  const res = await fetch("/api/chat-config", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+const readChatConfig = () =>
+  callChatConfigApi("read_chat_config", "/api/chat-config", {
+    errorMessage: "Failed to load chat config",
   });
-  const data = await res.json();
-  if (!data.success) throw new Error(data.error || "Save failed");
-  return data;
-}
-
-async function telegramValidate(payload, options) {
-  if (typeof window.__picotConfigCall === "function") {
-    return callPicotConfig("telegram_validate", payload, options);
-  }
-  return postJson("/api/chat-telegram/validate", payload, options);
-}
-
-async function telegramBind(payload, options) {
-  if (typeof window.__picotConfigCall === "function") {
-    return callPicotConfig("telegram_bind", payload, options);
-  }
-  return postJson("/api/chat-telegram/bind", payload, options);
-}
-
-async function telegramDoctor() {
-  if (typeof window.__picotConfigCall === "function") {
-    return callPicotConfig("telegram_doctor");
-  }
-  const res = await fetch("/api/chat-telegram/doctor");
-  const data = await res.json();
-  if (!res.ok || data.success === false) throw new Error(data.error || "Telegram doctor failed");
-  return data;
-}
-
-function messageFromError(error) {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function esc(str) {
-  return String(str ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function escAttr(str) {
-  return esc(str).replace(/'/g, "&#39;");
-}
-
-function doctorStatusClass(status) {
-  if (status === "ok") return "ok";
-  if (status === "warning") return "warning";
-  return "error";
-}
+const writeChatConfig = (content) =>
+  callChatConfigApi("write_chat_config", "/api/chat-config", {
+    method: "PUT",
+    payload: { content },
+    errorMessage: "Save failed",
+  });
+const telegramValidate = (payload, options = {}) =>
+  callChatConfigApi("telegram_validate", "/api/chat-telegram/validate", {
+    method: "POST",
+    payload,
+    signal: options.signal,
+  });
+const telegramBind = (payload, options = {}) =>
+  callChatConfigApi("telegram_bind", "/api/chat-telegram/bind", {
+    method: "POST",
+    payload,
+    signal: options.signal,
+  });
+const telegramDoctor = () =>
+  callChatConfigApi("telegram_doctor", "/api/chat-telegram/doctor", {
+    errorMessage: "Telegram doctor failed",
+  });
+const messageFromError = (error) => (error instanceof Error ? error.message : String(error));
+const doctorStatusClass = (status) =>
+  status === "ok" ? "ok" : status === "warning" ? "warning" : "error";
 
 customElements.define("chat-settings-panel", ChatSettingsPanel);

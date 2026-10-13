@@ -132,12 +132,12 @@ async fn probe_dependency() -> DependencyProbe {
             continue;
         };
         if version.0 < 3 || (version.0 == 3 && version.1 < 10) {
-            old.get_or_insert((version.3, display.to_owned()));
+            old.get_or_insert_with(|| (version.3, display.to_owned()));
             continue;
         }
         let executable = lines.next().unwrap_or_default().trim().to_owned();
         if executable.is_empty() || !std::path::Path::new(&executable).is_absolute() {
-            incompatible.get_or_insert(display.to_owned());
+            incompatible.get_or_insert_with(|| display.to_owned());
             continue;
         }
         let capability = run_bounded(&executable, &["-c", CAPABILITY_SCRIPT], None, false).await;
@@ -147,9 +147,9 @@ async fn probe_dependency() -> DependencyProbe {
                 .as_ref()
                 .is_some_and(|(_, out, err)| format!("{out}{err}").contains("No module named"))
             {
-                missing.get_or_insert(display.to_owned());
+                missing.get_or_insert_with(|| display.to_owned());
             } else {
-                incompatible.get_or_insert(display.to_owned());
+                incompatible.get_or_insert_with(|| display.to_owned());
             }
             continue;
         };
@@ -159,11 +159,11 @@ async fn probe_dependency() -> DependencyProbe {
         let Some((true, help, _)) =
             run_bounded(&executable, &["-m", "markitdown", "--help"], None, false).await
         else {
-            incompatible.get_or_insert(display.to_owned());
+            incompatible.get_or_insert_with(|| display.to_owned());
             continue;
         };
         if !help.contains("--extension") && !help.contains("-x") {
-            incompatible.get_or_insert(display.to_owned());
+            incompatible.get_or_insert_with(|| display.to_owned());
             continue;
         }
         return DependencyProbe::Available { executable };
@@ -286,8 +286,10 @@ async fn run_bounded(
     .ok()??;
     Some((
         completed.0,
-        String::from_utf8_lossy(&completed.1).into_owned(),
-        String::from_utf8_lossy(&completed.2).into_owned(),
+        String::from_utf8(completed.1)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+        String::from_utf8(completed.2)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
     ))
 }
 

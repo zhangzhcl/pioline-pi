@@ -1,6 +1,7 @@
 import { onLocaleChange, t } from "../../i18n.js";
 import { bindDialogEscape } from "../../ui/dialog-escape.js";
 import { createLoadingPlaceholder } from "../../ui/loading-placeholder.js";
+import { escapeHtml } from "./session-sidebar-storage.js";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const MAX_TITLE_RESULTS = 12;
@@ -20,15 +21,6 @@ function isSearchShortcut(event) {
   if (event.defaultPrevented || event.isComposing) return false;
   if (event.altKey || event.shiftKey || event.key.toLowerCase() !== "k") return false;
   return event.metaKey || event.ctrlKey;
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 function normalizeQuery(query) {
@@ -52,11 +44,15 @@ function formatMeta(session) {
   return [session?.projectName, session?.projectPath].filter(Boolean).join(" · ");
 }
 
-function highlight(text, query) {
+function compileHighlightRegex(query) {
+  if (!query) return null;
+  return new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+}
+
+function highlight(text, regex) {
   const escaped = escapeHtml(text);
-  if (!query) return escaped;
-  const re = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
-  return escaped.replace(re, "<mark>$1</mark>");
+  if (!regex) return escaped;
+  return escaped.replace(regex, "<mark>$1</mark>");
 }
 
 export function setupSessionSearchDialog({
@@ -129,7 +125,7 @@ export function setupSessionSearchDialog({
     onSelect?.(session, { query });
   }
 
-  function resultButton({ sessionId, icon, title, meta, snippet }) {
+  function resultButton({ sessionId, icon, title, meta, snippet, highlightRegex }) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "session-search-result";
@@ -138,8 +134,8 @@ export function setupSessionSearchDialog({
     button.innerHTML = `
       <span class="session-search-result-icon">${escapeHtml(icon)}</span>
       <span class="session-search-result-copy">
-        <span class="session-search-result-title">${highlight(title, query)}</span>
-        ${snippet ? `<span class="session-search-result-snippet">${highlight(snippet, query)}</span>` : ""}
+        <span class="session-search-result-title">${highlight(title, highlightRegex)}</span>
+        ${snippet ? `<span class="session-search-result-snippet">${highlight(snippet, highlightRegex)}</span>` : ""}
         ${meta ? `<span class="session-search-result-meta">${escapeHtml(meta)}</span>` : ""}
       </span>`;
     button.addEventListener("click", () => selectSession(sessionId));
@@ -162,11 +158,18 @@ export function setupSessionSearchDialog({
     list.innerHTML = "";
     const sessions = getSessions?.() ?? [];
     const normalized = normalizeQuery(query);
-    const titleMatches = normalized
-      ? sessions
-          .filter((session) => sessionSearchText(session).includes(normalized))
-          .slice(0, MAX_TITLE_RESULTS)
-      : sessions.slice(0, MAX_RECENT_RESULTS);
+    const highlightRegex = compileHighlightRegex(query);
+    const titleMatches = [];
+    if (normalized) {
+      for (const session of sessions) {
+        if (sessionSearchText(session).includes(normalized)) {
+          titleMatches.push(session);
+          if (titleMatches.length >= MAX_TITLE_RESULTS) break;
+        }
+      }
+    } else {
+      titleMatches.push(...sessions.slice(0, MAX_RECENT_RESULTS));
+    }
 
     appendGroup(
       normalized ? t("sidebar.searchTasks") : t("sidebar.recentTasks"),
@@ -176,6 +179,7 @@ export function setupSessionSearchDialog({
           icon: session.isCurrentWorkspace ? "●" : "○",
           title: sessionTitle(session),
           meta: formatMeta(session),
+          highlightRegex,
         }),
       ),
     );
@@ -192,6 +196,7 @@ export function setupSessionSearchDialog({
               ? t("sidebar.matchCount", { count: result.matches.length })
               : t("sidebar.messageMatch"),
           snippet: result.matches?.[0]?.snippet || "",
+          highlightRegex,
         }),
       ),
     );

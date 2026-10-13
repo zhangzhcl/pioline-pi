@@ -11,7 +11,12 @@ export interface RenderedChunkPayload {
 
 // Escape HTML special characters outside of tags we generate ourselves.
 function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /**
@@ -78,10 +83,8 @@ function convertSpans(text: string): string {
   const parts: string[] = [];
   const inlineCodeRe = /`([^`]+)`/g;
   let last = 0;
-  let match: RegExpExecArray | null;
 
-  // biome-ignore lint/suspicious/noAssignInExpressions: intentional pattern
-  while ((match = inlineCodeRe.exec(text)) !== null) {
+  for (let match = inlineCodeRe.exec(text); match !== null; match = inlineCodeRe.exec(text)) {
     if (match.index > last) {
       parts.push(convertFormatting(escapeHtml(text.slice(last, match.index))));
     }

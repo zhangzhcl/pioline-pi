@@ -74,6 +74,7 @@ export function registerCustomUiBridge(pi: ExtensionAPI, options?: { enabled?: b
   let nextPanelId = 0;
   /** Id of the panel the WebView is currently showing, or null when none is. */
   let shownId: string | null = null;
+  let repaintedInInput = false;
 
   const top = (): Panel | undefined => {
     for (let index = stack.length - 1; index >= 0; index -= 1) {
@@ -98,6 +99,7 @@ export function registerCustomUiBridge(pi: ExtensionAPI, options?: { enabled?: b
   /** Repaint a panel, but only while it is the one on screen. */
   const repaint = (ui: ExtensionContext["ui"], panel: Panel): void => {
     if (panel.id !== shownId) return;
+    repaintedInInput = true;
     emit(ui, { op: "update", id: panel.id, lines: renderPanel(panel) });
   };
 
@@ -277,6 +279,7 @@ export function registerCustomUiBridge(pi: ExtensionAPI, options?: { enabled?: b
       const data = request.cancel ? ESCAPE : request.data;
       if (typeof data !== "string" || !data) return;
 
+      repaintedInInput = false;
       try {
         panel.component.handleInput?.(data);
       } catch (error) {
@@ -298,10 +301,11 @@ export function registerCustomUiBridge(pi: ExtensionAPI, options?: { enabled?: b
         panel.settle(undefined);
         return;
       }
-      // Components normally repaint through `tui.requestRender()`, but repaint
-      // unconditionally so a component that mutates state without asking for a
-      // render still shows the result of the keystroke.
-      repaint(ctx.ui, panel);
+      // Components normally repaint through `tui.requestRender()`; only repaint
+      // here when `handleInput` mutated state without requesting a render.
+      if (!repaintedInInput) {
+        repaint(ctx.ui, panel);
+      }
     },
   });
 }

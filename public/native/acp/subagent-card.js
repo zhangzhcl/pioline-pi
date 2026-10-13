@@ -225,6 +225,7 @@ export function createSubagentCard({ run, onSendResult, onRespondPermission, onF
   wrapper.append(head, body, footer, composer);
 
   let current = run;
+  let bodyDirty = true;
   const agentName = () => current.agentLabel || "Claude Code";
   // Lazily created — a run with no tool calls never pays for the renderer (and
   // its locale subscription).
@@ -237,6 +238,9 @@ export function createSubagentCard({ run, onSendResult, onRespondPermission, onF
   toggle.addEventListener("click", () => {
     current.expanded = !current.expanded;
     applyExpanded();
+    if (current.expanded && bodyDirty) {
+      renderBody();
+    }
   });
 
   function applyExpanded() {
@@ -245,6 +249,7 @@ export function createSubagentCard({ run, onSendResult, onRespondPermission, onF
   }
 
   function renderBody() {
+    bodyDirty = false;
     // Full rebuild each update: the reduced blocks already carry each tool
     // call's merged state, so re-emitting the cards keeps them correct and in
     // order relative to the message blocks.
@@ -276,7 +281,11 @@ export function createSubagentCard({ run, onSendResult, onRespondPermission, onF
     wrapper.dataset.status = current.status;
     elapsed.textContent = elapsedText(current);
     applyExpanded();
-    renderBody();
+    if (current.expanded) {
+      renderBody();
+    } else {
+      bodyDirty = true;
+    }
     const settled = current.status === "done" || current.status === "error";
     footer.hidden = !(settled && Boolean((current.resultText ?? "").trim()));
     const live = Boolean(current.target);

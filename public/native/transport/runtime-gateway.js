@@ -138,6 +138,13 @@ export class RuntimeGateway {
         else pending.resolve(frame);
         return;
       }
+      if (
+        frame.type === "data_response" ||
+        frame.type === "host_response" ||
+        frame.type === "control_response"
+      ) {
+        return;
+      }
     }
     for (const listener of this.#listeners) listener(frame);
   }

@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   BUILTIN_NODE_METAS,
   createStarterWorkflow,
@@ -8,6 +8,11 @@ import {
 } from "../public/native/workflow/builtin-node-registry.js";
 import { createPiAgentExecutor } from "../public/native/workflow/pi-agent-executor.js";
 import { createWorkflowRun, WorkflowRunner } from "../public/native/workflow/workflow-runner.js";
+import {
+  startSmokeMockProvider,
+  verifySmokeSessionAndTools,
+  writeSmokeAgentFixtures,
+} from "./smoke-pi-rpc-helpers.js";
 
 const root = resolve(import.meta.dir, "..");
 const { version: piVersion } = await Bun.file(join(root, "scripts", "pi-version.json")).json();
@@ -24,172 +29,17 @@ const temp = await mkdtemp(join(tmpdir(), "pipline-rpc-smoke-"));
 const extension = join(temp, "smoke-extension.ts");
 const agentDir = join(temp, "pi-agent");
 const sessionDir = join(temp, "sessions");
-let chatRequestCount = 0;
-let providerReceivedWriteTool = false;
-let providerReceivedShellTool = false;
-let providerReceivedBashTool = false;
 const shellToolName = process.platform === "win32" ? "powershell" : null;
 const windowsShellFallback = process.platform === "win32";
 const bundledBridge = join(root, "extensions", "dist", "picot-bridge.mjs");
-const shellCommand =
-  "$path = Join-Path (Get-Location) 'pipline-smoke-powershell.txt'; [System.IO.File]::WriteAllText($path, 'Pipline PowerShell tool completed.'); Write-Output 'PIPLINE_POWERSHELL_SMOKE'";
 
-function toolCallChunks(requestCount, callId, name, args) {
-  return [
-    {
-      id: `chatcmpl-pipline-${requestCount}`,
-      object: "chat.completion.chunk",
-      created: 1,
-      model: "smoke-model",
-      choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-    },
-    {
-      id: `chatcmpl-pipline-${requestCount}`,
-      object: "chat.completion.chunk",
-      created: 1,
-      model: "smoke-model",
-      choices: [
-        {
-          index: 0,
-          delta: {
-            tool_calls: [
-              {
-                index: 0,
-                id: callId,
-                type: "function",
-                function: { name, arguments: JSON.stringify(args) },
-              },
-            ],
-          },
-          finish_reason: null,
-        },
-      ],
-    },
-    {
-      id: `chatcmpl-pipline-${requestCount}`,
-      object: "chat.completion.chunk",
-      created: 1,
-      model: "smoke-model",
-      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-    },
-  ];
-}
-
-function streamResponse(chunks) {
-  const stream = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
-  return new Response(stream, {
-    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-  });
-}
-
-const mockProvider = Bun.serve({
-  hostname: "127.0.0.1",
-  port: 0,
-  async fetch(request) {
-    if (new URL(request.url).pathname !== "/v1/chat/completions") {
-      return new Response("Not found", { status: 404 });
-    }
-    const body = await request.json();
-    if (body.stream !== true) {
-      return Response.json(
-        { error: "The smoke provider requires streaming requests." },
-        { status: 400 },
-      );
-    }
-    chatRequestCount += 1;
-    providerReceivedWriteTool ||=
-      body.tools?.some((tool) => tool.function?.name === "write") ?? false;
-    if (shellToolName) {
-      providerReceivedShellTool ||=
-        body.tools?.some((tool) => tool.function?.name === shellToolName) ?? false;
-      providerReceivedBashTool ||=
-        body.tools?.some((tool) => tool.function?.name === "bash") ?? false;
-    }
-    if (chatRequestCount === 1) {
-      return streamResponse(
-        toolCallChunks(chatRequestCount, "call_pipline_smoke_write", "write", {
-          path: "pipline-smoke-write.txt",
-          content: "Pipline native Pi write tool completed.\n",
-        }),
-      );
-    }
-    if (shellToolName && chatRequestCount === 2) {
-      return streamResponse(
-        toolCallChunks(chatRequestCount, "call_pipline_smoke_shell", shellToolName, {
-          command: shellCommand,
-          timeout: 10_000,
-        }),
-      );
-    }
-    return streamResponse([
-      {
-        id: `chatcmpl-pipline-${chatRequestCount}`,
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "smoke-model",
-        choices: [
-          {
-            index: 0,
-            delta: { role: "assistant", content: "Pipline fake provider response." },
-            finish_reason: null,
-          },
-        ],
-      },
-      {
-        id: `chatcmpl-pipline-${chatRequestCount}`,
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "smoke-model",
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      },
-    ]);
-  },
-});
-
-await mkdir(agentDir, { recursive: true });
-if (shellToolName) {
-  await writeFile(
-    join(agentDir, "settings.json"),
-    JSON.stringify({ defaultTools: ["read", "bash", "edit", "write"] }),
-  );
-}
-await writeFile(
-  join(agentDir, "models.json"),
-  JSON.stringify({
-    providers: {
-      "pipline-smoke": {
-        baseUrl: `http://127.0.0.1:${mockProvider.port}/v1`,
-        api: "openai-completions",
-        apiKey: "pipline-smoke-key",
-        compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
-        models: [
-          {
-            id: "smoke-model",
-            name: "Pipline Smoke Model",
-            reasoning: false,
-            input: ["text"],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 8192,
-            maxTokens: 256,
-          },
-        ],
-      },
-    },
-  }),
-);
-
-await writeFile(
+const { server: mockProvider, stats } = startSmokeMockProvider({ shellToolName });
+await writeSmokeAgentFixtures({
+  agentDir,
   extension,
-  `export default function (pi) {
-    pi.registerCommand("pipline-smoke", {
-      description: "Pipline RPC contract smoke command",
-      handler: async (_args, ctx) => {
-        pi.appendEntry("pipline-smoke", { marker: "persisted" });
-        ctx.ui.notify("Pipline smoke accepted", "info");
-      },
-    });
-  }\n`,
-);
+  port: mockProvider.port,
+  shellToolName,
+});
 
 const subprocess = Bun.spawn(
   [
@@ -371,9 +221,6 @@ try {
       })}`,
     );
   }
-  if (!workflowRunnerCompleted) {
-    throw new Error("The production WorkflowRunner did not complete its Pi Agent workflow Run.");
-  }
   const messages = await request({ type: "get_messages" });
   const abort = await request({ type: "abort" });
   const persistedState = await request({ type: "get_state" });
@@ -397,103 +244,17 @@ try {
   ) {
     throw new Error(`Unexpected ordinary prompt response: ${JSON.stringify(normalPrompt)}`);
   }
-  const savedUserPrompt = (messages.data?.messages ?? []).some(
-    (message) =>
-      message.role === "user" &&
-      (typeof message.content === "string"
-        ? message.content
-        : message.content?.some?.((part) => part.text === "Pipline session persistence check")),
-  );
-  if (!savedUserPrompt) {
-    throw new Error(
-      `Pi did not retain the ordinary prompt in the session message history: ${JSON.stringify(messages.data)}`,
-    );
-  }
-  const savedAssistantReply = (messages.data?.messages ?? []).some(
-    (message) =>
-      message.role === "assistant" &&
-      message.content?.some?.(
-        (part) => part.type === "text" && part.text === "Pipline fake provider response.",
-      ),
-  );
-  const savedWriteCall = (messages.data?.messages ?? []).some(
-    (message) =>
-      message.role === "assistant" &&
-      message.content?.some?.((part) => part.type === "toolCall" && part.name === "write"),
-  );
-  const savedWriteResult = (messages.data?.messages ?? []).some(
-    (message) => message.role === "toolResult" && message.toolName === "write" && !message.isError,
-  );
-  const writtenFile = await Bun.file(join(temp, "pipline-smoke-write.txt")).text();
-  const savedShellCall = shellToolName
-    ? (messages.data?.messages ?? []).some(
-        (message) =>
-          message.role === "assistant" &&
-          message.content?.some?.(
-            (part) => part.type === "toolCall" && part.name === shellToolName,
-          ),
-      )
-    : true;
-  const savedShellResult = shellToolName
-    ? (messages.data?.messages ?? []).some(
-        (message) =>
-          message.role === "toolResult" && message.toolName === shellToolName && !message.isError,
-      )
-    : true;
-  if (
-    !savedAssistantReply ||
-    !savedWriteCall ||
-    !savedWriteResult ||
-    writtenFile !== "Pipline native Pi write tool completed.\n" ||
-    !savedShellCall ||
-    !savedShellResult ||
-    chatRequestCount !== (shellToolName ? 4 : 3) ||
-    !providerReceivedWriteTool ||
-    (shellToolName && !providerReceivedShellTool) ||
-    (windowsShellFallback && providerReceivedBashTool)
-  ) {
-    throw new Error(
-      `Pi did not finish the native tool-call loop (PowerShell advertised: ${providerReceivedShellTool}, Bash advertised: ${providerReceivedBashTool}).`,
-    );
-  }
-  if (shellToolName) {
-    const shellOutput = await Bun.file(join(temp, "pipline-smoke-powershell.txt")).text();
-    if (shellOutput !== "Pipline PowerShell tool completed.") {
-      throw new Error("Pi PowerShell tool did not create the expected temporary output file.");
-    }
-  }
 
-  const sessionFile = persistedState.data?.sessionFile;
-  if (typeof sessionFile !== "string") {
-    throw new Error("Pi did not expose the persisted session file.");
-  }
-  if (persistedState.data?.sessionName !== "Pipline RPC smoke") {
-    throw new Error("Pi did not retain the session name in its active session state.");
-  }
-  const sessionRelativePath = relative(sessionDir, sessionFile);
-  if (
-    !sessionRelativePath ||
-    sessionRelativePath.startsWith("..") ||
-    isAbsolute(sessionRelativePath)
-  ) {
-    throw new Error(`Pi session escaped the isolated session directory: ${sessionFile}`);
-  }
-  const sessionContents = await Bun.file(sessionFile).text();
-  if (!sessionContents.includes("Pipline RPC smoke")) {
-    throw new Error("Pi session file does not contain the saved session name.");
-  }
-  if (!sessionContents.includes("Pipline session persistence check")) {
-    throw new Error("Pi session file does not contain the ordinary prompt.");
-  }
-  if (!sessionContents.includes("Pipline fake provider response.")) {
-    throw new Error("Pi session file does not contain the assistant response.");
-  }
-  if (!sessionContents.includes("pipline-smoke-write.txt")) {
-    throw new Error("Pi session file does not contain the native write-tool call.");
-  }
-  if (shellToolName && !sessionContents.includes("pipline-smoke-powershell.txt")) {
-    throw new Error("Pi session file does not contain the PowerShell tool call.");
-  }
+  const { savedAssistantReply, savedWriteCall, savedWriteResult } =
+    await verifySmokeSessionAndTools({
+      messages,
+      persistedState,
+      sessionDir,
+      temp,
+      shellToolName,
+      windowsShellFallback,
+      stats,
+    });
 
   const contract = {
     version: piVersion,

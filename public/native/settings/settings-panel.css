@@ -3,6 +3,8 @@
    toggle/label/static-value widgets (public/native/settings-panel.js)
    ═══════════════════════════════════════════════════════ */
 
+@import url("./settings-panel-controls.css");
+
 .settings-overlay {
   display: none;
 }
@@ -198,156 +200,6 @@
   font-size: var(--font-size-sm);
 }
 
-.settings-toggle {
-  width: 40px;
-  height: 22px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg-glass-strong);
-  cursor: pointer;
-  position: relative;
-  transition:
-    background var(--duration) var(--ease),
-    border-color var(--duration) var(--ease);
-  padding: 0;
-}
-
-.settings-toggle::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--text-secondary);
-  transition:
-    left 0.25s var(--spring),
-    background 0.25s var(--spring);
-}
-
-.settings-toggle.on {
-  background: var(--accent);
-}
-
-.settings-toggle.on::after {
-  left: 20px;
-  background: white;
-}
-
-.settings-value-btn {
-  padding: var(--space-1) var(--space-2);
-  min-width: 48px;
-  background: var(--bg-glass);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  transition:
-    background var(--duration) var(--ease),
-    color var(--duration) var(--ease),
-    border-color var(--duration) var(--ease);
-}
-
-.settings-value-btn:hover {
-  background: var(--bg-glass-hover);
-  border-color: var(--border-hover);
-}
-
-.settings-language-select {
-  width: min(220px, 48%);
-}
-
-.settings-static-value {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
-  font-size: var(--font-size-sm);
-}
-
-.settings-update-controls {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.settings-update-controls .settings-static-value {
-  max-width: none;
-}
-
-.settings-static-value[data-tone="ok"] {
-  color: var(--accent-success, #4ade80);
-}
-
-.settings-static-value[data-tone="warn"] {
-  color: var(--accent-warning, #f59e0b);
-}
-
-.settings-static-value[data-tone="error"] {
-  color: var(--accent-danger, #ef4444);
-}
-
-/* Theme grid */
-.theme-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-1-5);
-  margin-bottom: 0;
-}
-
-.theme-swatch {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-glass);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition:
-    background var(--duration) var(--ease),
-    color var(--duration) var(--ease),
-    border-color var(--duration) var(--ease);
-  font-size: var(--font-size-md);
-  color: var(--text-primary);
-  text-align: center;
-}
-
-.theme-swatch:hover {
-  background: var(--bg-glass-hover);
-  border-color: var(--border-hover);
-  transform: scale(1.02);
-}
-
-.theme-swatch:active {
-  transform: scale(0.97);
-}
-
-.theme-swatch.active {
-  border-color: var(--accent);
-  box-shadow:
-    0 0 0 2px var(--accent-glow),
-    var(--shadow-inset);
-}
-
-.swatch-colors {
-  display: flex;
-  gap: var(--space-1);
-  flex-shrink: 0;
-}
-
-.swatch-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-}
-
 @media (max-width: 920px) {
   .settings-panel {
     grid-template-columns: minmax(0, 1fr);
@@ -434,6 +286,24 @@
     flex: 1 1 auto;
   }
 
+  .settings-value-btn {
+    max-width: 100%;
+  }
+
+  .settings-static-value {
+    width: 100%;
+    max-width: 100%;
+    text-align: left;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    word-break: break-word;
+  }
+
+  a.settings-static-value {
+    word-break: break-all;
+  }
+
   .settings-row > .settings-toggle,
   .settings-row > .settings-value-btn {
     margin-left: auto;
@@ -461,24 +331,6 @@
 
   #setting-updater-section .settings-update-row .settings-static-value {
     max-width: 36%;
-  }
-
-  .settings-value-btn {
-    max-width: 100%;
-  }
-
-  .settings-static-value {
-    width: 100%;
-    max-width: 100%;
-    text-align: left;
-    white-space: normal;
-    overflow: visible;
-    text-overflow: unset;
-    word-break: break-word;
-  }
-
-  a.settings-static-value {
-    word-break: break-all;
   }
 
   .theme-grid {

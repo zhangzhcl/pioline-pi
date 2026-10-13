@@ -81,9 +81,15 @@ export class PiSubtaskObserver {
     const spec = taskSpecs(event.args);
     if (!spec || spec.tasks.length === 0 || spec.tasks.length > 8) return false;
     if (this.#invocations.size >= MAX_INVOCATIONS) {
-      const oldestComplete = [...this.#invocations].find(([, item]) => item.status !== "running");
-      if (!oldestComplete) return false;
-      this.#invocations.delete(oldestComplete[0]);
+      let oldestCompleteKey = null;
+      for (const [key, item] of this.#invocations) {
+        if (item.status !== "running") {
+          oldestCompleteKey = key;
+          break;
+        }
+      }
+      if (!oldestCompleteKey) return false;
+      this.#invocations.delete(oldestCompleteKey);
     }
     const invocation = {
       id: `pi-subagent:${event.toolCallId}`,

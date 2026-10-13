@@ -2,7 +2,6 @@
 // This module is feature-gated and its Windows development path is wired into
 // workflow Runs. Release builds remain blocked until both platform confinement
 // paths are implemented and natively verified.
-#![allow(dead_code)]
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -15,6 +14,16 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
+
+mod guard;
+#[cfg(all(test, windows))]
+mod tests;
+
+#[cfg(unix)]
+use self::guard::set_process_resource_limits;
+use self::guard::ProcessGuard;
+#[cfg(windows)]
+use self::guard::ReadyEvent;
 
 const PROTOCOL_VERSION: u8 = 1;
 const MAX_REQUEST_BYTES: usize = 1_200_000;
@@ -271,10 +280,34 @@ fn parse_helper_response(response_bytes: &[u8]) -> Result<WorkflowCodeResult, St
     let output = response
         .output
         .ok_or_else(|| "Workflow code helper omitted its output".to_string())?;
-    let output_bytes = serde_json::to_vec(&output)
-        .map_err(|error| format!("Cannot encode workflow code output: {error}"))?;
-    if output_bytes.len() > MAX_OUTPUT_BYTES {
-        return Err("Workflow code helper output exceeds the 512 KB limit".into());
+    struct BoundedByteCounter {
+        count: usize,
+        limit: usize,
+    }
+    impl std::io::Write for BoundedByteCounter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.count = self.count.saturating_add(buf.len());
+            if self.count > self.limit {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "output exceeds limit",
+                ));
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = BoundedByteCounter {
+        count: 0,
+        limit: MAX_OUTPUT_BYTES,
+    };
+    if let Err(error) = serde_json::to_writer(&mut counter, &output) {
+        if counter.count > MAX_OUTPUT_BYTES {
+            return Err("Workflow code helper output exceeds the 512 KB limit".into());
+        }
+        return Err(format!("Cannot encode workflow code output: {error}"));
     }
     Ok(WorkflowCodeResult {
         output,
@@ -458,326 +491,4 @@ async fn abort_helper_tasks(
     input_task.abort();
     output_task.abort();
     diagnostic_task.abort();
-}
-
-#[cfg(windows)]
-struct ReadyEvent {
-    handle: windows_sys::Win32::Foundation::HANDLE,
-    name: std::ffi::OsString,
-}
-
-#[cfg(windows)]
-// SAFETY: the event handle is an opaque kernel object that may be waited on,
-// signaled, and closed from any thread; ownership is transferred only once.
-unsafe impl Send for ReadyEvent {}
-
-#[cfg(windows)]
-impl ReadyEvent {
-    fn create() -> Result<Self, String> {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::System::Threading::CreateEventW;
-        let name = std::ffi::OsString::from(format!(
-            "Local\\Pipline.WorkflowCode.Ready.{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let wide: Vec<u16> = name.encode_wide().chain(Some(0)).collect();
-        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide.as_ptr()) };
-        if handle.is_null() {
-            return Err(format!(
-                "Cannot create workflow helper startup event: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(Self { handle, name })
-    }
-
-    fn into_raw(self) -> windows_sys::Win32::Foundation::HANDLE {
-        let handle = self.handle;
-        std::mem::forget(self);
-        handle
-    }
-}
-
-#[cfg(windows)]
-impl Drop for ReadyEvent {
-    fn drop(&mut self) {
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
-    }
-}
-
-#[cfg(windows)]
-struct ProcessGuard {
-    job: windows_sys::Win32::Foundation::HANDLE,
-    ready_event: windows_sys::Win32::Foundation::HANDLE,
-}
-
-#[cfg(windows)]
-// SAFETY: moving the opaque Job Object handle between threads does not change
-// its kernel-managed process membership or lifetime semantics.
-unsafe impl Send for ProcessGuard {}
-
-#[cfg(windows)]
-impl ProcessGuard {
-    fn terminate_group(&mut self) {}
-
-    fn attach(pid: u32, ready_event: ReadyEvent) -> std::io::Result<Self> {
-        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-        use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_TIME,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
-        };
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, SetEvent, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-        };
-
-        // SAFETY: all handles are checked before use, structures are zeroed
-        // according to Win32 requirements, and ownership is closed on errors.
-        unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() {
-                return Err(std::io::Error::last_os_error());
-            }
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-                | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-                | JOB_OBJECT_LIMIT_JOB_TIME;
-            // The trusted launcher shim and its AppContainer worker share this
-            // Job Object, so allow exactly those two processes.
-            limits.BasicLimitInformation.ActiveProcessLimit = 2;
-            limits.BasicLimitInformation.PerJobUserTimeLimit = 5 * 10_000_000;
-            limits.ProcessMemoryLimit = 256 * 1024 * 1024;
-            if SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                std::ptr::addr_of!(limits).cast(),
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            ) == 0
-            {
-                let error = std::io::Error::last_os_error();
-                CloseHandle(job);
-                return Err(error);
-            }
-            let process: HANDLE = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-            if process.is_null() {
-                let error = std::io::Error::last_os_error();
-                CloseHandle(job);
-                return Err(error);
-            }
-            if AssignProcessToJobObject(job, process) == 0 {
-                let error = std::io::Error::last_os_error();
-                CloseHandle(process);
-                CloseHandle(job);
-                return Err(error);
-            }
-            CloseHandle(process);
-            if SetEvent(ready_event.handle) == 0 {
-                let error = std::io::Error::last_os_error();
-                CloseHandle(job);
-                return Err(error);
-            }
-            let ready_event = ready_event.into_raw();
-            Ok(Self { job, ready_event })
-        }
-    }
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::{ProcessGuard, ReadyEvent};
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn dropping_the_workflow_job_terminates_its_worker_process() {
-        const CHILD_MARKER: &str = "PIPLINE_TEST_WORKFLOW_JOB_CHILD";
-        const EVENT_ENV: &str = "PIPLINE_TEST_WORKFLOW_JOB_EVENT";
-        const STARTED_EVENT_ENV: &str = "PIPLINE_TEST_WORKFLOW_JOB_STARTED_EVENT";
-        const ALIVE_EVENT_ENV: &str = "PIPLINE_TEST_WORKFLOW_JOB_ALIVE_EVENT";
-
-        if std::env::var_os(CHILD_MARKER).is_some() {
-            wait_for_parent_job_assignment(EVENT_ENV, STARTED_EVENT_ENV, ALIVE_EVENT_ENV);
-            return;
-        }
-
-        let event = ReadyEvent::create().expect("create test readiness event");
-        let started_event = ReadyEvent::create().expect("create test started event");
-        let alive_event = ReadyEvent::create().expect("create test alive event");
-        let mut child = Command::new(std::env::current_exe().expect("test executable path"))
-            .arg("--exact")
-            .arg("workflow_code_process::tests::dropping_the_workflow_job_terminates_its_worker_process")
-            .arg("--nocapture")
-            .env(CHILD_MARKER, "1")
-            .env(EVENT_ENV, &event.name)
-            .env(STARTED_EVENT_ENV, &started_event.name)
-            .env(ALIVE_EVENT_ENV, &alive_event.name)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn isolated child test process");
-        let worker_pid = child.id();
-        let process_guard = match ProcessGuard::attach(worker_pid, event) {
-            Ok(guard) => guard,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("assign child to a kill-on-close Job Object: {error}");
-            }
-        };
-
-        let ready_status = unsafe {
-            windows_sys::Win32::System::Threading::WaitForSingleObject(started_event.handle, 3_000)
-        };
-        assert_eq!(
-            ready_status,
-            windows_sys::Win32::Foundation::WAIT_OBJECT_0,
-            "worker did not confirm startup inside the assigned Job Object"
-        );
-
-        drop(process_guard);
-        let alive_status = unsafe {
-            windows_sys::Win32::System::Threading::WaitForSingleObject(alive_event.handle, 500)
-        };
-        assert_eq!(
-            alive_status,
-            windows_sys::Win32::Foundation::WAIT_TIMEOUT,
-            "worker continued running after its Job Object was closed"
-        );
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            if child.try_wait().expect("poll child process").is_some() {
-                break;
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("Job Object did not terminate child");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn wait_for_parent_job_assignment(
-        event_env: &str,
-        started_event_env: &str,
-        alive_event_env: &str,
-    ) {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-        use windows_sys::Win32::System::Threading::{OpenEventW, WaitForSingleObject, INFINITE};
-
-        let name = std::env::var_os(event_env).expect("parent event name");
-        let wide: Vec<u16> = name.encode_wide().chain(Some(0)).collect();
-        // SAFETY: the event name is NUL-terminated and the returned handle is
-        // checked before waiting and closed exactly once.
-        unsafe {
-            let handle = OpenEventW(0x0010_0000, 0, wide.as_ptr()); // SYNCHRONIZE access
-            assert!(!handle.is_null(), "open parent readiness event");
-            assert_eq!(WaitForSingleObject(handle, INFINITE), WAIT_OBJECT_0);
-            CloseHandle(handle);
-        }
-        let started_name = std::env::var_os(started_event_env).expect("parent started event name");
-        let started_wide: Vec<u16> = started_name.encode_wide().chain(Some(0)).collect();
-        let alive_name = std::env::var_os(alive_event_env).expect("parent alive event name");
-        let alive_wide: Vec<u16> = alive_name.encode_wide().chain(Some(0)).collect();
-        // SAFETY: the event name is NUL-terminated and its handle is checked
-        // before signaling and closed exactly once.
-        unsafe {
-            let alive_handle = OpenEventW(0x0002, 0, alive_wide.as_ptr()); // EVENT_MODIFY_STATE
-            assert!(!alive_handle.is_null(), "open parent alive event");
-            let handle = OpenEventW(0x0002, 0, started_wide.as_ptr()); // EVENT_MODIFY_STATE
-            assert!(!handle.is_null(), "open parent started event");
-            assert_ne!(windows_sys::Win32::System::Threading::SetEvent(handle), 0);
-            CloseHandle(handle);
-            std::thread::sleep(Duration::from_millis(200));
-            assert_ne!(
-                windows_sys::Win32::System::Threading::SetEvent(alive_handle),
-                0
-            );
-            CloseHandle(alive_handle);
-        }
-        loop {
-            std::thread::sleep(Duration::from_secs(60));
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for ProcessGuard {
-    fn drop(&mut self) {
-        // Closing a KILL_ON_JOB_CLOSE job guarantees descendants cannot outlive
-        // their owning Pipline process or this invocation.
-        unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.job);
-            windows_sys::Win32::Foundation::CloseHandle(self.ready_event);
-        };
-    }
-}
-
-#[cfg(unix)]
-struct ProcessGuard(Option<i32>);
-
-#[cfg(unix)]
-impl ProcessGuard {
-    fn attach(pid: u32) -> std::io::Result<Self> {
-        let pid = i32::try_from(pid)
-            .map_err(|_| std::io::Error::other("workflow helper PID is out of range"))?;
-        Ok(Self(Some(pid)))
-    }
-
-    fn terminate_group(&mut self) {
-        if let Some(pid) = self.0.take() {
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
-
-#[cfg(unix)]
-impl Drop for ProcessGuard {
-    fn drop(&mut self) {
-        // While the leader is still live (including future cancellation), kill
-        // the group. Once wait() reaps it, the caller disarms this guard so a
-        // recycled process-group ID can never be signalled later.
-        self.terminate_group();
-    }
-}
-
-#[cfg(unix)]
-fn set_process_resource_limits() -> std::io::Result<()> {
-    fn set_limit(resource: libc::c_int, value: libc::rlim_t) -> std::io::Result<()> {
-        let limit = libc::rlimit {
-            rlim_cur: value,
-            rlim_max: value,
-        };
-        // SAFETY: `limit` points to a valid initialized rlimit structure.
-        if unsafe { libc::setrlimit(resource, &limit) } == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
-    }
-
-    set_limit(libc::RLIMIT_CPU, 4)?;
-    set_limit(libc::RLIMIT_NOFILE, 32)?;
-    set_limit(libc::RLIMIT_CORE, 0)?;
-    set_limit(libc::RLIMIT_FSIZE, 0)
-}
-
-#[cfg(not(any(unix, windows)))]
-struct ProcessGuard;
-
-#[cfg(not(any(unix, windows)))]
-impl ProcessGuard {
-    fn terminate_group(&mut self) {}
-
-    fn attach(_pid: u32) -> std::io::Result<Self> {
-        Ok(Self)
-    }
 }

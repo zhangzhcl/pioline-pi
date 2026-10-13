@@ -1,18 +1,17 @@
 // ABOUTME: Renders collapsible tool execution cards and their streaming output.
 // ABOUTME: Uses container-level event delegation so dynamically added cards need no per-element listeners.
 
-const SVG_NS = "http://www.w3.org/2000/svg";
-
 import { onLocaleChange, t } from "../i18n.js";
-
-function filePathFromArgs(args) {
-  if (!args || typeof args !== "object") return "";
-  for (const key of ["path", "file_path", "filePath"]) {
-    const value = args[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "";
-}
+import { escapeHtmlText } from "./message-renderer-helpers.js";
+import {
+  createArgsPreviewDom,
+  createChevronDom,
+  createCopyButtonDom,
+  formatToolArgsJson,
+  formatToolResultText,
+  getToolArgsPreview,
+  renderToolEditDiff,
+} from "./tool-card-dom.js";
 
 export class ToolCardRenderer {
   constructor(container) {
@@ -173,53 +172,11 @@ export class ToolCardRenderer {
   }
 
   _createChevron(expanded = false) {
-    const chevron = document.createElement("span");
-    chevron.className = `tool-card-chevron${expanded ? " expanded" : ""}`;
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("width", "8");
-    svg.setAttribute("height", "8");
-    svg.setAttribute("viewBox", "0 0 8 8");
-    svg.setAttribute("fill", "currentColor");
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", "M2 1l4 3-4 3z");
-    svg.appendChild(path);
-    chevron.appendChild(svg);
-    return chevron;
+    return createChevronDom(expanded);
   }
 
   _createCopyButton() {
-    const copyButton = document.createElement("button");
-    copyButton.className = "tool-action-btn copy-output-btn";
-    const label = t("tools.copyOutput");
-    copyButton.title = label;
-    copyButton.setAttribute("aria-label", label);
-
-    const svg = document.createElementNS(SVG_NS, "svg");
-    for (const [name, value] of [
-      ["width", "13"],
-      ["height", "13"],
-      ["viewBox", "0 0 24 24"],
-      ["fill", "none"],
-      ["stroke", "currentColor"],
-      ["stroke-width", "2"],
-      ["stroke-linecap", "round"],
-      ["stroke-linejoin", "round"],
-    ]) {
-      svg.setAttribute(name, value);
-    }
-    const rect = document.createElementNS(SVG_NS, "rect");
-    rect.setAttribute("width", "14");
-    rect.setAttribute("height", "14");
-    rect.setAttribute("x", "8");
-    rect.setAttribute("y", "8");
-    rect.setAttribute("rx", "2");
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2");
-    svg.append(rect, path);
-    copyButton.appendChild(svg);
-    // Click handling is delegated to the container listener; no per-button
-    // listener is needed here.
-    return copyButton;
+    return createCopyButtonDom();
   }
 
   updateToolCard(toolExecution) {
@@ -390,115 +347,44 @@ export class ToolCardRenderer {
   }
 
   /** Compact preview for the header line */
-  getArgsPreview(_toolName, args) {
-    if (!args || Object.keys(args).length === 0) return "";
-
-    const filePath = filePathFromArgs(args);
-    if (filePath) return filePath;
-
-    // Show the most relevant arg inline
-    if (args.command) return args.command.substring(0, 80);
-    if (args.query) return args.query.substring(0, 60);
-    if (args.url) return args.url;
-
-    // Fallback: first string value
-    for (const val of Object.values(args)) {
-      if (typeof val === "string" && val.length > 0) {
-        return val.substring(0, 60);
-      }
-    }
-    return "";
+  getArgsPreview(toolName, args) {
+    return getToolArgsPreview(toolName, args);
   }
 
   _createArgsPreview(previewText, args) {
-    const filePath = filePathFromArgs(args);
-    if (filePath) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "tool-args-preview tool-file-ref";
-      button.dataset.path = filePath;
-      button.textContent = previewText;
-      const label = t("tools.openInPreview");
-      button.title = label;
-      button.setAttribute("aria-label", `${label}: ${filePath}`);
-      return button;
-    }
-    const preview = document.createElement("span");
-    preview.className = "tool-args-preview";
-    preview.textContent = previewText;
-    return preview;
+    return createArgsPreviewDom(previewText, args);
   }
 
   formatJson(obj) {
-    try {
-      if (Object.keys(obj).length === 0) return "";
-      return JSON.stringify(obj, null, 2);
-    } catch {
-      return String(obj);
-    }
+    return formatToolArgsJson(obj);
   }
 
   /** Render a simple inline diff for Edit tool */
   renderDiff(oldText, newText) {
-    const container = document.createElement("div");
-    container.className = "tool-diff";
-
-    const oldLines = oldText.split("\n");
-    const newLines = newText.split("\n");
-
-    // Removed lines
-    for (const line of oldLines) {
-      const el = document.createElement("div");
-      el.className = "diff-line diff-removed";
-      el.textContent = `- ${line}`;
-      container.appendChild(el);
-    }
-
-    // Added lines
-    for (const line of newLines) {
-      const el = document.createElement("div");
-      el.className = "diff-line diff-added";
-      el.textContent = `+ ${line}`;
-      container.appendChild(el);
-    }
-
-    return container;
+    return renderToolEditDiff(oldText, newText);
   }
 
   formatResult(result) {
-    if (!result) return "";
-
-    if (result.content && Array.isArray(result.content)) {
-      return result.content
-        .filter(Boolean)
-        .map((block) => {
-          if (block.type === "text") return block.text;
-          return JSON.stringify(block);
-        })
-        .join("\n");
-    }
-
-    return JSON.stringify(result, null, 2);
+    return formatToolResultText(result);
   }
 
   escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
+    return escapeHtmlText(text);
   }
 
   scrollToBottom() {
-    if (this.container) {
-      const threshold = 100;
-      const isNear =
-        this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight <
-        threshold;
-      if (isNear) {
-        requestAnimationFrame(() => {
-          if (!this.container) return;
-          this.container.scrollTop = this.container.scrollHeight;
-        });
-      }
+    if (!this.container || this._scrollRafPending) return;
+    const threshold = 100;
+    const isNear =
+      this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight <
+      threshold;
+    if (isNear) {
+      this._scrollRafPending = true;
+      requestAnimationFrame(() => {
+        this._scrollRafPending = false;
+        if (!this.container) return;
+        this.container.scrollTop = this.container.scrollHeight;
+      });
     }
   }
 

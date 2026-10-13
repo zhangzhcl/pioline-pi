@@ -1,17 +1,26 @@
 // ABOUTME: Owns per-window owner identity, bearer capability validation, and the
 // ABOUTME: exact-origin navigation boundary for capability-bearing WebViews.
 
-#![allow(dead_code)]
-
+#[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::{Arc, Mutex};
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+#[cfg(test)]
 use rand::rngs::OsRng;
+#[cfg(test)]
 use rand::RngCore;
 
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
 const CAPABILITY_LEN: usize = 32;
 const OWNER_ID_LEN: usize = 16;
 
@@ -30,20 +39,21 @@ impl OwnerId {
 }
 
 /// Shared registry of window owners, their capabilities, and navigation permits.
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub struct WindowOwnerRegistry {
     inner: Arc<Mutex<RegistryState>>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct RegistryState {
     owners: HashMap<OwnerId, OwnerRecord>,
-    // O(1) capability → owner lookup. Kept 1:1 with `owners` on insert and
-    // revoke, so authentication stays constant-time over the owner count.
     capability_index: HashMap<[u8; CAPABILITY_LEN], OwnerId>,
     next_generation: u64,
 }
 
+#[cfg(test)]
 struct OwnerRecord {
     window_label: String,
     canonical_cwd: PathBuf,
@@ -55,44 +65,45 @@ struct OwnerRecord {
     workspace_generation: u64,
 }
 
+#[cfg(test)]
 struct PendingNavigation {
     origin: String,
-    #[allow(dead_code)]
     target_port: u16,
-    #[allow(dead_code)]
     target_cwd: PathBuf,
     transition_generation: u64,
     expires_at: Instant,
     consumed: bool,
 }
 
+#[cfg(test)]
 struct WorkspaceTransition {
     generation: u64,
     target_cwd: PathBuf,
-    #[allow(dead_code)]
     target_port: u16,
 }
 
 impl OwnerId {
+    #[cfg(test)]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn from_string(value: String) -> Self {
         Self(value)
     }
 }
 
+#[cfg(test)]
 impl WindowOwnerRegistry {
     pub fn create_owner(
         &self,
         window_label: String,
         canonical_cwd: PathBuf,
         primary_port: u16,
-        current_origin: String,
+        current_origin: &str,
     ) -> Result<(OwnerId, String), String> {
-        let origin = normalize_origin(&current_origin)
+        let origin = normalize_origin(current_origin)
             .ok_or_else(|| "owner origin must be an http loopback Pi origin".to_string())?;
 
         let mut state = self.inner.lock().expect("owner registry lock poisoned");
@@ -139,8 +150,6 @@ impl WindowOwnerRegistry {
         bytes.copy_from_slice(&decoded);
 
         let state = self.inner.lock().expect("owner registry lock poisoned");
-        // O(1) direct lookup. The key is the full 256-bit capability, so
-        // timing no longer varies with the number of owners.
         state.capability_index.get(&bytes).cloned()
     }
 
@@ -149,10 +158,10 @@ impl WindowOwnerRegistry {
         owner: &OwnerId,
         port: u16,
         canonical_cwd: PathBuf,
-        origin: String,
+        origin: &str,
         ttl: Duration,
     ) -> Result<u64, String> {
-        let origin = normalize_origin(&origin)
+        let origin = normalize_origin(origin)
             .ok_or_else(|| "navigation origin must be an http loopback Pi origin".to_string())?;
         let mut state = self.inner.lock().expect("owner registry lock poisoned");
         let transition_gen = state
@@ -181,6 +190,7 @@ impl WindowOwnerRegistry {
             expires_at: Instant::now() + ttl,
             consumed: false,
         });
+        drop(state);
         Ok(generation)
     }
 
@@ -188,9 +198,8 @@ impl WindowOwnerRegistry {
         let Some(origin) = url_origin(url) else {
             return false;
         };
-        let mut state = match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(_) => return false,
+        let Ok(mut state) = self.inner.lock() else {
+            return false;
         };
         let Some(record) = state.owners.get_mut(owner) else {
             return false;
@@ -242,9 +251,9 @@ impl WindowOwnerRegistry {
         &self,
         owner: &OwnerId,
         transition_generation: u64,
-        target_origin: String,
+        target_origin: &str,
     ) -> Result<(), String> {
-        let target = normalize_origin(&target_origin)
+        let target = normalize_origin(target_origin)
             .ok_or_else(|| "commit origin must be an http loopback Pi origin".to_string())?;
         let mut state = self.inner.lock().expect("owner registry lock poisoned");
         let record = state
@@ -266,7 +275,9 @@ impl WindowOwnerRegistry {
             let new_cwd = record
                 .transition
                 .as_ref()
-                .filter(|t| t.generation == transition_generation)
+                .filter(|t| {
+                    t.generation == transition_generation && t.target_port == pending.target_port
+                })
                 .map(|t| t.target_cwd.clone());
             (pending.target_port, new_cwd)
         };
@@ -298,16 +309,11 @@ impl WindowOwnerRegistry {
             .is_some_and(|record| record.transition.is_some())
     }
 
-    /// The workspace transition generation that established the owner's current
-    /// workspace binding. Ephemeral records snapshot this at creation so
-    /// cross-workspace cleanup can identify old-workspace chats.
     pub fn current_workspace_generation(&self, owner: &OwnerId) -> Option<u64> {
         let state = self.inner.lock().expect("owner registry lock poisoned");
         state.owners.get(owner).map(|r| r.workspace_generation)
     }
 
-    /// The pending navigation permit's target origin, if one is prepared but not
-    /// yet committed. Used by the workspace-transition commit path.
     pub fn pending_target_origin(&self, owner: &OwnerId) -> Option<String> {
         let state = self.inner.lock().expect("owner registry lock poisoned");
         state
@@ -316,7 +322,6 @@ impl WindowOwnerRegistry {
             .and_then(|r| r.pending.as_ref().map(|p| p.origin.clone()))
     }
 
-    /// The pending navigation permit's target port, if one is prepared.
     pub fn pending_target_port(&self, owner: &OwnerId) -> Option<u16> {
         let state = self.inner.lock().expect("owner registry lock poisoned");
         state
@@ -325,7 +330,6 @@ impl WindowOwnerRegistry {
             .and_then(|r| r.pending.as_ref().map(|p| p.target_port))
     }
 
-    /// The pending navigation permit's canonical target cwd, if one is prepared.
     pub fn pending_target_cwd(&self, owner: &OwnerId) -> Option<PathBuf> {
         let state = self.inner.lock().expect("owner registry lock poisoned");
         state
@@ -334,7 +338,6 @@ impl WindowOwnerRegistry {
             .and_then(|r| r.pending.as_ref().map(|p| p.target_cwd.clone()))
     }
 
-    /// Resolve the owner bound to a window label (used by the close lifecycle).
     pub fn owner_for_label(&self, label: &str) -> Option<OwnerId> {
         let state = self.inner.lock().expect("owner registry lock poisoned");
         state
@@ -344,15 +347,11 @@ impl WindowOwnerRegistry {
             .map(|(owner, _)| owner.clone())
     }
 
-    /// The window label bound to an owner.
     pub fn label_for_owner(&self, owner: &OwnerId) -> Option<String> {
         let state = self.inner.lock().expect("owner registry lock poisoned");
         state.owners.get(owner).map(|r| r.window_label.clone())
     }
 
-    /// Cancel an in-progress workspace transition for this owner, retaining the
-    /// old workspace binding. Idempotent when nothing is in progress; rejects a
-    /// mismatched generation so a stale cancel cannot clear a newer transition.
     pub fn cancel_workspace_transition(
         &self,
         owner: &OwnerId,
@@ -385,16 +384,7 @@ impl WindowOwnerRegistry {
     }
 }
 
-/// Static initialization script that exposes the bearer capability only when
-/// the document is Picot's canonical native http loopback origin. Defense in
-/// depth behind the host navigation callback; never an authorization boundary.
-/// Loopback-agnostic capability injection script. The capability is bound to
-/// the window owner (not to a specific Pi port), so it is exposed on every
-/// loopback HTTP origin the WebView loads. This keeps the capability available
-/// across a cross-port workspace navigation, where the document reloads at a new
-/// loopback port. The exact-origin boundary is enforced by `authorize_navigation`
-/// (the hard gate); this script is defense-in-depth and never an authorization
-/// boundary.
+#[cfg(test)]
 pub fn capability_initialization_script(capability: &str) -> String {
     let token = serde_json::to_string(capability).expect("capability JSON");
     format!(
@@ -402,11 +392,13 @@ pub fn capability_initialization_script(capability: &str) -> String {
     )
 }
 
+#[cfg(test)]
 fn normalize_origin(origin: &str) -> Option<String> {
     let url: tauri::Url = origin.parse().ok()?;
     url_origin(&url)
 }
 
+#[cfg(test)]
 fn url_origin(url: &tauri::Url) -> Option<String> {
     if url.scheme() != "http" {
         return None;
@@ -422,327 +414,16 @@ fn url_origin(url: &tauri::Url) -> Option<String> {
     Some(format!("http://{host}:{port}"))
 }
 
+#[cfg(test)]
 fn is_loopback_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "::1" | "[::1]" | "localhost")
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
+        let _ = write!(out, "{byte:02x}");
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn url(s: &str) -> tauri::Url {
-        s.parse().expect("valid url")
-    }
-
-    fn new_owner(reg: &WindowOwnerRegistry, label: &str, port: u16) -> (OwnerId, String) {
-        reg.create_owner(
-            label.to_string(),
-            PathBuf::from("/workspace"),
-            port,
-            format!("http://127.0.0.1:{port}"),
-        )
-        .expect("owner created")
-    }
-
-    #[test]
-    fn capability_is_32_random_url_safe_bytes() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, capability) = new_owner(&reg, "w1", 3001);
-        assert_eq!(owner.0.len(), 32); // 16 bytes hex
-        let decoded = URL_SAFE_NO_PAD.decode(&capability).expect("decodes");
-        assert_eq!(decoded.len(), CAPABILITY_LEN);
-        for ch in capability.chars() {
-            assert!(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
-            assert!(ch != '='); // no padding
-        }
-    }
-
-    #[test]
-    fn authenticate_validates_in_constant_time() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, capability) = new_owner(&reg, "w1", 3001);
-
-        assert_eq!(reg.authenticate(&capability), Some(owner.clone()));
-
-        // Tamper one byte -> still 32 bytes, must not match.
-        let bytes = URL_SAFE_NO_PAD.decode(&capability).unwrap();
-        let mut flipped = bytes.clone();
-        flipped[0] ^= 0xff;
-        let tampered = URL_SAFE_NO_PAD.encode(&flipped);
-        assert_eq!(reg.authenticate(&tampered), None);
-
-        // Wrong length / garbage -> None, never panics.
-        assert_eq!(reg.authenticate("short"), None);
-        assert_eq!(reg.authenticate(""), None);
-    }
-
-    #[test]
-    fn window_label_can_be_reused_after_revocation() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        assert!(reg
-            .create_owner(
-                "w1".to_string(),
-                PathBuf::from("/ws"),
-                3002,
-                "http://127.0.0.1:3002".to_string(),
-            )
-            .is_err());
-        reg.revoke_owner(&owner);
-        assert!(new_owner(&reg, "w1", 3003).0 != owner);
-    }
-
-    #[test]
-    fn current_exact_origin_is_authorized() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        assert!(reg.authorize_navigation(&owner, &url("http://127.0.0.1:3001/chat")));
-        // Same host, different port is not equivalent.
-        assert!(!reg.authorize_navigation(&owner, &url("http://127.0.0.1:3002/chat")));
-    }
-
-    #[test]
-    fn prepared_pending_origin_is_authorized_within_ttl() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        let gen = reg
-            .prepare_navigation(
-                &owner,
-                3002,
-                PathBuf::from("/workspace"),
-                "http://127.0.0.1:3002".to_string(),
-                Duration::from_secs(5),
-            )
-            .expect("prepare");
-        assert!(gen > 0);
-        assert!(reg.authorize_navigation(&owner, &url("http://127.0.0.1:3002/x")));
-        // A pending destination is a one-shot bearer permit.
-        assert!(!reg.authorize_navigation(&owner, &url("http://127.0.0.1:3002/again")));
-        // Old origin remains valid alongside the pending permit.
-        assert!(reg.authorize_navigation(&owner, &url("http://127.0.0.1:3001/x")));
-    }
-
-    #[test]
-    fn expired_permit_is_not_authorized_but_current_remains() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        reg.prepare_navigation(
-            &owner,
-            3002,
-            PathBuf::from("/workspace"),
-            "http://127.0.0.1:3002".to_string(),
-            Duration::ZERO,
-        )
-        .expect("prepare");
-        assert!(!reg.authorize_navigation(&owner, &url("http://127.0.0.1:3002/x")));
-        assert!(reg.authorize_navigation(&owner, &url("http://127.0.0.1:3001/x")));
-    }
-
-    #[test]
-    fn permit_is_consumed_by_commit_and_old_origin_becomes_unauthorized() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        let gen = reg
-            .prepare_navigation(
-                &owner,
-                3002,
-                PathBuf::from("/workspace"),
-                "http://127.0.0.1:3002".to_string(),
-                Duration::from_secs(5),
-            )
-            .unwrap();
-        assert!(reg.authorize_navigation(&owner, &url("http://127.0.0.1:3002/x")));
-
-        reg.commit_workspace_transition(&owner, gen, "http://127.0.0.1:3002".to_string())
-            .unwrap();
-
-        // New origin is now current; a redirect back to the old origin is rejected.
-        assert!(reg.authorize_navigation(&owner, &url("http://127.0.0.1:3002/x")));
-        assert!(!reg.authorize_navigation(&owner, &url("http://127.0.0.1:3001/x")));
-        // No pending permit remains for an unregistered third origin.
-        assert!(!reg.authorize_navigation(&owner, &url("http://127.0.0.1:3003/x")));
-    }
-
-    #[test]
-    fn non_loopback_or_non_http_destinations_are_rejected() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        assert!(!reg.authorize_navigation(&owner, &url("https://example.com/")));
-        assert!(!reg.authorize_navigation(&owner, &url("http://192.168.1.5:3001/")));
-        assert!(!reg.authorize_navigation(&owner, &url("file:///etc/passwd")));
-        assert!(!reg.authorize_navigation(&owner, &url("picot://internal/app")));
-    }
-
-    #[test]
-    fn unregistered_loopback_ports_are_rejected() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        assert!(!reg.authorize_navigation(&owner, &url("http://localhost:9999/")));
-        assert!(!reg.authorize_navigation(&owner, &url("http://127.0.0.1:9999/")));
-    }
-
-    #[test]
-    fn userinfo_is_rejected() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        assert!(!reg.authorize_navigation(&owner, &url("http://user:pass@127.0.0.1:3001/")));
-    }
-
-    #[test]
-    fn owner_isolation_prevents_cross_owner_authorization() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner_a, cap_a) = new_owner(&reg, "w1", 3001);
-        let (owner_b, cap_b) = new_owner(&reg, "w2", 3002);
-        // owner_b cannot authorize owner_a's current origin.
-        assert!(!reg.authorize_navigation(&owner_b, &url("http://127.0.0.1:3001/x")));
-        // Each capability authenticates as exactly its own owner, never the other.
-        assert_eq!(reg.authenticate(&cap_a), Some(owner_a));
-        assert_eq!(reg.authenticate(&cap_b), Some(owner_b));
-        assert_ne!(reg.authenticate(&cap_a), reg.authenticate(&cap_b));
-    }
-
-    #[test]
-    fn capability_never_appears_in_debug_or_descriptors() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, capability) = new_owner(&reg, "w1", 3001);
-        let debug = format!("{owner:?}");
-        assert!(!debug.contains(&capability));
-        // current_workspace descriptor carries no capability either.
-        let (cwd, port) = reg.current_workspace(&owner).unwrap();
-        assert_eq!(port, 3001);
-        assert!(!format!("{cwd:?}").contains(&capability));
-    }
-
-    #[test]
-    fn initialization_script_exposes_capability_on_any_loopback_origin() {
-        let script = capability_initialization_script("secret-cap");
-        assert!(script.contains("\"secret-cap\""));
-        assert!(script.contains("window.location.protocol === 'http:'"));
-        // Loopback hosts are all accepted so a cross-port workspace navigation
-        // (new loopback port, same owner capability) still receives it.
-        assert!(script.contains("\"127.0.0.1\""));
-        assert!(script.contains("\"localhost\""));
-        // The script is loopback-agnostic by design: the exact-origin boundary
-        // is enforced by `authorize_navigation`, not by this init script.
-        assert!(!script.contains("window.location.port"));
-        assert!(script.contains("__PICOT_NATIVE_CAPABILITY__"));
-        // The capability is injected only into the top-level frame, so a child
-        // frame or popup (window !== window.top) cannot inherit it.
-        assert!(script.contains("window === window.top"));
-    }
-
-    #[test]
-    fn workspace_transition_updates_cwd_and_port_on_commit() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        let gen = reg
-            .begin_workspace_transition(&owner, PathBuf::from("/ws-b"), 3002)
-            .unwrap();
-        reg.prepare_navigation(
-            &owner,
-            3002,
-            PathBuf::from("/ws-b"),
-            "http://127.0.0.1:3002".to_string(),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-        reg.commit_workspace_transition(&owner, gen, "http://127.0.0.1:3002".to_string())
-            .unwrap();
-        let (cwd, port) = reg.current_workspace(&owner).unwrap();
-        assert_eq!(cwd, PathBuf::from("/ws-b"));
-        assert_eq!(port, 3002);
-    }
-
-    #[test]
-    fn pending_target_origin_tracks_prepare_and_commit() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        assert_eq!(reg.pending_target_origin(&owner), None);
-        reg.prepare_navigation(
-            &owner,
-            3002,
-            PathBuf::from("/workspace"),
-            "http://127.0.0.1:3002".to_string(),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-        assert_eq!(
-            reg.pending_target_origin(&owner).as_deref(),
-            Some("http://127.0.0.1:3002")
-        );
-        let gen = reg
-            .begin_workspace_transition(&owner, PathBuf::from("/ws-b"), 3002)
-            .unwrap();
-        // prepare during an active transition reuses that generation.
-        let prepare_gen = reg
-            .prepare_navigation(
-                &owner,
-                3002,
-                PathBuf::from("/ws-b"),
-                "http://127.0.0.1:3002".to_string(),
-                Duration::from_secs(5),
-            )
-            .unwrap();
-        assert_eq!(prepare_gen, gen);
-        reg.commit_workspace_transition(&owner, gen, "http://127.0.0.1:3002".to_string())
-            .unwrap();
-        assert_eq!(reg.pending_target_origin(&owner), None);
-    }
-
-    #[test]
-    fn cancel_workspace_transition_retains_old_binding() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        let gen = reg
-            .begin_workspace_transition(&owner, PathBuf::from("/ws-b"), 3002)
-            .unwrap();
-        reg.prepare_navigation(
-            &owner,
-            3002,
-            PathBuf::from("/ws-b"),
-            "http://127.0.0.1:3002".to_string(),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-
-        reg.cancel_workspace_transition(&owner, gen).unwrap();
-        // Old binding retained: cwd/port/origin unchanged, no pending/transition.
-        let (cwd, port) = reg.current_workspace(&owner).unwrap();
-        assert_eq!(cwd, PathBuf::from("/workspace"));
-        assert_eq!(port, 3001);
-        assert_eq!(reg.pending_target_origin(&owner), None);
-        // A new transition can begin after cancel.
-        assert!(reg
-            .begin_workspace_transition(&owner, PathBuf::from("/ws-c"), 3003)
-            .is_ok());
-    }
-
-    #[test]
-    fn cancel_workspace_transition_rejects_mismatched_generation() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        let gen = reg
-            .begin_workspace_transition(&owner, PathBuf::from("/ws-b"), 3002)
-            .unwrap();
-        assert!(reg.cancel_workspace_transition(&owner, gen + 999).is_err());
-        // The transition is still in progress.
-        assert!(reg
-            .begin_workspace_transition(&owner, PathBuf::from("/ws-c"), 3003)
-            .is_err());
-    }
-
-    #[test]
-    fn cancel_is_idempotent_when_nothing_in_progress() {
-        let reg = WindowOwnerRegistry::default();
-        let (owner, _) = new_owner(&reg, "w1", 3001);
-        assert!(reg.cancel_workspace_transition(&owner, 42).is_ok());
-    }
 }

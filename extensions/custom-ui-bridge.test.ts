@@ -99,8 +99,7 @@ function open(
       _theme: unknown,
       _keys: unknown,
       done: (result: unknown) => void,
-    ) =>
-      component.build(tui, done)) as never,
+    ) => component.build(tui, done)) as never,
     options,
   );
 }

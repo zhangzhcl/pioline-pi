@@ -1,0 +1,227 @@
+/* Config Editor Modal and OAuth device-code dialog
+   (extracted from public/native/settings/settings-config.css) */
+
+.config-editor-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1100;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.config-editor-overlay.hidden {
+  display: none;
+}
+
+.config-editor-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--bg-frosted);
+  backdrop-filter: blur(var(--blur-heavy)) saturate(1.6);
+  -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.6);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-lg);
+  z-index: 1101;
+  width: min(680px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg), var(--shadow-inset);
+  animation: sheetIn 0.25s var(--ease);
+}
+
+.config-editor-modal.hidden {
+  display: none;
+}
+
+.config-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: var(--space-5) var(--space-5) 0;
+  flex-shrink: 0;
+}
+
+.config-editor-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.config-editor-title-group h3 {
+  font-size: var(--font-size-md);
+}
+
+.config-editor-path {
+  font-size: var(--font-size-sm);
+  word-break: break-all;
+}
+
+.config-editor-body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-3) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.config-editor-textarea {
+  flex: 1;
+  min-height: 280px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-3) var(--space-3);
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--duration) var(--ease);
+}
+
+.config-editor-textarea:focus {
+  border-color: var(--accent);
+}
+
+.config-editor-error {
+  font-size: var(--font-size-sm);
+  color: #e05050;
+  padding: var(--space-1-5) var(--space-2);
+  background: rgba(224, 80, 80, 0.1);
+  border: 1px solid rgba(224, 80, 80, 0.25);
+  border-radius: var(--radius);
+}
+
+.config-editor-error[data-tone="ok"] {
+  color: var(--accent-success, #4caf50);
+  background: var(--bg-glass);
+  border-color: var(--border);
+}
+
+.config-editor-error[data-tone="error"] {
+  color: #e05050;
+  background: rgba(224, 80, 80, 0.1);
+  border-color: rgba(224, 80, 80, 0.25);
+}
+
+.config-editor-error.hidden {
+  display: none;
+}
+
+.config-editor-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: 0 var(--space-5) var(--space-5);
+  flex-shrink: 0;
+}
+
+.btn-primary,
+.dialog-actions button {
+  padding: var(--space-2) var(--space-5);
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    background var(--duration) var(--ease),
+    box-shadow var(--duration) var(--ease),
+    color var(--duration) var(--ease);
+  font-size: var(--font-size-md);
+}
+
+.btn-primary:hover:not(:disabled),
+.dialog-actions button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.btn-primary:disabled,
+.dialog-actions button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Owner-scoped Codex OAuth device-code dialog (Settings → Models). */
+.oauth-login-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  background: rgb(0 0 0 / 55%);
+}
+
+.oauth-login-dialog {
+  width: min(440px, 100%);
+  box-sizing: border-box;
+  padding: var(--space-5);
+  background: var(--bg-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 30%);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.oauth-login-dialog-title {
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.oauth-login-dialog-code {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  text-align: center;
+  padding: var(--space-2);
+  background: var(--bg-glass);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.oauth-login-dialog-url {
+  font-size: var(--font-size-sm);
+  color: var(--text-ghost);
+  word-break: break-all;
+  text-align: center;
+}
+
+.oauth-login-dialog-countdown {
+  font-size: var(--font-size-sm);
+  color: var(--text-ghost);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.oauth-login-dialog-status {
+  font-size: var(--font-size-sm);
+  color: var(--text-ghost);
+  text-align: center;
+}
+
+.oauth-login-dialog-actions {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}

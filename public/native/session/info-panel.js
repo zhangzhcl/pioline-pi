@@ -30,6 +30,13 @@
 
 import { createIcon } from "../../icons.js";
 import { displayLocalPath } from "../../workspace/path-utils.js";
+import {
+  createInfoTreeBranchDom,
+  createInfoTreeNodeRow,
+  createSessionInfoRowDom,
+  escapeAttribute,
+  paintSessionInfoRowDom,
+} from "./info-panel-tree-dom.js";
 import { describeSessionFile, describeSessionId } from "./session-info.js";
 import { buildSessionTree } from "./session-tree.js";
 
@@ -167,70 +174,33 @@ export class InfoPanel {
   }
 
   _sessionInfoRow({ labelKey, copyKey, field }) {
-    const t = this.t;
-    const row = document.createElement("div");
-    row.className = "info-panel-session-row";
-
-    const label = document.createElement("span");
-    label.className = "info-panel-session-label";
-    const labelText = document.createElement("span");
-    labelText.className = "info-panel-session-label-text";
-    labelText.dataset.i18n = labelKey;
-    labelText.textContent = t(labelKey);
-    label.append(labelText);
-    label.title = t(labelKey);
-
-    const value = document.createElement("span");
-    value.className = "info-panel-session-value";
-    value.dataset.sessionField = field;
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className =
-      "ui-icon-button ui-icon-button--xs ui-icon-button--ghost info-panel-session-copy";
-    button.dataset.copySessionField = field;
-    button.dataset.copyLabelKey = labelKey;
-    button.dataset.copyActionKey = copyKey;
-    button.append(createIcon("clipboard", { size: 13 }));
-    button.addEventListener("click", () => {
-      void this._copySessionField(button);
+    return createSessionInfoRowDom({
+      t: this.t,
+      labelKey,
+      copyKey,
+      field,
+      onCopy: (button) => void this._copySessionField(button),
     });
-
-    row.append(label, value, button);
-    return { row, value, button };
   }
 
   _paintSessionInfo() {
     const t = this.t;
     const file = describeSessionFile(this.sessionFilePath, t("sessionInfo.inMemory"));
     const id = describeSessionId(this.sessionId, t("sessionInfo.unavailable"));
-    this._paintSessionRow(this.fileRow, {
+    paintSessionInfoRowDom(this.fileRow, this.t, {
       labelKey: "sessionInfo.file",
       copyKey: "sessionInfo.copyFile",
       text: file.text,
       description: file.title || file.text,
       value: file.copyValue,
     });
-    this._paintSessionRow(this.idRow, {
+    paintSessionInfoRowDom(this.idRow, this.t, {
       labelKey: "sessionInfo.id",
       copyKey: "sessionInfo.copyId",
       text: id.text,
       description: id.text,
       value: id.copyValue,
     });
-  }
-
-  _paintSessionRow(entry, { labelKey, copyKey, text, description, value }) {
-    if (!entry) return;
-    entry.value.textContent = text;
-    entry.value.title = description;
-    const button = entry.button;
-    button.dataset.copyValue = value;
-    const label = `${this.t(labelKey)}: ${description} · ${this.t(copyKey)}`;
-    button.title = this.t(copyKey);
-    button.setAttribute("aria-label", label);
-    button._defaultLabel = this.t(copyKey);
-    button._defaultAriaLabel = label;
   }
 
   async _copySessionField(button) {
@@ -362,132 +332,34 @@ export class InfoPanel {
     }
   }
 
-  /**
-   * A node row. `topLevel` marks rows rendered directly in the active-path
-   * list (vs rows inside a collapsed branch's expanded group).
-   */
   _nodeRowEl(row, topLevel = false) {
-    const t = this.t;
-    const el = document.createElement(row.isActive ? "button" : "div");
-    el.className = "info-panel-row";
-    if (topLevel) el.classList.add("info-panel-row-top");
-    el.dataset.entryId = row.entryId;
-    el.style.setProperty("--row-depth", String(row.depth));
-    if (row.isActive) {
-      el.type = "button";
-      el.classList.add("active");
-      // Same tree semantics as inactive rows: every row under the role=tree
-      // container identifies as a treeitem; the aria-label carries role +
-      // preview text.
-      el.setAttribute("role", "treeitem");
-      el.setAttribute(
-        "aria-label",
-        `${roleName(t, row)}: ${row.previewText || previewFallback(t, row)}`,
-      );
-      el.addEventListener("click", () => {
-        this._scrollToMessage(row.entryId);
-      });
-    } else {
-      el.classList.add("inactive");
-      el.setAttribute("role", "treeitem");
-      el.setAttribute("aria-disabled", "true");
-    }
-    if (this.selectedEntryId === row.entryId) el.classList.add("selected");
-    if (row.isCurrentLeaf) {
-      el.classList.add("current-leaf");
-      // The marker class is visual-only; expose the current leaf to assistive
-      // technology as well.
-      el.setAttribute("aria-current", "true");
-    }
-
-    // Fixed-size marker: drawn as a dot / icon at an explicit pixel size
-    // rather than a text glyph, so "user" and "assistant" read as the same
-    // size regardless of how each glyph's own font metrics differ.
-    const role = document.createElement("span");
-    role.className = `info-panel-role ${row.role === "user" ? "user" : "assistant"}`;
-    role.setAttribute("aria-hidden", "true");
-    if (row.role === "user") {
-      role.classList.add("info-panel-role-dot");
-    } else {
-      role.append(createIcon("sparkles", { size: 11, filled: true }));
-    }
-
-    const preview = document.createElement("span");
-    preview.className = "info-panel-preview";
-    preview.textContent = row.previewText || previewFallback(t, row);
-
-    el.append(role, preview);
-
-    // Only full-tree leaves in inactive branches can become the active Pi
-    // leaf. The control is injected with the runtime callback so this view
-    // remains independent from transport details.
-    if (!row.isActive && row.isFullLeaf) {
-      const resume = document.createElement("button");
-      resume.type = "button";
-      resume.className = "info-panel-resume";
-      resume.textContent = t("infoPanel.resumeBranch");
-      resume.setAttribute(
-        "aria-label",
-        `${t("infoPanel.resumeBranch")}: ${row.previewText || previewFallback(t, row)}`,
-      );
-      if (this.isStreaming()) {
-        resume.disabled = true;
-        resume.title = t("infoPanel.resumeStreamingBlocked");
-      }
-      resume.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (!resume.disabled) this.onNavigateLeaf(row.entryId);
-      });
-      el.append(resume);
-    }
-    return el;
+    return createInfoTreeNodeRow({
+      row,
+      topLevel,
+      t: this.t,
+      selectedEntryId: this.selectedEntryId,
+      isStreaming: () => this.isStreaming(),
+      onSelectEntry: (entryId) => this._scrollToMessage(entryId),
+      onNavigateLeaf: (entryId) => this.onNavigateLeaf(entryId),
+    });
   }
 
   /** Collapsed inactive branch: summary toggle + (expanded) subtree rows. */
   _renderBranch(branch) {
-    const t = this.t;
-    const wrap = document.createElement("div");
-    wrap.className = "info-panel-branch";
-    wrap.dataset.branchId = branch.entryId;
-
-    const expanded = this.expandedBranches.has(branch.entryId);
-    const summary = document.createElement("button");
-    summary.type = "button";
-    summary.className = "info-panel-branch-summary";
-    summary.style.setProperty("--row-depth", String(branch.depth));
-    summary.setAttribute("aria-expanded", String(expanded));
-    summary.setAttribute(
-      "aria-label",
-      `${t("infoPanel.branch")} · ${t("infoPanel.turns", { count: branch.turnCount })}`,
-    );
-    const caret = document.createElement("span");
-    caret.className = "info-panel-caret";
-    caret.textContent = expanded ? "▾" : "▸";
-    caret.setAttribute("aria-hidden", "true");
-    const text = document.createElement("span");
-    text.className = "info-panel-preview";
-    text.textContent = `${t("infoPanel.branch")} · ${t("infoPanel.turns", { count: branch.turnCount })}`;
-    summary.append(caret, text);
-    summary.addEventListener("click", () => {
-      if (this.expandedBranches.has(branch.entryId)) {
-        this.expandedBranches.delete(branch.entryId);
-      } else {
-        this.expandedBranches.add(branch.entryId);
-      }
-      this._renderTree();
+    return createInfoTreeBranchDom({
+      branch,
+      t: this.t,
+      expandedBranches: this.expandedBranches,
+      onToggleBranch: (branchId) => {
+        if (this.expandedBranches.has(branchId)) {
+          this.expandedBranches.delete(branchId);
+        } else {
+          this.expandedBranches.add(branchId);
+        }
+        this._renderTree();
+      },
+      renderNodeRow: (row) => this._nodeRowEl(row),
     });
-    wrap.append(summary);
-
-    if (expanded) {
-      const group = document.createElement("div");
-      group.className = "info-panel-branch-group";
-      group.setAttribute("role", "group");
-      for (const row of branch.rows) {
-        group.append(row.kind === "branch" ? this._renderBranch(row) : this._nodeRowEl(row));
-      }
-      wrap.append(group);
-    }
-    return wrap;
   }
 
   selectEntry(entryId) {
@@ -516,8 +388,6 @@ export class InfoPanel {
 
   _scrollToMessage(entryId) {
     this.selectEntry(entryId);
-    // Attribute-safe escape (Pi entry ids are generated hex, but stay robust
-    // for any id without depending on CSS.escape availability).
     const safeId = escapeAttribute(entryId);
     const target = [...document.querySelectorAll(`[data-entry-id="${safeId}"]`)].find(
       (candidate) => !this.panel.contains(candidate),
@@ -529,22 +399,4 @@ export class InfoPanel {
       once: true,
     });
   }
-}
-
-// Local helpers — kept module-private.
-
-function roleName(t, row) {
-  return row.role === "user" ? t("infoPanel.roleUser") : t("infoPanel.roleAssistant");
-}
-
-function escapeAttribute(value) {
-  return String(value).replace(/["\\]/g, "\\$&");
-}
-
-function previewFallback(t, row) {
-  if (row.statusOnly) {
-    return row.stopReason === "aborted" ? t("infoPanel.statusAborted") : t("infoPanel.statusError");
-  }
-  if (row.hasImages) return t("infoPanel.imageMessage");
-  return "";
 }

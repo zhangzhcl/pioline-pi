@@ -30,9 +30,9 @@ describe("isSshAuthFailureMessage", () => {
 
 describe("isSshProjectDisconnectedMessage", () => {
   it("matches a message tagged with the marker", () => {
-    expect(
-      isSshProjectDisconnectedMessage(`timed out. ${SSH_PROJECT_DISCONNECTED_MARKER}`),
-    ).toBe(true);
+    expect(isSshProjectDisconnectedMessage(`timed out. ${SSH_PROJECT_DISCONNECTED_MARKER}`)).toBe(
+      true,
+    );
   });
 
   it("ignores an ordinary failure with no marker", () => {

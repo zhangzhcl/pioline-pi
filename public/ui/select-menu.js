@@ -1,8 +1,33 @@
 import { createIcon } from "../icons.js";
 
 const enhanced = new WeakMap();
+const removalChecks = new Set();
+let sharedRemovalObserver = null;
+let observedBody = null;
 let openController = null;
 let idSeq = 0;
+
+function registerRemovalCheck(check) {
+  removalChecks.add(check);
+  if (typeof document === "undefined" || !document.body) return;
+  if (!sharedRemovalObserver || observedBody !== document.body) {
+    sharedRemovalObserver?.disconnect();
+    observedBody = document.body;
+    sharedRemovalObserver = new MutationObserver(() => {
+      for (const fn of [...removalChecks]) fn();
+    });
+    sharedRemovalObserver.observe(observedBody, { childList: true, subtree: true });
+  }
+}
+
+function unregisterRemovalCheck(check) {
+  removalChecks.delete(check);
+  if (removalChecks.size === 0 && sharedRemovalObserver) {
+    sharedRemovalObserver.disconnect();
+    sharedRemovalObserver = null;
+    observedBody = null;
+  }
+}
 
 function nextId(prefix) {
   idSeq += 1;
@@ -102,7 +127,7 @@ export function enhanceSelect(select) {
 
   function renderOptions() {
     const options = optionList(select);
-    list.replaceChildren();
+    const fragment = document.createDocumentFragment();
     for (const option of options) {
       const item = document.createElement("button");
       item.type = "button";
@@ -115,8 +140,9 @@ export function enhanceSelect(select) {
       item.disabled = option.disabled;
       item.textContent = option.label;
       item.addEventListener("click", () => commit(option.value));
-      list.append(item);
+      fragment.append(item);
     }
+    list.replaceChildren(fragment);
     if (!options.some((option) => option.index === activeIndex)) {
       activeIndex = Math.max(0, select.selectedIndex);
     }
@@ -282,12 +308,16 @@ export function enhanceSelect(select) {
     if (open) positionList();
   }
 
+  const checkRemoval = () => {
+    if (droppedFromDocument()) destroy();
+  };
+
   function destroy() {
     if (destroyed) return;
     destroyed = true;
     close();
     observer.disconnect();
-    removalObserver.disconnect();
+    unregisterRemovalCheck(checkRemoval);
     select.removeEventListener("change", syncFromNative);
     trigger.removeEventListener("click", toggle);
     trigger.removeEventListener("keydown", onTriggerKeyDown);
@@ -312,11 +342,7 @@ export function enhanceSelect(select) {
     attributeFilter: ["disabled", "aria-invalid", "aria-label"],
   });
 
-  const removalObserver = new MutationObserver(() => {
-    if (droppedFromDocument()) destroy();
-  });
-  const removalRoot = select.closest("#settings-panel") || document.body;
-  removalObserver.observe(removalRoot, { childList: true, subtree: true });
+  registerRemovalCheck(checkRemoval);
 
   const controller = { close, destroy, sync: syncFromNative };
   enhanced.set(select, controller);

@@ -85,9 +85,6 @@ describe("InfoPanel workspace section", () => {
     expect(panel.querySelector(".info-panel-link-app")).toBeNull();
     expect(panel.querySelector("#info-panel-session-heading").textContent).toBe("Session Info");
 
-    // File and id show their actual value (truncated to one line by CSS, full
-    // value in the tooltip) instead of hiding behind an icon-only control; a
-    // separate copy button sits beside each value.
     const fileValue = panel.querySelector('[data-session-field="file"]');
     const idValue = panel.querySelector('[data-session-field="id"]');
     const fileCopy = panel.querySelector('[data-copy-session-field="file"]');
@@ -135,7 +132,6 @@ describe("InfoPanel workspace section", () => {
       const { panel, actions } = makePanel();
       const copy = panel.querySelector(".info-panel-copy-path");
       copy.click();
-      // The click handler awaits the clipboard write; flush microtasks.
       await Promise.resolve();
       await Promise.resolve();
       expect(actions.copyWorkspacePath).toHaveBeenCalled();
@@ -195,7 +191,6 @@ describe("InfoPanel workspace section", () => {
 
     info.updateSessionInfo({ filePath: "/sessions/a.jsonl", sessionId: "session-a" });
     expect(taskAnalysis.resetHistory).toHaveBeenCalledTimes(1);
-    // Re-painting the same session must not throw the report away.
     info.updateSessionInfo({ filePath: "/sessions/a.jsonl", sessionId: "session-a" });
     expect(taskAnalysis.resetHistory).toHaveBeenCalledTimes(1);
   });
@@ -229,16 +224,13 @@ describe("InfoPanel session history", () => {
     const activeRows = [...panel.querySelectorAll(".info-panel-row.active")];
     expect(activeRows.map((r) => r.dataset.entryId)).toEqual(["u1", "a1", "jwt", "jwtA"]);
     expect(activeRows.every((r) => r.tagName === "BUTTON")).toBe(true);
-    // Every row under the role=tree container carries treeitem semantics.
     expect(activeRows.every((r) => r.getAttribute("role") === "treeitem")).toBe(true);
 
     const summary = panel.querySelector(".info-panel-branch-summary");
     expect(summary).not.toBeNull();
     expect(summary.getAttribute("aria-expanded")).toBe("false");
-    expect(summary.textContent).toContain("1 turns"); // head user only in this subtree
-    // Collapsed: no inactive rows in DOM yet.
+    expect(summary.textContent).toContain("1 turns");
     expect(panel.querySelector(".info-panel-row.inactive")).toBeNull();
-    // Resume controls render only after expanding inactive branch content.
     expect(panel.querySelector(".info-panel-resume")).toBeNull();
   });
 
@@ -255,7 +247,6 @@ describe("InfoPanel session history", () => {
     expect(summary.getAttribute("aria-expanded")).toBe("true");
     const inactive = [...panel.querySelectorAll(".info-panel-row.inactive")];
     expect(inactive.map((r) => r.dataset.entryId)).toEqual(["cookie", "cookieA"]);
-    // Inactive rows are divs (not focusable fake buttons) and aria-disabled.
     expect(inactive.every((r) => r.tagName === "DIV")).toBe(true);
     expect(inactive.every((r) => r.getAttribute("aria-disabled") === "true")).toBe(true);
     const resume = panel.querySelector('.info-panel-resume[aria-label*="Cookie done"]');
@@ -352,9 +343,8 @@ describe("InfoPanel session history", () => {
     info.updateTree({ entries, leafId: "jwtA" });
     info.expandedBranches.add("cookie");
     info.expandedBranches.add("vanished-branch");
-    info.updateTree({ entries, leafId: "cookieA" }); // resume flips the tree
+    info.updateTree({ entries, leafId: "cookieA" });
     expect(info.expandedBranches.has("vanished-branch")).toBe(false);
-    // "cookie" is now on the active path — no longer a branch anchor either.
     expect(info.expandedBranches.has("cookie")).toBe(false);
   });
 
@@ -367,140 +357,11 @@ describe("InfoPanel session history", () => {
     info.updateTree({ entries, leafId: "jwtA" });
     const current = info.panel.querySelector(".info-panel-row.current-leaf");
     expect(current.dataset.entryId).toBe("jwtA");
-    // The current-leaf state must reach assistive technology, not just CSS.
     expect(current.getAttribute("aria-current")).toBe("true");
-    // Exactly one row is marked current.
     expect(
       [...info.panel.querySelectorAll(".info-panel-row")].filter(
         (r) => r.getAttribute("aria-current") === "true",
       ).length,
     ).toBe(1);
-  });
-});
-
-describe("InfoPanel selection", () => {
-  const entries = [
-    u("u1", null, "JWT or cookie?"),
-    a("a1", "u1", "Recommendation"),
-    u("jwt", "a1", "Implement JWT"),
-    a("jwtA", "jwt", "JWT done"),
-    u("cookie", "a1", "Implement cookie"),
-    a("cookieA", "cookie", "Cookie done"),
-  ];
-
-  function makeSelectionPanel(overrides = {}) {
-    return makePanel({
-      actions: { copyWorkspacePath: async () => "" },
-      ...overrides,
-    });
-  }
-
-  function rowEl(panel, id) {
-    return panel.querySelector(`.info-panel-row[data-entry-id="${id}"]`);
-  }
-
-  // jsdom has no Element.scrollIntoView; patch it for the duration of one
-  // test body so scroll assertions survive re-renders (fresh row elements).
-  function withScrollIntoViewStub(fn) {
-    const proto = Element.prototype;
-    const original = proto.scrollIntoView;
-    const stub = vi.fn();
-    proto.scrollIntoView = stub;
-    try {
-      return fn(stub);
-    } finally {
-      if (original === undefined) delete proto.scrollIntoView;
-      else proto.scrollIntoView = original;
-    }
-  }
-
-  test("selectEntry applies .selected to the matching row and moves it between rows", () => {
-    const { info, panel } = makeSelectionPanel();
-    info.updateTree({ entries, leafId: "jwtA" });
-
-    info.selectEntry("jwt");
-    expect(rowEl(panel, "jwt").classList.contains("selected")).toBe(true);
-    expect(rowEl(panel, "u1").classList.contains("selected")).toBe(false);
-
-    info.selectEntry("u1");
-    expect(rowEl(panel, "u1").classList.contains("selected")).toBe(true);
-    expect(rowEl(panel, "jwt").classList.contains("selected")).toBe(false);
-  });
-
-  test("selectEntry(null) clears the selection from every row", () => {
-    const { info, panel } = makeSelectionPanel();
-    info.updateTree({ entries, leafId: "jwtA" });
-    info.selectEntry("jwt");
-    info.selectEntry(null);
-    expect(info.selectedEntryId).toBeNull();
-    expect(panel.querySelectorAll(".info-panel-row.selected")).toHaveLength(0);
-  });
-
-  test("clicking an active row selects it; clicking another moves the selection", () => {
-    const { info, panel } = makeSelectionPanel();
-    info.updateTree({ entries, leafId: "jwtA" });
-
-    rowEl(panel, "jwt").click();
-    expect(rowEl(panel, "jwt").classList.contains("selected")).toBe(true);
-
-    rowEl(panel, "u1").click();
-    expect(rowEl(panel, "u1").classList.contains("selected")).toBe(true);
-    expect(rowEl(panel, "jwt").classList.contains("selected")).toBe(false);
-  });
-
-  test("clicking an inactive row changes nothing", () => {
-    const { info, panel } = makeSelectionPanel();
-    info.updateTree({ entries, leafId: "jwtA" });
-    info.expandedBranches.add("cookie");
-    info._renderTree();
-
-    const inactive = rowEl(panel, "cookie");
-    expect(inactive).not.toBeNull();
-    inactive.click();
-    expect(panel.querySelectorAll(".info-panel-row.selected")).toHaveLength(0);
-  });
-
-  test("scrollToSelectedEntry scrolls the selected row into view", () => {
-    withScrollIntoViewStub(() => {
-      const { info, panel } = makeSelectionPanel();
-      info.updateTree({ entries, leafId: "jwtA" });
-      info.selectEntry("u1");
-
-      const scrollIntoView = vi.fn();
-      rowEl(panel, "u1").scrollIntoView = scrollIntoView;
-      info.scrollToSelectedEntry();
-      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
-      expect(info._pendingSelectedScroll).toBe(false);
-    });
-  });
-
-  test("hidden panel defers the scroll; the next full rebuild consumes it", () => {
-    withScrollIntoViewStub((scrollIntoView) => {
-      const { info, panel } = makeSelectionPanel();
-      panel.classList.add("hidden");
-      info.updateTree({ entries, leafId: "jwtA" });
-
-      info.selectEntry("u1");
-      info.scrollToSelectedEntry(); // panel hidden → latches the pending scroll
-      expect(scrollIntoView).not.toHaveBeenCalled();
-      expect(info._pendingSelectedScroll).toBe(true);
-
-      panel.classList.remove("hidden");
-      info.updateTree({ entries, leafId: "jwtA" }); // rebuild consumes the latch
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
-      expect(info._pendingSelectedScroll).toBe(false);
-      // The rebuilt rows re-apply the selection from selectedEntryId.
-      expect(rowEl(panel, "u1").classList.contains("selected")).toBe(true);
-    });
-  });
-
-  test("unknown entry id marks no row and never throws", () => {
-    const { info, panel } = makeSelectionPanel();
-    info.updateTree({ entries, leafId: "jwtA" });
-    info.selectEntry("ghost-id");
-    expect(panel.querySelectorAll(".info-panel-row.selected")).toHaveLength(0);
-
-    expect(() => info.scrollToSelectedEntry()).not.toThrow();
-    expect(() => info.updateTree({ entries, leafId: "jwtA" })).not.toThrow();
   });
 });

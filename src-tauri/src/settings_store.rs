@@ -1,5 +1,4 @@
-#![allow(dead_code)]
-
+#[cfg(test)]
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::fs;
@@ -9,11 +8,14 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingScope {
+    #[cfg(test)]
     CurrentSession,
     Project,
+    #[cfg(test)]
     Global,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingSource {
@@ -22,6 +24,7 @@ pub enum SettingSource {
     PiDefault,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EffectiveSetting {
     pub value: Value,
@@ -29,6 +32,7 @@ pub struct EffectiveSetting {
 }
 
 pub struct SettingsStore {
+    #[cfg(test)]
     global_path: PathBuf,
     project_path: PathBuf,
     project_trusted: bool,
@@ -36,13 +40,17 @@ pub struct SettingsStore {
 
 impl SettingsStore {
     pub fn new(global_path: PathBuf, project_path: PathBuf, project_trusted: bool) -> Self {
+        #[cfg(not(test))]
+        let _ = global_path;
         Self {
+            #[cfg(test)]
             global_path,
             project_path,
             project_trusted,
         }
     }
 
+    #[cfg(test)]
     pub fn effective(&self, key: &str, pi_default: Value) -> Result<EffectiveSetting, String> {
         if self.project_trusted {
             if let Some(value) = read_object(&self.project_path)?.get(key) {
@@ -76,6 +84,7 @@ impl SettingsStore {
         atomic_write_object(path, &settings)
     }
 
+    #[cfg(test)]
     pub fn remove_override(&self, scope: SettingScope, key: &str) -> Result<(), String> {
         let path = self.path_for_write(scope)?;
         let mut settings = read_object(path)?;
@@ -85,6 +94,7 @@ impl SettingsStore {
 
     fn path_for_write(&self, scope: SettingScope) -> Result<&Path, String> {
         match scope {
+            #[cfg(test)]
             SettingScope::CurrentSession => {
                 Err("Current Session settings must use native Pi RPC".into())
             }
@@ -92,6 +102,7 @@ impl SettingsStore {
                 Err("Project settings cannot be changed until the workspace is trusted".into())
             }
             SettingScope::Project => Ok(&self.project_path),
+            #[cfg(test)]
             SettingScope::Global => Ok(&self.global_path),
         }
     }
@@ -186,7 +197,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let store = SettingsStore::new(global.clone(), project.clone(), true);
+        let store = SettingsStore::new(global, project.clone(), true);
         let effective = store.effective("thinkingLevel", json!("medium")).unwrap();
         assert_eq!(effective.value, json!("high"));
         assert_eq!(effective.source, SettingSource::Project);
@@ -218,6 +229,16 @@ mod tests {
         let effective = trusted.effective("autoRetry", json!(false)).unwrap();
         assert_eq!(effective.value, json!(true));
         assert_eq!(effective.source, SettingSource::Global);
+        trusted
+            .merge(SettingScope::Global, &json!({ "autoRetry": false }))
+            .unwrap();
+        assert_eq!(
+            trusted.effective("autoRetry", json!(true)).unwrap().value,
+            json!(false)
+        );
+        assert!(trusted
+            .merge(SettingScope::CurrentSession, &json!({ "autoRetry": true }))
+            .is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

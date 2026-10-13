@@ -13,6 +13,7 @@ const SCHEMA_VERSION: u32 = 1;
 const MAX_PROVIDER_LENGTH: usize = 128;
 const MAX_MODEL_ID_LENGTH: usize = 256;
 const MAX_SESSION_PATH_LENGTH: usize = 4096;
+const MAX_STORED_PROFILES: usize = 512;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionUiProfile {
@@ -82,6 +83,7 @@ impl SessionUiProfileStore {
         if changed {
             self.write_locked(&document)?;
         }
+        drop(document);
         Ok(profile)
     }
 
@@ -90,11 +92,13 @@ impl SessionUiProfileStore {
         if prune_missing(&mut document.profiles) {
             self.write_locked(&document)?;
         }
-        Ok(document
+        let latest = document
             .profiles
             .values()
             .max_by_key(|stored| stored.updated_at)
-            .map(|stored| stored.profile.clone()))
+            .map(|stored| stored.profile.clone());
+        drop(document);
+        Ok(latest)
     }
 
     pub fn save(
@@ -123,7 +127,19 @@ impl SessionUiProfileStore {
                 updated_at,
             },
         );
+        while document.profiles.len() > MAX_STORED_PROFILES {
+            let Some(oldest_key) = document
+                .profiles
+                .iter()
+                .min_by_key(|(_, stored)| stored.updated_at)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            document.profiles.remove(&oldest_key);
+        }
         self.write_locked(&document)?;
+        drop(document);
         Ok(profile)
     }
 
@@ -213,11 +229,10 @@ fn prune_missing(profiles: &mut BTreeMap<String, StoredProfile>) -> bool {
     // paths, so only those can be checked against the filesystem.
     profiles.retain(|path, _| {
         !Path::new(path).is_absolute()
-            || match fs::metadata(path) {
-                Ok(_) => true,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Err(_) => true,
-            }
+            || !matches!(
+                fs::metadata(path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            )
     });
     profiles.len() != before
 }
@@ -225,8 +240,7 @@ fn prune_missing(profiles: &mut BTreeMap<String, StoredProfile>) -> bool {
 fn unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 fn lock_error<T>(_error: std::sync::PoisonError<T>) -> String {

@@ -1,5 +1,6 @@
 import { t } from "../../i18n.js";
 import { createLoadingPlaceholder } from "../../ui/loading-placeholder.js";
+import { escapeHtml } from "./cost-dashboard-charts.js";
 import { renderCostDashboard } from "./cost-dashboard-render.js";
 
 const FILTER_STORAGE_KEY = "pi-studio-cost-filters";
@@ -9,15 +10,6 @@ const RANGE_DAYS = {
   "30d": 30,
   "90d": 90,
 };
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
 
 function renderShell(container) {
   container.innerHTML = `

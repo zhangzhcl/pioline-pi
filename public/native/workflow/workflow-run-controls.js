@@ -1,11 +1,15 @@
 // ABOUTME: Creates the workflow run input, start/cancel controls, and run log view.
 
 import { onLocaleChange, t } from "../../i18n.js";
-import { enhanceSelect } from "../../ui/select-menu.js";
 import { randomId } from "../utils/random-id.js";
-import { nodeMetaKey } from "./builtin-node-registry.js";
-import { localizeNodeMeta } from "./node-meta-localization.js";
 import { workflowErrorMessage } from "./workflow-error-message.js";
+import {
+  createRunControlsDom,
+  formatRunEventsLog,
+  populateRetryTargetOptions,
+  reconcilePersistenceFailure as reconcilePersistenceFailureWithControl,
+  updateRunControlsLocalizedLabels,
+} from "./workflow-run-controls-dom.js";
 import {
   createWorkflowRetryRun,
   createWorkflowRun,
@@ -28,69 +32,29 @@ export function createWorkflowRunControls({
   onRunEnd,
   onWorkflowSnapshotConflict,
 }) {
-  const section = document.createElement("section");
-  section.className = "workflow-run-controls";
-  const input = document.createElement("textarea");
-  input.className = "workflow-run-controls__input";
-  input.setAttribute("aria-label", t("workflow.runInput"));
-  input.placeholder = t("workflow.runInputPlaceholder");
-  const actions = document.createElement("div");
-  actions.className = "workflow-run-controls__actions";
-  const start = document.createElement("button");
-  start.type = "button";
-  start.className = "ui-button ui-button--sm ui-button--primary";
-  start.textContent = t("workflow.run");
-  const concurrency = document.createElement("select");
-  concurrency.className = "ui-select workflow-run-controls__concurrency";
-  concurrency.setAttribute("aria-label", t("workflow.maxConcurrency"));
-  for (const value of [1, 2, 3, 4]) {
-    const option = document.createElement("option");
-    option.value = String(value);
-    option.textContent = `${t("workflow.maxConcurrency")}: ${value}`;
-    concurrency.append(option);
-  }
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "ui-button ui-button--sm ui-button--danger";
-  cancel.textContent = t("workflow.cancelRun");
-  cancel.disabled = true;
-  const status = document.createElement("span");
-  status.className = "workflow-run-controls__status";
-  status.setAttribute("role", "status");
-  status.setAttribute("aria-live", "polite");
-  const history = document.createElement("select");
-  history.className = "ui-select workflow-run-controls__history";
-  history.setAttribute("aria-label", t("workflow.runHistory"));
-  const historyPlaceholder = document.createElement("option");
-  historyPlaceholder.value = "";
-  historyPlaceholder.textContent = t("workflow.runHistory");
-  history.append(historyPlaceholder);
-  const refreshHistoryButton = document.createElement("button");
-  refreshHistoryButton.type = "button";
-  refreshHistoryButton.className = "ui-button ui-button--sm ui-button--ghost";
-  refreshHistoryButton.textContent = t("workflow.refreshRunHistory");
-  const rerun = document.createElement("button");
-  rerun.type = "button";
-  rerun.className = "ui-button ui-button--sm ui-button--secondary";
-  rerun.textContent = t("workflow.rerunSnapshot");
-  rerun.disabled = true;
+  const dom = createRunControlsDom();
+  const {
+    section,
+    input,
+    start,
+    concurrency,
+    cancel,
+    status,
+    history,
+    historyPlaceholder,
+    refreshHistoryButton,
+    rerun,
+    retryTarget,
+    retryPlaceholder,
+    retry,
+    log,
+    concurrencyMenu,
+    historyMenu,
+  } = dom;
   let rerunSource = null;
   let observedRunActive = false;
   let executingRunId = null;
   let historyLoadGeneration = 0;
-  const retryTarget = document.createElement("select");
-  retryTarget.className = "ui-select workflow-run-controls__retry-target";
-  retryTarget.setAttribute("aria-label", t("workflow.retryFromNode"));
-  const retryPlaceholder = document.createElement("option");
-  retryPlaceholder.value = "";
-  retryPlaceholder.textContent = t("workflow.retryFromNode");
-  retryTarget.append(retryPlaceholder);
-  retryTarget.disabled = true;
-  const retry = document.createElement("button");
-  retry.type = "button";
-  retry.className = "ui-button ui-button--sm ui-button--secondary";
-  retry.textContent = t("workflow.retryFromNode");
-  retry.disabled = true;
   let retrySource = null;
   let controller = null;
   let cancelRequested = false;
@@ -128,27 +92,6 @@ export function createWorkflowRunControls({
     log.textContent = "";
     notifyRunChange(null);
   }
-  const log = document.createElement("pre");
-  log.className = "workflow-run-controls__log";
-  actions.append(
-    start,
-    cancel,
-    status,
-    concurrency,
-    history,
-    refreshHistoryButton,
-    rerun,
-    retryTarget,
-    retry,
-  );
-  section.append(input, actions, log);
-  // Native <select> popups are OS-drawn on Windows and ignore theme tokens, so
-  // the option lists render as light blocks in dark themes. Enhanced here
-  // while the section is still detached; the menus attach once the canvas
-  // mounts this section, and programmatic value writes below call sync().
-  const concurrencyMenu = enhanceSelect(concurrency);
-  const historyMenu = enhanceSelect(history);
-  enhanceSelect(retryTarget);
 
   async function refreshHistory() {
     const selected = history.value;
@@ -181,72 +124,7 @@ export function createWorkflowRunControls({
   }
 
   async function reconcilePersistenceFailure(run, persistenceError) {
-    const workspaceId = run.workspaceId;
-    const error = "Run event persistence failed; the durable outcome may be incomplete.";
-    try {
-      let record = await control?.loadWorkflowRun(run.id, workspaceId);
-      if (!record?.run) return null;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const latest = record.run;
-        const events = Array.isArray(record.events) ? record.events : [];
-        if (!["queued", "running"].includes(latest.status)) return { ...latest, events };
-
-        const interrupted = structuredClone(latest);
-        interrupted.status = "interrupted";
-        interrupted.error = error;
-        interrupted.result = null;
-        interrupted.updatedAt = new Date().toISOString();
-        const skippedNodeIds = [];
-        for (const [nodeId, state] of Object.entries(interrupted.nodeStates ?? {})) {
-          if (state.status === "running") {
-            state.status = "interrupted";
-            state.error = error;
-          } else if (state.status === "idle") {
-            state.status = "skipped";
-            skippedNodeIds.push(nodeId);
-          }
-        }
-        const sequence = events.length + 1;
-        const event = {
-          id: `${run.id}:${sequence}`,
-          runId: run.id,
-          workflowId: interrupted.workflowId,
-          revision: interrupted.workflowRevision,
-          type: "run_interrupted",
-          timestamp: interrupted.updatedAt,
-          sequence,
-          error,
-          skippedNodeIds,
-        };
-        const saved = await control.appendWorkflowRunEvent({
-          runId: run.id,
-          workspaceId,
-          expectedSequence: sequence - 1,
-          run: interrupted,
-          event,
-        });
-        if (saved) return { ...interrupted, events: [...events, event] };
-        if (attempt === 0) {
-          record = await control.loadWorkflowRun(run.id, workspaceId);
-          if (!record?.run) return null;
-        } else {
-          console.warn("[Workflow] Host rejected interrupted-run reconciliation", {
-            runId: run.id,
-            sequence,
-            persistenceError,
-          });
-          return { ...latest, error, events, persistenceUncertain: true };
-        }
-      }
-      return null;
-    } catch (error) {
-      console.warn("[Workflow] Could not reconcile interrupted run", {
-        runId: run.id,
-        persistenceError,
-        error,
-      });
-      return null;
-    }
+    return reconcilePersistenceFailureWithControl(control, run, persistenceError);
   }
 
   async function loadRun(runId) {
@@ -302,7 +180,7 @@ export function createWorkflowRunControls({
           }
         : null;
     rerun.disabled = !rerunSource || observedRunActive || Boolean(controller);
-    retrySource =
+    const initialRetrySource =
       run.workflowId === workflow().id &&
       run.workspaceId === workflow().workspaceId &&
       run.snapshot &&
@@ -310,19 +188,12 @@ export function createWorkflowRunControls({
       new Set(["error", "cancelled", "interrupted"]).has(run.status)
         ? structuredClone(run)
         : null;
-    retryTarget.replaceChildren(retryPlaceholder);
-    if (retrySource) {
-      for (const node of retrySource.snapshot.nodes) {
-        const state = retrySource.nodeStates?.[node.instanceId];
-        if (!new Set(["error", "interrupted"]).has(state?.status)) continue;
-        const meta = localizeNodeMeta(nodeMetas?.get(nodeMetaKey(node.meta)));
-        const option = document.createElement("option");
-        option.value = node.instanceId;
-        option.textContent = `${meta?.label ?? node.instanceId} · ${t(`workflow.runStatus.${state.status}`)}`;
-        retryTarget.append(option);
-      }
-      if (!retryTarget.options.length || retryTarget.options.length === 1) retrySource = null;
-    }
+    retrySource = populateRetryTargetOptions(
+      retryTarget,
+      retryPlaceholder,
+      initialRetrySource,
+      nodeMetas,
+    );
     retryTarget.disabled = !retrySource || observedRunActive || Boolean(controller);
     retry.disabled = !retrySource || !retryTarget.value || observedRunActive || Boolean(controller);
     retryTarget.onchange = () => {
@@ -335,12 +206,7 @@ export function createWorkflowRunControls({
     }
     status.textContent = t(`workflow.runStatus.${run.status}`);
     input.value = JSON.stringify(run.input ?? {}, null, 2);
-    log.textContent = events
-      .map(
-        (event) =>
-          `${event.timestamp}  ${event.type}${event.nodeId ? ` · ${event.nodeId}` : ""}${event.error ? ` · ${workflowErrorMessage(event.error)}` : ""}${event.message ? ` · ${event.message}` : ""}`,
-      )
-      .join("\n");
+    log.textContent = formatRunEventsLog(events);
     notifyRunChange(run);
   }
 
@@ -354,25 +220,8 @@ export function createWorkflowRunControls({
     }
   }
 
-  function updateLocalizedLabels() {
-    input.setAttribute("aria-label", t("workflow.runInput"));
-    input.placeholder = t("workflow.runInputPlaceholder");
-    start.textContent = t("workflow.run");
-    concurrency.setAttribute("aria-label", t("workflow.maxConcurrency"));
-    for (const option of concurrency.options)
-      option.textContent = `${t("workflow.maxConcurrency")}: ${option.value}`;
-    cancel.textContent = t("workflow.cancelRun");
-    history.setAttribute("aria-label", t("workflow.runHistory"));
-    historyPlaceholder.textContent = t("workflow.runHistory");
-    refreshHistoryButton.textContent = t("workflow.refreshRunHistory");
-    rerun.textContent = t("workflow.rerunSnapshot");
-    retryTarget.setAttribute("aria-label", t("workflow.retryFromNode"));
-    retryPlaceholder.textContent = t("workflow.retryFromNode");
-    retry.textContent = t("workflow.retryFromNode");
-  }
-
-  onLocaleChange(() => {
-    updateLocalizedLabels();
+  const unsubscribeLocaleChange = onLocaleChange(() => {
+    updateRunControlsLocalizedLabels(dom);
     refreshHistoryAndSelection().catch((error) => {
       status.textContent = workflowErrorMessage(error);
     });
@@ -386,6 +235,7 @@ export function createWorkflowRunControls({
   });
 
   section.refreshRemoteRun = async (runId) => {
+    if (controller && runId && executingRunId === runId) return;
     const runs = await refreshHistory();
     if (controller && executingRunId === runId) return;
     const candidate = runId
@@ -473,7 +323,9 @@ export function createWorkflowRunControls({
         signal: controller.signal,
         onEvent: (event, current) => {
           status.textContent = t(`workflow.runStatus.${current.status}`);
-          log.textContent += `${event.timestamp}  ${event.type}${event.nodeId ? ` · ${event.nodeId}` : ""}${event.error ? ` · ${workflowErrorMessage(event.error)}` : ""}\n`;
+          log.append(
+            `${event.timestamp}  ${event.type}${event.nodeId ? ` · ${event.nodeId}` : ""}${event.error ? ` · ${workflowErrorMessage(event.error)}` : ""}\n`,
+          );
           const sequence = current.events.length;
           const persistedRun = structuredClone(current);
           delete persistedRun.events;
@@ -594,6 +446,11 @@ export function createWorkflowRunControls({
   });
   cancel.addEventListener("click", requestCancel);
   section.cancelRun = requestCancel;
+  section.destroy = () => {
+    unsubscribeLocaleChange?.();
+    concurrencyMenu?.destroy?.();
+    historyMenu?.destroy?.();
+  };
   section.initialize = async () => {
     const runs = await refreshHistory();
     const selected = runs.find((item) => ["queued", "running"].includes(item.status)) ?? runs[0];

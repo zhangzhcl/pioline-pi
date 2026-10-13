@@ -90,20 +90,24 @@ pub(super) fn validate(
 }
 
 fn validate_replay(stored_run: &Value, events: &[(i64, Value)]) -> Result<(), String> {
-    let mut replayed = stored_run.clone();
-    replayed["status"] = Value::from("queued");
-    replayed["result"] = Value::Null;
-    replayed["error"] = Value::Null;
-    let states = replayed
-        .get_mut("nodeStates")
-        .and_then(Value::as_object_mut)
+    const REPLAY_ERR: &str = "Stored workflow Run event history does not replay to the stored Run";
+    let stored_states = stored_run
+        .get("nodeStates")
+        .and_then(Value::as_object)
         .ok_or("Stored workflow Run nodeStates are invalid")?;
-    for state in states.values_mut() {
-        state["status"] = Value::from("idle");
-        state["logs"] = Value::Array(Vec::new());
-        state["output"] = Value::Null;
-        state["error"] = Value::Null;
+    let mut states = serde_json::Map::with_capacity(stored_states.len());
+    for (node_id, stored_state) in stored_states {
+        let mut initial_state = stored_state.clone();
+        initial_state["status"] = Value::from("idle");
+        initial_state["logs"] = Value::Array(Vec::new());
+        initial_state["output"] = Value::Null;
+        initial_state["error"] = Value::Null;
+        states.insert(node_id.clone(), initial_state);
     }
+    let mut status = "queued";
+    let mut result = Value::Null;
+    let mut error = Value::Null;
+    let mut updated_at: Option<&str> = None;
 
     for (event_index, (_, event)) in events.iter().enumerate() {
         let event_type = event
@@ -114,118 +118,136 @@ fn validate_replay(stored_run: &Value, events: &[(i64, Value)]) -> Result<(), St
             .get("timestamp")
             .and_then(Value::as_str)
             .ok_or("Stored workflow Run event timestamp is invalid")?;
-        let mut next = replayed.clone();
-        next["updatedAt"] = Value::from(timestamp);
+        updated_at = Some(timestamp);
         match event_type {
-            "run_started" if replayed["status"] == "queued" => {
-                next["status"] = Value::from("running");
+            "run_started" if status == "queued" => {
+                if states
+                    .values()
+                    .any(|state| state.get("status").and_then(Value::as_str) == Some("running"))
+                {
+                    return Err(REPLAY_ERR.into());
+                }
+                status = "running";
             }
             "node_started" | "node_log" | "node_completed" | "node_failed" | "node_interrupted"
             | "node_skipped"
-                if replayed["status"] == "running" =>
+                if status == "running" =>
             {
-                apply_node_event(&mut next, event, event_type)?;
+                apply_node_event(&mut states, event, event_type).map_err(|_| REPLAY_ERR)?;
             }
-            "run_completed" if replayed["status"] == "running" => {
-                next["status"] = Value::from("success");
-                next["result"] = event
+            "run_completed" if status == "running" => {
+                if states.values().any(|state| {
+                    !matches!(
+                        state.get("status").and_then(Value::as_str),
+                        Some("success" | "skipped")
+                    )
+                }) {
+                    return Err(REPLAY_ERR.into());
+                }
+                status = "success";
+                result = event
                     .get("result")
                     .cloned()
                     .ok_or("Stored run_completed event is missing result")?;
             }
-            "run_failed" if replayed["status"] == "running" => {
-                next["status"] = Value::from("error");
-                next["error"] = event_error(event)?;
-            }
-            "run_cancelled" if replayed["status"] == "running" => {
-                next["status"] = Value::from("cancelled");
-                next["error"] = event_error(event)?;
+            "run_failed" | "run_cancelled" if status == "running" => {
+                if states.values().any(|state| {
+                    matches!(
+                        state.get("status").and_then(Value::as_str),
+                        Some("idle" | "running")
+                    )
+                }) {
+                    return Err(REPLAY_ERR.into());
+                }
+                status = if event_type == "run_failed" {
+                    "error"
+                } else {
+                    "cancelled"
+                };
+                error = event_error(event)?;
             }
             "run_interrupted"
-                if matches!(replayed["status"].as_str(), Some("queued" | "running"))
-                    && event_index + 1 == events.len() =>
+                if matches!(status, "queued" | "running") && event_index + 1 == events.len() =>
             {
-                next["status"] = Value::from("interrupted");
-                next["error"] = event_error(event)?;
-                apply_interrupted_node_states(&mut next, &replayed, stored_run, event)?;
+                status = "interrupted";
+                error = event_error(event)?;
+                apply_interrupted_node_states(&mut states, stored_states, event)
+                    .map_err(|_| REPLAY_ERR)?;
             }
-            _ => {
-                return Err(
-                    "Stored workflow Run event history does not replay to the stored Run".into(),
-                )
-            }
+            _ => return Err(REPLAY_ERR.into()),
         }
-        super::validate_workflow_run_event_state_delta(&replayed, &next, event_type, event)
-            .map_err(|_| "Stored workflow Run event history does not replay to the stored Run")?;
-        replayed = next;
     }
 
-    for field in ["status", "result", "error", "nodeStates"] {
-        if replayed.get(field) != stored_run.get(field) {
-            return Err(
-                "Stored workflow Run event history does not replay to the stored Run".into(),
-            );
-        }
+    if stored_run.get("status").and_then(Value::as_str) != Some(status)
+        || stored_run.get("result") != Some(&result)
+        || stored_run.get("error") != Some(&error)
+        || stored_states != &states
+    {
+        return Err(REPLAY_ERR.into());
     }
     if let Some((_, last_event)) = events.last() {
-        if replayed.get("updatedAt") != last_event.get("timestamp")
-            || stored_run.get("updatedAt") != last_event.get("timestamp")
-        {
-            return Err(
-                "Stored workflow Run event history does not replay to the stored Run".into(),
-            );
+        let last_ts = last_event.get("timestamp").and_then(Value::as_str);
+        if updated_at != last_ts || stored_run.get("updatedAt").and_then(Value::as_str) != last_ts {
+            return Err(REPLAY_ERR.into());
         }
     }
     Ok(())
 }
 
 fn apply_interrupted_node_states(
-    next: &mut Value,
-    previous: &Value,
-    stored_run: &Value,
+    states: &mut serde_json::Map<String, Value>,
+    final_states: &serde_json::Map<String, Value>,
     event: &Value,
 ) -> Result<(), String> {
     let explicit_skipped_ids = event
         .get("skippedNodeIds")
         .and_then(Value::as_array)
-        .map(|ids| ids.iter().filter_map(Value::as_str).collect::<Vec<_>>());
-    let previous_states = previous
-        .get("nodeStates")
-        .and_then(Value::as_object)
-        .ok_or("Stored workflow Run nodeStates are invalid")?;
-    let final_states = stored_run
-        .get("nodeStates")
-        .and_then(Value::as_object)
-        .ok_or("Stored workflow Run nodeStates are invalid")?;
-    let next_states = next
-        .get_mut("nodeStates")
-        .and_then(Value::as_object_mut)
-        .ok_or("Stored workflow Run nodeStates are invalid")?;
-    for (node_id, previous_state) in previous_states {
-        let status = previous_state
+        .map(|ids| {
+            let mut unique = std::collections::HashSet::with_capacity(ids.len());
+            ids.iter()
+                .map(|id| {
+                    id.as_str()
+                        .filter(|id| unique.insert(*id))
+                        .ok_or("Interrupted workflow skippedNodeIds are invalid")
+                })
+                .collect::<Result<std::collections::HashSet<_>, _>>()
+        })
+        .transpose()?;
+    if let Some(ids) = &explicit_skipped_ids {
+        for node_id in ids {
+            if states
+                .get(*node_id)
+                .and_then(|state| state.get("status"))
+                .and_then(Value::as_str)
+                != Some("idle")
+            {
+                return Err("Interrupted workflow skippedNodeIds must reference idle nodes".into());
+            }
+        }
+    }
+    let err_val = event_error(event)?;
+    for (node_id, state) in states.iter_mut() {
+        let prior_status = state
             .get("status")
             .and_then(Value::as_str)
             .ok_or("Stored workflow node state is invalid")?;
         let should_skip = if let Some(skipped_ids) = &explicit_skipped_ids {
-            skipped_ids.contains(&node_id.as_str())
+            skipped_ids.contains(node_id.as_str())
         } else {
             // Older interrupted events did not record which idle nodes were skipped.
             final_states
                 .get(node_id)
-                .and_then(|state| state.get("status"))
+                .and_then(|s| s.get("status"))
                 .and_then(Value::as_str)
                 == Some("skipped")
         };
-        let next_state = next_states
-            .get_mut(node_id)
-            .ok_or("Stored workflow Run nodeStates are invalid")?;
-        match status {
+        match prior_status {
             "running" => {
-                next_state["status"] = Value::from("interrupted");
-                next_state["error"] = event_error(event)?;
+                state["status"] = Value::from("interrupted");
+                state["error"] = err_val.clone();
             }
             "idle" if should_skip => {
-                next_state["status"] = Value::from("skipped");
+                state["status"] = Value::from("skipped");
             }
             _ => {}
         }
@@ -233,14 +255,31 @@ fn apply_interrupted_node_states(
     Ok(())
 }
 
-fn apply_node_event(next: &mut Value, event: &Value, event_type: &str) -> Result<(), String> {
+fn apply_node_event(
+    states: &mut serde_json::Map<String, Value>,
+    event: &Value,
+    event_type: &str,
+) -> Result<(), String> {
     let node_id = event
         .get("nodeId")
         .and_then(Value::as_str)
         .ok_or("Stored workflow node event is missing nodeId")?;
-    let state = next
-        .pointer_mut(&format!("/nodeStates/{}", escape_pointer_segment(node_id)))
+    let state = states
+        .get_mut(node_id)
         .ok_or("Stored workflow node event references an unknown node")?;
+    let prior = state
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or("Stored workflow node state is invalid")?;
+    if (event_type == "node_started" && prior != "idle")
+        || (event_type == "node_log" && prior != "running")
+        || (event_type == "node_completed" && !matches!(prior, "idle" | "running"))
+        || (event_type == "node_failed" && prior != "running")
+        || (event_type == "node_interrupted" && prior != "running")
+        || (event_type == "node_skipped" && prior != "idle")
+    {
+        return Err("Workflow node state does not match event".into());
+    }
     match event_type {
         "node_started" => state["status"] = Value::from("running"),
         "node_log" => {
@@ -295,10 +334,6 @@ fn event_error(event: &Value) -> Result<Value, String> {
         .and_then(Value::as_str)
         .map(Value::from)
         .ok_or_else(|| "Stored workflow terminal event is missing error".into())
-}
-
-fn escape_pointer_segment(value: &str) -> String {
-    value.replace('~', "~0").replace('/', "~1")
 }
 
 pub(super) fn validate_summary(run: &Value, index: &RunIndex<'_>) -> Result<(), String> {

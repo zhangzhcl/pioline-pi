@@ -11,7 +11,7 @@ class SuperAgentEntry extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
       <div class="super-agent-entry-inner">
-        <div class="super-agent-entry-icon">⚡</div>
+        <div class="super-agent-entry-icon">SA</div>
         <div class="super-agent-entry-info">
           <div class="super-agent-entry-name">AGENT INBOX</div>
           <div class="super-agent-entry-status">

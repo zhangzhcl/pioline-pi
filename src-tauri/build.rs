@@ -60,9 +60,10 @@ fn main() {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
         });
-        if !valid {
-            panic!("PIPLINE_RELEASE_REPOSITORY must be an owner/repository slug");
-        }
+        assert!(
+            valid,
+            "PIPLINE_RELEASE_REPOSITORY must be an owner/repository slug"
+        );
         println!("cargo:rustc-env=PIPLINE_RELEASE_REPOSITORY={repository}");
     }
 
@@ -110,34 +111,32 @@ fn main() {
     let bin_path = manifest_dir.join("resources").join("pi").join(bin_name);
     let extension_bundle_path = extension_dist_dir.join("picot-bridge.mjs");
 
-    if !bin_path.is_file() {
-        panic!(
-            "\n\n\
-             Pipline release build aborted: embedded pi binary is missing.\n\
-             Expected: {}\n\n\
-             Pipline bundles the pi runtime inside the app so end users do\n\
-             not need to fetch anything. Release builds therefore refuse to\n\
-             produce a .app without it.\n\n\
-             Fix: run `bun run fetch:pi` from the repo root before building.\n\
-             (Or `bun run build`, which already does this for you.)\n\n\
-             To bypass this check (NOT for shipping builds), set\n\
-             PI_STUDIO_SKIP_BIN_CHECK=1.\n\n",
-            bin_path.display()
-        );
-    }
+    assert!(
+        bin_path.is_file(),
+        "\n\n\
+         Pipline release build aborted: embedded pi binary is missing.\n\
+         Expected: {}\n\n\
+         Pipline bundles the pi runtime inside the app so end users do\n\
+         not need to fetch anything. Release builds therefore refuse to\n\
+         produce a .app without it.\n\n\
+         Fix: run `bun run fetch:pi` from the repo root before building.\n\
+         (Or `bun run build`, which already does this for you.)\n\n\
+         To bypass this check (NOT for shipping builds), set\n\
+         PI_STUDIO_SKIP_BIN_CHECK=1.\n\n",
+        bin_path.display()
+    );
 
-    if !extension_bundle_path.is_file() {
-        panic!(
-            "\n\n\
-             Pipline release build aborted: picot-bridge extension bundle is missing.\n\
-             Expected: {}\n\n\
-             Release builds ship the bundled extension instead of relying on\n\
-             repo-local TypeScript sources or node_modules.\n\n\
-             Fix: run `bun run build:extensions` from the repo root before building.\n\
-             (Or `bun run build`, which already does this for you.)\n\n\
-             To bypass this check (NOT for shipping builds), set\n\
-             PI_STUDIO_SKIP_BIN_CHECK=1.\n\n",
-            extension_bundle_path.display()
-        );
-    }
+    assert!(
+        extension_bundle_path.is_file(),
+        "\n\n\
+         Pipline release build aborted: picot-bridge extension bundle is missing.\n\
+         Expected: {}\n\n\
+         Release builds ship the bundled extension instead of relying on\n\
+         repo-local TypeScript sources or node_modules.\n\n\
+         Fix: run `bun run build:extensions` from the repo root before building.\n\
+         (Or `bun run build`, which already does this for you.)\n\n\
+         To bypass this check (NOT for shipping builds), set\n\
+         PI_STUDIO_SKIP_BIN_CHECK=1.\n\n",
+        extension_bundle_path.display()
+    );
 }

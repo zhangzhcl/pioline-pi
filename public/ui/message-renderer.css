@@ -6,6 +6,8 @@
    tables, task lists, inline images) lives in ./markdown.css.
    ═══════════════════════════════════════════════════════ */
 
+@import "./message-thinking-footer.css";
+
 /* Welcome logo icon (sidebar mode-toggle's .tau-icon lives in style.css) */
 .tau-icon-welcome {
   width: 64px;
@@ -77,12 +79,6 @@
   align-items: flex-end;
 }
 
-.message .message-content {
-  box-sizing: border-box;
-  min-width: 0;
-  max-width: 100%;
-}
-
 .message.history {
   animation: none;
 }
@@ -122,7 +118,6 @@
 /* User toolbar is always visible (v3 parity): no hover gating, keyboard
    users reach copy/fork/edit without focus-within tricks. */
 
-/* biome-ignore lint/style/noDescendingSpecificity: base styles defined after scoped overrides intentionally */
 .message-content {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-lg);
@@ -130,6 +125,12 @@
   overflow-wrap: anywhere;
   font-size: var(--chat-font-size, var(--font-size-md));
   line-height: 1.6;
+}
+
+.message .message-content {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* User bubble */
@@ -285,356 +286,7 @@
   }
 }
 
-/* ═══════════════════════════════════════════════════════
-   Thinking Blocks — subtle glass accordion
-   ═══════════════════════════════════════════════════════ */
-
-.thinking-block {
-  background: var(--thinking-bg);
-  border: 1px solid var(--border);
-  padding: 0;
-  margin: 2px 0;
-  border-radius: var(--radius);
-  font-size: var(--font-size-md);
-  overflow: hidden;
-  align-self: flex-start;
-  width: 100%;
-  flex-shrink: 0;
-  backdrop-filter: blur(12px);
-  transition:
-    border-color var(--duration) var(--ease),
-    box-shadow var(--duration) var(--ease);
-}
-
-.thinking-block:hover {
-  border-color: var(--border-hover);
-}
-
-.thinking-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  cursor: pointer;
-  user-select: none;
-  font-size: var(--font-size-sm);
-  transition: background var(--duration) var(--ease);
-}
-
-.thinking-toggle:hover {
-  background: var(--bg-glass-hover);
-}
-
-.thinking-label {
-  font-size: var(--font-size-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.thinking-usage {
-  margin-left: auto;
-  padding-left: var(--space-2);
-  font-size: var(--font-size-sm);
-  opacity: 0.7;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-.thinking-toggle .chevron {
-  font-size: var(--font-size-sm);
-  transition: transform var(--duration) var(--ease);
-  opacity: 0.3;
-  flex-shrink: 0;
-}
-
-.thinking-toggle.expanded .chevron {
-  transform: rotate(90deg);
-}
-
-.thinking-content {
-  display: none;
-  padding: 0 var(--space-3) var(--space-3);
-  white-space: pre-wrap;
-  font-style: italic;
-  border-top: 1px solid var(--border);
-  max-height: 260px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  font-size: var(--font-size-sm);
-  line-height: 1.5;
-}
-
-.thinking-content.expanded {
-  display: block;
-}
-
-/* Hide thinking blocks when toggled off */
-body.hide-thinking .thinking-block {
-  display: none !important;
-}
-
-/* ═══════════════════════════════════════════════════════
-   Process details — collapsed group of a turn's thinking/tool-call noise
-   ═══════════════════════════════════════════════════════ */
-
 .process-details-group {
   flex-shrink: 0;
   margin: 2px 0;
-}
-
-.process-details-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  user-select: none;
-  font-size: var(--font-size-sm);
-}
-
-.process-details-toggle:hover {
-  color: var(--text-secondary);
-}
-
-.process-details-toggle .chevron {
-  display: inline-flex;
-  opacity: 0.3;
-  flex-shrink: 0;
-  transition: transform var(--duration) var(--ease);
-}
-
-.process-details-group.expanded .process-details-toggle .chevron {
-  transform: rotate(90deg);
-}
-
-.process-details-body {
-  display: none;
-  margin-top: var(--space-1);
-  padding-left: var(--space-2);
-}
-
-.process-details-group.expanded .process-details-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-/* Streaming: pulse the label like a "thinking" indicator */
-.process-details-group.streaming .process-details-toggle .chevron {
-  display: none;
-}
-
-.process-details-group.streaming .process-details-label {
-  animation: processDetailsPulse 1.6s ease-in-out infinite;
-}
-
-@keyframes processDetailsPulse {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-/* Done: green checkmark next to the label, hidden otherwise */
-.process-details-check {
-  display: none;
-  align-items: center;
-  color: var(--success, #22c55e);
-  flex-shrink: 0;
-}
-
-.process-details-group.done .process-details-check {
-  display: inline-flex;
-  animation: processDetailsCheckIn 0.25s ease;
-}
-
-@keyframes processDetailsCheckIn {
-  0% {
-    opacity: 0;
-    transform: scale(0.6);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-/* ═══════════════════════════════════════════════════════
-
-/* ═══════════════════════════════════════════════════════
-   Message footer: cost + copy button (inline row)
-   ═══════════════════════════════════════════════════════ */
-
-.message-footer {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-/* Copy message button (below message) */
-
-.message-copy-btn {
-  background: none;
-  margin: 0;
-  height: 18px;
-  border: none;
-  color: var(--text-ghost);
-  cursor: pointer;
-  padding: var(--space-0-5) var(--space-1);
-  font-size: var(--font-size-sm);
-  transition:
-    background 0.15s var(--ease),
-    color 0.15s var(--ease);
-  white-space: nowrap;
-}
-
-.message-copy-btn:hover {
-  opacity: 1;
-  color: var(--text-primary);
-}
-
-.message-copy-btn:active {
-  transform: scale(0.9);
-}
-
-.message-copy-btn.copied {
-  color: var(--success);
-}
-
-.message-copy-btn.copied svg {
-  display: none;
-}
-
-.message-copy-btn.copied::after {
-  content: "✓";
-  font-size: var(--font-size-sm);
-}
-
-/* Fork session button (beside copy button on user messages) */
-
-.message-fork-btn {
-  opacity: 0.45;
-  background: none;
-  border: none;
-  color: var(--text-ghost);
-  cursor: pointer;
-  padding: var(--space-0-5) var(--space-1);
-  font-size: var(--font-size-sm);
-  transition:
-    background 0.15s var(--ease),
-    color 0.15s var(--ease);
-  white-space: nowrap;
-}
-
-.message-fork-btn:hover {
-  opacity: 1;
-  color: var(--text-primary);
-}
-
-.message-fork-btn:active {
-  transform: scale(0.9);
-}
-
-.message-fork-btn.forking {
-  opacity: 0.6;
-  cursor: wait;
-}
-
-.message-fork-btn:disabled {
-  cursor: wait;
-}
-
-/* Hide fork button in Agent Inbox (super-agent) sessions */
-.super-agent-active .message-fork-btn {
-  display: none;
-}
-
-/* Edit button — same quiet affordance family as fork (user messages). */
-
-.message-edit-btn {
-  opacity: 0.45;
-  background: none;
-  border: none;
-  color: var(--text-ghost);
-  cursor: pointer;
-  padding: var(--space-0-5) var(--space-1);
-  font-size: var(--font-size-sm);
-  transition:
-    background 0.15s var(--ease),
-    color 0.15s var(--ease);
-  white-space: nowrap;
-}
-
-.message-edit-btn:hover {
-  opacity: 1;
-  color: var(--text-primary);
-}
-
-.message-edit-btn:active {
-  transform: scale(0.9);
-}
-
-.message-edit-btn:disabled {
-  cursor: wait;
-}
-
-.super-agent-active .message-edit-btn {
-  display: none;
-}
-
-/* Error / system messages */
-.error-message {
-  background: rgba(248, 113, 113, 0.06);
-  border: 1px solid rgba(248, 113, 113, 0.15);
-  border-radius: var(--radius);
-  padding: var(--space-2) var(--space-4);
-  margin: 6px 0;
-  color: var(--error);
-  font-size: var(--font-size-md);
-  line-height: 1.5;
-  backdrop-filter: blur(8px);
-}
-
-.system-message {
-  text-align: center;
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--font-size-sm);
-  line-height: 1.5;
-  white-space: pre-line;
-}
-
-/* Search-in-messages highlight (see highlightSearchQuery() in message-renderer.js) */
-mark[data-search-highlight="true"] {
-  border-radius: var(--radius-xs);
-  background: var(--warning);
-  color: var(--bg-solid);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 35%, transparent);
-}
-
-/* Attached message images (batch1 gap-fix: found stray in style.css during batch4) */
-.message-images {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-  margin-bottom: 6px;
-}
-
-.message-image {
-  max-width: 240px;
-  max-height: 200px;
-  border-radius: var(--radius-md);
-  object-fit: cover;
-  border: 1px solid var(--border);
-  cursor: pointer;
-  transition: transform 0.15s var(--ease);
-}
-
-.message-image:hover {
-  transform: scale(1.02);
 }

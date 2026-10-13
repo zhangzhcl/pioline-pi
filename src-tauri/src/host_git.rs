@@ -2,7 +2,10 @@
 // ABOUTME: Keeps Git status, diff, staging, commit, and AI flows off the runtime channel.
 
 use crate::git_pi_runner::GitPiRunner;
-use crate::git_service::{is_git_unavailable, GitPathIdentity, GitService, MAX_STATUS_ENTRIES};
+use crate::git_service::{
+    is_git_unavailable, GitDetachedCommit, GitDiffRequest, GitPathIdentity, GitService,
+    MAX_STATUS_ENTRIES,
+};
 use crate::host_data::HostDataPlane;
 use crate::pi_launch::PiLaunchResolver;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -11,17 +14,18 @@ use tokio::sync::broadcast;
 
 /// History command arguments are validated at the protocol edge so the
 /// service layer only ever sees clamped limits and decoded path bytes.
-fn git_log_args(value: &Value) -> Result<(usize, Option<String>), String> {
+fn git_log_args(value: &Value) -> (usize, Option<String>) {
     let limit = value
         .pointer("/command/limit")
         .and_then(Value::as_u64)
-        .map(|limit| limit.clamp(1, crate::git_service::MAX_LOG_LIMIT as u64) as usize)
-        .unwrap_or(50);
+        .map_or(50, |limit| {
+            limit.clamp(1, crate::git_service::MAX_LOG_LIMIT as u64) as usize
+        });
     let before = value
         .pointer("/command/before")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    Ok((limit, before))
+    (limit, before)
 }
 
 fn git_log_detail_args(value: &Value) -> Result<String, String> {
@@ -57,7 +61,7 @@ pub async fn dispatch(
     let workspace_id = frame
         .get("workspaceId")
         .and_then(Value::as_str)
-        .ok_or(("invalid_workspace", "workspaceId is required".into()))?;
+        .ok_or_else(|| ("invalid_workspace", "workspaceId is required".into()))?;
     let root = data.workspace_root_path(workspace_id).map_err(|error| {
         (
             "workspace_not_found",
@@ -152,26 +156,26 @@ pub async fn dispatch(
             let group = frame
                 .pointer("/command/group")
                 .and_then(Value::as_str)
-                .ok_or(("git_command_failed", "invalid diff group".into()))?;
+                .ok_or_else(|| ("git_command_failed", "invalid diff group".into()))?;
             let path = frame
                 .pointer("/command/pathBytesBase64")
                 .and_then(Value::as_str)
                 .and_then(|value| STANDARD.decode(value).ok())
-                .ok_or(("git_command_failed", "invalid diff path".into()))?;
+                .ok_or_else(|| ("git_command_failed", "invalid diff path".into()))?;
             let comparison = frame
                 .pointer("/command/comparison")
                 .and_then(Value::as_str)
-                .ok_or(("git_command_failed", "invalid diff comparison".into()))?;
+                .ok_or_else(|| ("git_command_failed", "invalid diff comparison".into()))?;
             let diff = service
-                .diff(
+                .diff(GitDiffRequest {
                     snapshot_id,
                     owner,
-                    &root,
+                    root: &root,
                     generation,
                     group,
-                    &path,
+                    path_bytes: &path,
                     comparison,
-                )
+                })
                 .map_err(|error| ("git_command_failed", error))?;
             Ok(json!({
                 "type": "git_diff",
@@ -181,8 +185,7 @@ pub async fn dispatch(
             }))
         }
         "log" => {
-            let (limit, before) =
-                git_log_args(frame).map_err(|error| ("git_command_failed", error))?;
+            let (limit, before) = git_log_args(frame);
             let log = service
                 .log(owner, &root, generation, limit, before.as_deref())
                 .map_err(|error| ("git_command_failed", error))?;
@@ -227,7 +230,7 @@ pub async fn dispatch(
             let items = frame
                 .pointer("/command/entries")
                 .and_then(Value::as_array)
-                .ok_or(("git_command_failed", "invalid path batch".into()))?;
+                .ok_or_else(|| ("git_command_failed", "invalid path batch".into()))?;
             if items.is_empty() || items.len() > MAX_STATUS_ENTRIES {
                 return fail("git_command_failed", "invalid path batch".into());
             }
@@ -334,15 +337,15 @@ pub async fn dispatch(
                             let _ = events.send((event_owner, value));
                         }
                     });
-                    service.commit_detached(
-                        snapshot_id.to_owned(),
-                        owner.to_owned(),
+                    service.commit_detached(GitDetachedCommit {
+                        snapshot_id: snapshot_id.to_owned(),
+                        owner: owner.to_owned(),
                         root,
                         generation,
-                        event_request,
-                        message.to_owned(),
-                        Some(notify),
-                    );
+                        request_id: event_request,
+                        message: message.to_owned(),
+                        notify: Some(notify),
+                    });
                     Ok(json!({
                         "type": "git_commit_started",
                         "requestId": request_id,
@@ -371,19 +374,19 @@ mod tests {
     fn git_log_args_host_clamps_limit() {
         assert_eq!(
             git_log_args(&json!({ "command": { "type": "log", "limit": 100, "before": "abc" } })),
-            Ok((100, Some("abc".into())))
+            (100, Some("abc".into()))
         );
         assert_eq!(
             git_log_args(&json!({ "command": { "type": "log", "limit": 0 } })),
-            Ok((1, None))
+            (1, None)
         );
         assert_eq!(
             git_log_args(&json!({ "command": { "type": "log", "limit": 999 } })),
-            Ok((200, None))
+            (200, None)
         );
         assert_eq!(
             git_log_args(&json!({ "command": { "type": "log" } })),
-            Ok((50, None))
+            (50, None)
         );
     }
 

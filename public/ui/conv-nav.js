@@ -200,10 +200,15 @@ export class ConvNav {
 
     // Add missing dots
     while (this.#trackEl.children.length < turns.length) {
+      const dotIndex = this.#trackEl.children.length;
       const dot = document.createElement("button");
       dot.type = "button";
       dot.className = "conv-nav-dot";
-      dot.setAttribute("aria-label", `Jump to conversation ${this.#trackEl.children.length + 1}`);
+      dot.setAttribute("aria-label", `Jump to conversation ${dotIndex + 1}`);
+      dot.onclick = () => {
+        const turn = this.#turns[dotIndex];
+        if (turn) this.#jumpTo(turn, dotIndex);
+      };
       this.#trackEl.appendChild(dot);
     }
     // Remove extra dots
@@ -211,15 +216,15 @@ export class ConvNav {
       this.#trackEl.removeChild(this.#trackEl.lastChild);
     }
 
-    [...this.#trackEl.children].forEach((dot, i) => {
-      dot.onclick = () => this.#jumpTo(this.#turns[i], i);
+    const children = this.#trackEl.children;
+    for (let i = 0; i < children.length; i++) {
+      const dot = children[i];
       dot.classList.toggle("active", i === activeIdx);
-      dot.setAttribute("aria-label", `Jump to conversation ${i + 1}`);
       if (this.#hoveredIdx < 0) {
         // No wave when not hovering — keep all dots at their base CSS width
         dot.style.removeProperty("--nav-w");
       }
-    });
+    }
 
     if (this.#hoveredIdx >= this.#turns.length) this.#hoveredIdx = this.#turns.length - 1;
     if (this.#hoveredIdx >= 0) {

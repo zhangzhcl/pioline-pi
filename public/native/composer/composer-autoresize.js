@@ -16,14 +16,18 @@ function resolveLineHeight(style) {
   return fontSize * FALLBACK_LINE_HEIGHT_RATIO;
 }
 
-function resolveBoxHeightForRows(input, rows) {
+function resolveBoxHeights(input, minRows, maxRows) {
   const style = getComputedStyle(input);
   const lineHeight = resolveLineHeight(style);
   const verticalPadding = parsePixelValue(style.paddingTop) + parsePixelValue(style.paddingBottom);
   const verticalBorder =
     parsePixelValue(style.borderTopWidth) + parsePixelValue(style.borderBottomWidth);
+  const extra = verticalPadding + verticalBorder;
 
-  return Math.ceil(lineHeight * rows + verticalPadding + verticalBorder);
+  return {
+    minHeight: Math.ceil(lineHeight * minRows + extra),
+    maxHeight: Math.ceil(lineHeight * maxRows + extra),
+  };
 }
 
 export function setupComposerAutoResize({
@@ -33,14 +37,13 @@ export function setupComposerAutoResize({
 } = {}) {
   if (!input) return { dispose() {}, sync() {} };
 
-  const minHeight = () => resolveBoxHeightForRows(input, minRows);
-  const maxHeight = () => resolveBoxHeightForRows(input, maxRows);
-
   const sync = () => {
     input.style.height = "auto";
-    const nextHeight = Math.max(minHeight(), Math.min(input.scrollHeight, maxHeight()));
+    const { minHeight, maxHeight } = resolveBoxHeights(input, minRows, maxRows);
+    const scrollHeight = input.scrollHeight;
+    const nextHeight = Math.max(minHeight, Math.min(scrollHeight, maxHeight));
     input.style.height = `${nextHeight}px`;
-    input.style.overflowY = input.scrollHeight > maxHeight() ? "auto" : "hidden";
+    input.style.overflowY = scrollHeight > maxHeight ? "auto" : "hidden";
   };
 
   input.addEventListener("input", sync);

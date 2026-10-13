@@ -11,7 +11,7 @@
 // Exit 0 = no reformat detected (either clean tree or real content changes).
 // Exit 1 = reformat detected; print the exact recovery command.
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -20,8 +20,11 @@ const root = resolve(import.meta.dirname, "..");
 
 // Clean tree — nothing to check.
 try {
-  execSync(`git diff --quiet -- ${file}`, { cwd: root, stdio: ["ignore", "ignore", "ignore"] });
-  console.log(`✓ ${file}: no uncommitted changes`);
+  execFileSync("git", ["diff", "--quiet", "--", file], {
+    cwd: root,
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  console.log(`[ok] ${file}: no uncommitted changes`);
   process.exit(0);
 } catch {
   // git diff --quiet exits 1 when there ARE changes — fall through to the check.
@@ -33,10 +36,10 @@ function stripWhitespace(text) {
 
 let headText;
 try {
-  headText = execSync(`git show HEAD:${file}`, { cwd: root, encoding: "utf8" });
+  headText = execFileSync("git", ["show", `HEAD:${file}`], { cwd: root, encoding: "utf8" });
 } catch {
   // No HEAD (fresh checkout without commits) — nothing to compare against.
-  console.log(`✓ ${file}: no HEAD to compare (skipped)`);
+  console.log(`[ok] ${file}: no HEAD to compare (skipped)`);
   process.exit(0);
 }
 
@@ -52,13 +55,13 @@ const headStripped = stripWhitespace(headText);
 const workStripped = stripWhitespace(workText);
 
 if (headStripped === workStripped) {
-  // Content is identical after stripping whitespace → pure formatting diff.
-  console.error(`✗ ${file}: working tree differs from HEAD only by whitespace/formatting`);
+  // Content is identical after stripping whitespace -> pure formatting diff.
+  console.error(`[error] ${file}: working tree differs from HEAD only by whitespace/formatting`);
   console.error("  This is an accidental full-file reformat, not a real edit. Recover the");
   console.error("  committed formatting, then re-apply your edit:");
   console.error(`  git checkout HEAD -- ${file}`);
   process.exit(1);
 }
 
-console.log(`✓ ${file}: no formatting-only diff (content differs from HEAD)`);
+console.log(`[ok] ${file}: no formatting-only diff (content differs from HEAD)`);
 process.exit(0);

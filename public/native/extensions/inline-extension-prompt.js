@@ -165,7 +165,7 @@ function renderCustomAnswerInSelect(card, layout, actions, sentinelValue, finish
   const submit = document.createElement("button");
   submit.type = "button";
   submit.className = "inline-prompt-submit";
-  submit.textContent = "Submit";
+  submit.textContent = t("dialogs.submit");
   submit.addEventListener("click", () => {
     pendingCustomAnswers.push(input.value);
     finish({ value: sentinelValue });
@@ -301,7 +301,7 @@ function createActions(onCancel, onSubmit) {
     const submit = document.createElement("button");
     submit.type = "button";
     submit.className = "inline-prompt-submit";
-    submit.textContent = "Submit";
+    submit.textContent = t("dialogs.submit");
     submit.addEventListener("click", onSubmit);
     actions.appendChild(submit);
   }

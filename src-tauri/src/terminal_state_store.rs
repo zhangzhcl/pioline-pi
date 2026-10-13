@@ -2,8 +2,6 @@
 // ABOUTME: panel height) to terminal-state.json via temp-file then atomic rename.
 // ABOUTME: Contains no output, checkpoints, process ids, environment, titles, or capability.
 
-#![allow(dead_code)]
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,10 +79,6 @@ impl TerminalStateStore {
         Self { config_dir }
     }
 
-    pub fn config_dir(&self) -> &Path {
-        &self.config_dir
-    }
-
     /// Pure serialization used both for persistence and for the no-secret-fields
     /// contract test.
     pub fn encode(metadata: &WorkspaceTerminalMetadata) -> Result<String, StateStoreError> {
@@ -106,6 +100,7 @@ impl TerminalStateStore {
 
     /// Atomically persist metadata. A temporary sibling file is written then
     /// renamed over the destination so a crash never leaves a partial document.
+    #[cfg(test)]
     pub fn save(&self, metadata: &WorkspaceTerminalMetadata) -> Result<(), StateStoreError> {
         self.save_at(&self.state_path(), &self.temp_path(), metadata)
     }
@@ -118,15 +113,16 @@ impl TerminalStateStore {
         metadata: &WorkspaceTerminalMetadata,
     ) -> Result<(), StateStoreError> {
         let path = self.workspace_state_path(workspace_root);
-        let temp = self.workspace_temp_path(workspace_root);
+        let temp = self.unique_temp_path(&path);
         self.save_at(&path, &temp, metadata)
     }
 
     /// Load metadata. A missing file yields `Ok(None)`. A corrupt or
     /// unsupported document is quarantined aside and yields `Ok(None)` with a
     /// logged error, so startup is never blocked by a bad state file.
+    #[cfg(test)]
     pub fn load(&self) -> Result<Option<WorkspaceTerminalMetadata>, StateStoreError> {
-        self.load_at(&self.state_path(), &self.quarantine_path())
+        self.load_at(&self.state_path())
     }
 
     /// Load only the metadata associated with one canonical workspace root.
@@ -134,10 +130,7 @@ impl TerminalStateStore {
         &self,
         workspace_root: &Path,
     ) -> Result<Option<WorkspaceTerminalMetadata>, StateStoreError> {
-        self.load_at(
-            &self.workspace_state_path(workspace_root),
-            &self.workspace_quarantine_path(workspace_root),
-        )
+        self.load_at(&self.workspace_state_path(workspace_root))
     }
 
     fn save_at(
@@ -154,11 +147,7 @@ impl TerminalStateStore {
         fs::rename(temp_path, final_path).map_err(|e| StateStoreError::Io(e.to_string()))
     }
 
-    fn load_at(
-        &self,
-        path: &Path,
-        quarantine_path: &Path,
-    ) -> Result<Option<WorkspaceTerminalMetadata>, StateStoreError> {
+    fn load_at(&self, path: &Path) -> Result<Option<WorkspaceTerminalMetadata>, StateStoreError> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -168,16 +157,19 @@ impl TerminalStateStore {
             Ok(metadata) => Ok(Some(metadata)),
             Err(err) => {
                 log::warn!("terminal state was corrupt and has been quarantined: {err}");
+                let quarantine_path = self.quarantine_path_for(path);
                 let _ = fs::rename(path, quarantine_path);
                 Ok(None)
             }
         }
     }
 
+    #[cfg(test)]
     fn state_path(&self) -> PathBuf {
         self.config_dir.join(STATE_FILENAME)
     }
 
+    #[cfg(test)]
     fn temp_path(&self) -> PathBuf {
         self.unique_temp_path(&self.state_path())
     }
@@ -189,6 +181,7 @@ impl TerminalStateStore {
         ))
     }
 
+    #[cfg(test)]
     fn workspace_temp_path(&self, workspace_root: &Path) -> PathBuf {
         self.unique_temp_path(&self.workspace_state_path(workspace_root))
     }
@@ -206,35 +199,24 @@ impl TerminalStateStore {
         ))
     }
 
-    fn quarantine_path(&self) -> PathBuf {
+    fn quarantine_path_for(&self, state_path: &Path) -> PathBuf {
+        let filename = state_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(STATE_FILENAME);
         self.config_dir
-            .join(format!("{STATE_FILENAME}.corrupt.{}", timestamp()))
-    }
-
-    fn workspace_quarantine_path(&self, workspace_root: &Path) -> PathBuf {
-        self.config_dir.join(format!(
-            "{STATE_FILENAME}.{}.corrupt.{}",
-            workspace_key(workspace_root),
-            timestamp()
-        ))
+            .join(format!("{filename}.corrupt.{}", timestamp()))
     }
 }
 
 fn workspace_key(workspace_root: &Path) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(workspace_root.to_string_lossy().as_bytes());
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex::encode(Sha256::digest(workspace_root.to_string_lossy().as_bytes()))
 }
 
 fn timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 #[cfg(test)]

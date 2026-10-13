@@ -115,7 +115,7 @@ export class DialogHandler {
     const { message, notifyType } = request;
     const notification = document.createElement("div");
     notification.className = "error-message";
-    const icon = notifyType === "error" || notifyType === "warning" ? "⚠️" : "ℹ️";
+    const icon = notifyType === "error" || notifyType === "warning" ? "[!]" : "[i]";
     notification.textContent = `${icon} ${message}`;
 
     const target = this.notificationContainer || document.getElementById("messages");

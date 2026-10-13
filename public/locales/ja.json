@@ -634,7 +634,7 @@
     "unavailableReason": "利用不可（{reason}）",
     "startingNewSession": "新しいセッションを開始中…",
     "loadingSession": "セッションを読み込み中…",
-    "sessionStatsTitle": "📊 セッション統計",
+    "sessionStatsTitle": "セッション統計",
     "sessionStatsMessages": "メッセージ：{total}件（ユーザー {user}、アシスタント {assistant}）",
     "sessionStatsToolCalls": "ツール呼び出し：{count}回",
     "sessionStatsContext": "コンテキスト：約{tokens}kトークン",

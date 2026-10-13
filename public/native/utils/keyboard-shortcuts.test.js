@@ -1,6 +1,6 @@
 import { JSDOM } from "jsdom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setupAppKeyboardShortcuts } from "./keyboard-shortcuts.js";
+import { isFilePanelShortcut, isMacOS, setupAppKeyboardShortcuts } from "./keyboard-shortcuts.js";
 
 describe("app keyboard shortcuts", () => {
   let dom;
@@ -75,5 +75,16 @@ describe("app keyboard shortcuts", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
 
     expect(abort).not.toHaveBeenCalled();
+  });
+
+  it("recognizes platform-specific file panel shortcut (Cmd+B on macOS, Ctrl+B elsewhere)", () => {
+    expect(isMacOS({ platform: "MacIntel" })).toBe(true);
+    expect(isMacOS({ platform: "Win32" })).toBe(false);
+    expect(
+      isFilePanelShortcut({ key: "b", metaKey: true, ctrlKey: false }, { platform: "MacIntel" }),
+    ).toBe(true);
+    expect(
+      isFilePanelShortcut({ key: "b", metaKey: false, ctrlKey: true }, { platform: "Win32" }),
+    ).toBe(true);
   });
 });

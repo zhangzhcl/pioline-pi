@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), allow(dead_code))]
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -28,16 +26,13 @@ impl RuntimeTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(test, allow(dead_code))]
 pub enum RuntimeState {
     Starting,
-    Trusting,
     Ready,
     Working,
     Idle,
+    #[cfg(test)]
     Suspended,
-    Crashed,
-    Stopped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +41,7 @@ pub enum MutationAcceptance {
     Duplicate,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SequencedEvent {
     pub target: RuntimeTarget,
@@ -54,7 +49,7 @@ pub struct SequencedEvent {
     pub event: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSnapshot {
     pub target: RuntimeTarget,
@@ -62,7 +57,7 @@ pub struct RuntimeSnapshot {
     pub state: RuntimeState,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStatus {
     pub target: RuntimeTarget,
@@ -74,6 +69,7 @@ pub enum CoordinatorError {
     UnknownInstance,
     IdentityMismatch,
     DuplicateSession,
+    #[cfg(test)]
     InvalidState,
     ForbiddenIdentityReplacement,
     InvalidCommand,
@@ -291,6 +287,7 @@ impl RuntimeCoordinator {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn resume(
         &mut self,
         suspended: &RuntimeTarget,

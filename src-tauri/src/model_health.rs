@@ -154,27 +154,24 @@ pub async fn run_model_test(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    match parse_assistant_result(&stdout) {
-        Some((stop_reason, text, error_message)) => {
-            let ok = matches!(stop_reason.as_deref(), Some("stop" | "toolUse" | "length"));
-            Ok(ModelTestOutcome {
-                ok,
-                latency_ms,
-                stop_reason,
-                response_text: text,
-                error: if ok { None } else { error_message },
-            })
-        }
-        None => {
-            let details = if !stderr.trim().is_empty() {
-                stderr.trim().to_string()
-            } else if !stdout.trim().is_empty() {
-                stdout.trim().chars().take(500).collect()
-            } else {
-                format!("pi exited with {}", output.status)
-            };
-            Ok(ModelTestOutcome::failure(latency_ms, details))
-        }
+    if let Some((stop_reason, text, error_message)) = parse_assistant_result(&stdout) {
+        let ok = matches!(stop_reason.as_deref(), Some("stop" | "toolUse" | "length"));
+        Ok(ModelTestOutcome {
+            ok,
+            latency_ms,
+            stop_reason,
+            response_text: text,
+            error: if ok { None } else { error_message },
+        })
+    } else {
+        let details = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().chars().take(500).collect()
+        } else {
+            format!("pi exited with {}", output.status)
+        };
+        Ok(ModelTestOutcome::failure(latency_ms, details))
     }
 }
 

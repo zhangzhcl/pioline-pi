@@ -98,27 +98,42 @@ function summarizeStep(step) {
   };
 }
 
-/** Identical tool calls (same tool, same arguments) executed more than once. */
-function findDuplicateCalls(steps, thresholds) {
+function groupToolStepsBy(steps, getKey) {
   const groups = new Map();
   for (const step of steps) {
-    if (step.kind !== "tool" || !step.signature) continue;
-    const bucket = groups.get(step.signature) ?? [];
+    if (step.kind !== "tool") continue;
+    const key = getKey(step);
+    if (!key) continue;
+    let bucket = groups.get(key);
+    if (!bucket) {
+      bucket = [];
+      groups.set(key, bucket);
+    }
     bucket.push(step);
-    groups.set(step.signature, bucket);
   }
+  return groups;
+}
+
+function sumDurationMs(steps) {
+  let sum = 0;
+  for (const step of steps) sum += Number(step.durationMs) || 0;
+  return sum;
+}
+
+/** Identical tool calls (same tool, same arguments) executed more than once. */
+function findDuplicateCalls(steps, thresholds) {
+  const groups = groupToolStepsBy(steps, (step) => step.signature);
   const duplicates = [];
   const signatures = new Set();
   for (const [signature, bucket] of groups) {
     if (bucket.length < thresholds.duplicateMin) continue;
     signatures.add(signature);
-    const repeats = bucket.slice(1);
     duplicates.push({
       code: "duplicateCalls",
       label: bucket[0].label,
       detail: bucket[0].detail || "",
       count: bucket.length,
-      wastedMs: repeats.reduce((sum, step) => sum + (Number(step.durationMs) || 0), 0),
+      wastedMs: sumDurationMs(bucket.slice(1)),
       turnIndex: bucket[0].turnIndex ?? null,
     });
   }
@@ -128,13 +143,7 @@ function findDuplicateCalls(steps, thresholds) {
 
 /** The same call failing again and again -- a retry loop, not progress. */
 function findRetryLoops(steps, thresholds) {
-  const groups = new Map();
-  for (const step of steps) {
-    if (step.kind !== "tool" || step.status !== "error" || !step.signature) continue;
-    const bucket = groups.get(step.signature) ?? [];
-    bucket.push(step);
-    groups.set(step.signature, bucket);
-  }
+  const groups = groupToolStepsBy(steps, (step) => (step.status === "error" ? step.signature : ""));
   const loops = [];
   for (const bucket of groups.values()) {
     if (bucket.length < thresholds.retryMin) continue;
@@ -143,7 +152,7 @@ function findRetryLoops(steps, thresholds) {
       label: bucket[0].label,
       detail: bucket[0].detail || "",
       count: bucket.length,
-      wastedMs: bucket.reduce((sum, step) => sum + (Number(step.durationMs) || 0), 0),
+      wastedMs: sumDurationMs(bucket),
       error: bucket[bucket.length - 1].error || null,
       turnIndex: bucket[0].turnIndex ?? null,
     });
@@ -153,14 +162,9 @@ function findRetryLoops(steps, thresholds) {
 
 /** The same file/pattern read over and over with slightly different args. */
 function findRepeatedTargets(steps, thresholds, duplicateSignatures) {
-  const groups = new Map();
-  for (const step of steps) {
-    if (step.kind !== "tool" || !step.detail) continue;
-    if (!READ_LIKE_TOOLS.has(step.label)) continue;
-    const bucket = groups.get(step.detail) ?? [];
-    bucket.push(step);
-    groups.set(step.detail, bucket);
-  }
+  const groups = groupToolStepsBy(steps, (step) =>
+    READ_LIKE_TOOLS.has(step.label) ? step.detail : "",
+  );
   const repeats = [];
   for (const [detail, bucket] of groups) {
     if (bucket.length < thresholds.repeatedFileMin) continue;
@@ -172,7 +176,7 @@ function findRepeatedTargets(steps, thresholds, duplicateSignatures) {
       label: bucket[0].label,
       detail,
       count: bucket.length,
-      wastedMs: bucket.slice(1).reduce((sum, step) => sum + (Number(step.durationMs) || 0), 0),
+      wastedMs: sumDurationMs(bucket.slice(1)),
       turnIndex: bucket[0].turnIndex ?? null,
     });
   }
@@ -215,12 +219,14 @@ export function analyzeTurns(
   }, 0);
 
   const byKind = (kind) => steps.filter((step) => step.kind === kind);
-  const toolMs = mergedDuration(byKind("tool"));
+  const toolSteps = byKind("tool");
+  const modelSteps = byKind("model");
+  const toolMs = mergedDuration(toolSteps);
   const compactionMs = mergedDuration(byKind("compaction"));
   // Model spans enclose the tool calls they trigger in some runtimes, so model
   // time is reported as "model span minus the tool time inside it" and the
   // remainder becomes idle rather than being double counted.
-  const modelSpanMs = mergedDuration(byKind("model"));
+  const modelSpanMs = mergedDuration(modelSteps);
   const busyMs = mergedDuration(steps);
   const modelMs = Math.max(0, busyMs - toolMs - compactionMs);
   const idleMs = Math.max(0, wallMs - busyMs);
@@ -264,26 +270,19 @@ export function analyzeTurns(
   const redundancies = [...duplicates.entries, ...retryLoops, ...repeatedTargets];
   const wastedMs = redundancies.reduce((sum, entry) => sum + (Number(entry.wastedMs) || 0), 0);
 
-  const usage = list.reduce(
-    (totals, turn) => ({
-      input: totals.input + (Number(turn.usage?.input) || 0),
-      output: totals.output + (Number(turn.usage?.output) || 0),
-      cacheRead: totals.cacheRead + (Number(turn.usage?.cacheRead) || 0),
-      cacheWrite: totals.cacheWrite + (Number(turn.usage?.cacheWrite) || 0),
-      cost: totals.cost + (Number(turn.usage?.cost) || 0),
-    }),
-    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
-  );
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  for (const turn of list) {
+    usage.input += Number(turn.usage?.input) || 0;
+    usage.output += Number(turn.usage?.output) || 0;
+    usage.cacheRead += Number(turn.usage?.cacheRead) || 0;
+    usage.cacheWrite += Number(turn.usage?.cacheWrite) || 0;
+    usage.cost += Number(turn.usage?.cost) || 0;
+  }
 
-  const status = list.some((turn) => turn.status === "failed")
-    ? "failed"
-    : list.some((turn) => turn.status === "running")
-      ? "running"
-      : list.some((turn) => turn.status === "aborted")
-        ? "aborted"
-        : list.some((turn) => turn.status === "unknown")
-          ? "unknown"
-          : "completed";
+  const status =
+    ["failed", "running", "aborted", "unknown"].find((candidate) =>
+      list.some((turn) => turn.status === candidate),
+    ) ?? "completed";
 
   const totals = {
     turns: list.length,
@@ -296,8 +295,8 @@ export function analyzeTurns(
     busyMs,
     wastedMs,
     wastedShare: stepShare(wastedMs, wallMs),
-    toolCalls: byKind("tool").length,
-    modelCalls: byKind("model").length,
+    toolCalls: toolSteps.length,
+    modelCalls: modelSteps.length,
     failureCount: failures.length,
     usage,
   };

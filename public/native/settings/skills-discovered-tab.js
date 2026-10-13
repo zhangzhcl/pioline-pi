@@ -3,101 +3,17 @@
 
 import { onLocaleChange, t } from "../../i18n.js";
 import { createLoadingPlaceholder } from "../../ui/loading-placeholder.js";
+import {
+  countGroups,
+  countItems,
+  el,
+  flatLeaves,
+  renderSkillItemRow,
+  renderSkillStateBadge,
+  renderSkillSwitch,
+  rootsForScope,
+} from "./skills-discovered-views.js";
 import { manageModalDialog } from "./skills-modal.js";
-
-/**
- * @typedef {Object} SkillInventoryItem
- * @property {"skill"} kind
- * @property {string} id
- * @property {string} name
- * @property {string} description
- * @property {boolean} enabled
- * @property {string} status
- * @property {string} ruleRelativeDir
- * @property {string} ruleBaseDir
- * @property {string} scope
- * @property {string} sourceRoot
- * @property {boolean} ambiguous
- * @property {{id:string;canonicalPath:string;name:string}|undefined} shadowedBy
- *
- * @typedef {Object} SkillGroupNode
- * @property {"group"} kind
- * @property {string} id
- * @property {string} sourceRoot
- * @property {string} ruleBaseRelativePath
- * @property {string} name
- * @property {string} scope
- * @property {"all-on"|"all-off"|"mixed"} state
- * @property {boolean} ambiguous
- * @property {(SkillInventoryItem|SkillGroupNode)[]} children
- *
- * @typedef {Object} SkillRoot
- * @property {string} sourceRoot
- * @property {string} ruleBaseDir
- * @property {string} scope
- * @property {(SkillInventoryItem|SkillGroupNode)[]} children
- *
- * @typedef {Object} SkillInventory
- * @property {string} scope
- * @property {string} settingsPath
- * @property {boolean} trusted
- * @property {SkillRoot[]} roots
- * @property {string[]} customRules
- * @property {string[]} discoveredRoots
- * @property {Array<{path?:string;message:string}>} diagnostics
- */
-
-function expectedScopeFor(scope) {
-  return scope === "global" ? "user" : "project";
-}
-
-function flatLeaves(node) {
-  const out = [];
-  for (const c of node.children ?? []) {
-    if (c.kind === "skill") out.push(c);
-    else out.push(...flatLeaves(c));
-  }
-  return out;
-}
-
-function countGroups(node) {
-  let n = 0;
-  for (const c of node.children ?? []) {
-    if (c.kind === "group") n += 1 + countGroups(c);
-  }
-  return n;
-}
-
-function rootsForScope(inventory, scope) {
-  const want = expectedScopeFor(scope);
-  return (inventory?.roots ?? []).filter((r) => r.scope === want);
-}
-
-function countItems(inventory, scope) {
-  return rootsForScope(inventory, scope).reduce((n, r) => n + flatLeaves(r).length, 0);
-}
-
-function el(tag, props = {}, children = []) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (key === "class") node.className = value;
-    else if (key === "text") node.textContent = value;
-    else if (key === "dataset") {
-      for (const [dk, dv] of Object.entries(value)) node.dataset[dk] = dv;
-    } else if (key.startsWith("on") && typeof value === "function") {
-      node.addEventListener(key.slice(2).toLowerCase(), value);
-    } else if (key === "aria") {
-      for (const [ak, av] of Object.entries(value)) node.setAttribute(`aria-${ak}`, av);
-    } else if (value !== undefined && value !== null) {
-      node.setAttribute(key, String(value));
-    }
-  }
-  for (const child of [].concat(children)) {
-    if (child == null || child === false) continue;
-    node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
-  }
-  return node;
-}
 
 /**
  * @param {Object} opts
@@ -244,42 +160,6 @@ export function setupDiscoveredSkillsTab({ container, rpcCommand, showSuccess, s
     return tabs;
   }
 
-  function renderSwitch(checked, disabled, indeterminate, ariaLabel, onChange) {
-    // Reuse the General/Providers tab's sliding toggle (`.settings-toggle`)
-    // instead of a raw checkbox so Skills matches the rest of Settings.
-    // Group rows may be in a mixed state (some children on, some off); we
-    // expose that via a `data-mixed` attribute and a dedicated CSS variant.
-    const button = el("button", {
-      type: "button",
-      class: `settings-toggle skills-switch${indeterminate ? " mixed" : ""}`,
-      "aria-checked": String(Boolean(checked)),
-      "aria-label": ariaLabel,
-      role: "switch",
-    });
-    if (checked) button.classList.add("on");
-    if (indeterminate) button.dataset.mixed = "true";
-    if (disabled) button.disabled = true;
-    button.addEventListener("click", () => {
-      if (button.disabled) return;
-      onChange(!button.classList.contains("on"));
-    });
-    return button;
-  }
-
-  function stateBadge(state, enabled, total) {
-    const label =
-      state === "all-on"
-        ? t("settings.skills.allEnabled")
-        : state === "all-off"
-          ? t("settings.skills.allDisabled")
-          : t("settings.skills.enabledCount", { enabled, total });
-    return el("span", {
-      class: `skills-group-status ${state}`,
-      text: label,
-      dataset: { skillGroupState: state },
-    });
-  }
-
   function renderRoot(root, rootDisabled) {
     const rootBasename = root.sourceRoot.split("/").pop() || root.sourceRoot;
     return el("section", { class: "skills-root", dataset: { skillRoot: root.sourceRoot } }, [
@@ -300,10 +180,6 @@ export function setupDiscoveredSkillsTab({ container, rpcCommand, showSuccess, s
     ]);
   }
 
-  // Top-level children of a root: skills that sit directly under a sourceRoot
-  // (not inside a group container) are aggregated into ONE card titled with
-  // the root basename ("skills"), with one skill row each. Real group
-  // containers render as their own group cards.
   function renderTopChildren(children, parentDisabled, rootBasename) {
     const result = [];
     const topSkills = children.filter((c) => c.kind === "skill");
@@ -323,10 +199,6 @@ export function setupDiscoveredSkillsTab({ container, rpcCommand, showSuccess, s
   }
 
   function renderTopSkillsCard(skills, parentDisabled, rootBasename) {
-    // Skills directly under a sourceRoot are not a real group — the root
-    // directory itself cannot be enabled/disabled as a unit — so the card
-    // header carries only the folder name and no switch; each skill row has
-    // its own switch.
     return el(
       "section",
       { class: "skills-group skills-single-skill", dataset: { skillCard: rootBasename } },
@@ -372,8 +244,8 @@ export function setupDiscoveredSkillsTab({ container, rpcCommand, showSuccess, s
         el("div", { class: "skills-group-name", text: group.name }),
         el("div", { class: "skills-group-source", text: group.ruleBaseRelativePath }),
       ]),
-      stateBadge(group.state, enabled, leaves.length),
-      renderSwitch(
+      renderSkillStateBadge(group.state, enabled, leaves.length),
+      renderSkillSwitch(
         group.state === "all-on",
         groupDisabled,
         group.state === "mixed",
@@ -408,31 +280,13 @@ export function setupDiscoveredSkillsTab({ container, rpcCommand, showSuccess, s
   }
 
   function renderSkillRow(item, parentDisabled = false) {
-    const shadowed = item.status === "shadowed";
-    const rowDisabled = item.ambiguous || shadowed || pendingTargets.has(item.id) || parentDisabled;
-    return el(
-      "div",
-      { class: "skills-skill-row", dataset: { skillRow: item.name, skillToggle: item.name } },
-      [
-        el("div", { class: "skills-skill-info" }, [
-          el("div", { class: "skills-skill-name", text: item.name }),
-          el("div", { class: "skills-skill-description", text: item.description }),
-          shadowed && item.shadowedBy
-            ? el("div", {
-                class: "skills-shadowed-note",
-                text: t("settings.skills.shadowedBy", { name: item.shadowedBy.name }),
-              })
-            : null,
-        ]),
-        renderSwitch(
-          item.status === "enabled",
-          rowDisabled,
-          false,
-          `${t("settings.skills.enableSkill")}: ${item.name}`,
-          (checked) => void setEnabled({ kind: "skill", id: item.id }, checked),
-        ),
-      ],
-    );
+    return renderSkillItemRow(item, {
+      parentDisabled,
+      pendingTargets,
+      onSetEnabled: (target, checked) => {
+        void setEnabled(target, checked);
+      },
+    });
   }
 
   function render() {

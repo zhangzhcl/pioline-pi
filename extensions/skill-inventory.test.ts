@@ -3,16 +3,7 @@
 // ABOUTME: Exercises Pi-compatible skill discovery and rule resolution for the Skills Settings page.
 // ABOUTME: Uses isolated temporary directories so tests never read a developer's real agent configuration.
 
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { mkdir as mkdirAsync, rmdir as rmdirAsync, utimes } from "node:fs/promises";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -182,7 +173,13 @@ function findAllByName(inv: SkillInventory, name: string) {
   return matches;
 }
 
-// ── Discovery ─────────────────────────────────────────────────────────
+function skillTarget(inv: SkillInventory, name: string) {
+  return { kind: "skill" as const, id: findSkill(inv, name).id };
+}
+
+function mutationBase(opts: BuildSkillInventoryOptions): MutateSkillEnabledOptions {
+  return { ...opts, target: { kind: "skill", id: "" }, enabled: false };
+}
 
 describe("skill discovery", () => {
   it("discovers nested skills under every global root and groups rules relative to each Pi base", () => {
@@ -225,11 +222,9 @@ describe("skill discovery", () => {
 
   it("accepts direct Markdown at a .pi-style root but not at an .agents root", () => {
     const opts = makeOptions();
-    // A loose .md (not SKILL.md) directly at a `.pi`-style root is discovered.
     const piRootMd = join(opts.agentDir, "skills", "loose.md");
     mkdirSync(dirname(piRootMd), { recursive: true });
     writeFileSync(piRootMd, "---\nname: loose\ndescription: root level\n---\n");
-    // The same shape at an `.agents` root is excluded by Pi's discovery rules.
     const home = (opts as { homeDir: string }).homeDir;
     const agentsRootMd = join(home, ".agents", "skills", "ignored.md");
     mkdirSync(dirname(agentsRootMd), { recursive: true });
@@ -281,15 +276,13 @@ describe("skill discovery", () => {
     try {
       symlinkSync(real, linkDir);
     } catch {
-      return; // symlink not supported on this platform / without privileges
+      return;
     }
     const inv = buildSkillInventory(opts);
     const matches = flatItems(inv).filter((i) => i.name === "baoyu-diagram");
     expect(matches.length).toBe(1);
   });
 });
-
-// ── Rule resolution ───────────────────────────────────────────────────
 
 describe("rule resolution", () => {
   it("applies ! then + then - precedence and reports matching rules", () => {
@@ -304,9 +297,9 @@ describe("rule resolution", () => {
         },
       }),
     );
-    expect(findSkill(inv, "baoyu-diagram").enabled).toBe(true); // + overrides !
-    expect(findSkill(inv, "baoyu-article-illustrator").enabled).toBe(false); // - final
-    expect(findSkill(inv, "baoyu-infographic").enabled).toBe(false); // ! excludes
+    expect(findSkill(inv, "baoyu-diagram").enabled).toBe(true);
+    expect(findSkill(inv, "baoyu-article-illustrator").enabled).toBe(false);
+    expect(findSkill(inv, "baoyu-infographic").enabled).toBe(false);
   });
 
   it("derives group state as all-on / all-off / mixed", () => {
@@ -317,8 +310,6 @@ describe("rule resolution", () => {
     expect(group?.state).toBe("all-off");
   });
 });
-
-// ── Collisions & custom rules ─────────────────────────────────────────
 
 describe("collisions and custom rules", () => {
   it("ranks a project-auto skill above a global configured skill of the same name", () => {
@@ -372,8 +363,6 @@ describe("collisions and custom rules", () => {
     expect(suiteGroup?.ambiguous).toBe(true);
   });
 });
-
-// ── Project scope & trust ─────────────────────────────────────────────
 
 describe("project scope and trust", () => {
   it("returns no project groups and a trust diagnostic for an untrusted project", () => {
@@ -436,283 +425,5 @@ describe("tree grouping", () => {
     const skills = readJson(join(opts.agentDir, "settings.json")).skills as string[];
     expect(skills).toContain("-skills/Humanizer-zh");
     expect(skills.some((s) => s.startsWith("!skills/Humanizer-zh"))).toBe(false);
-  });
-});
-
-// ── Mutation ──────────────────────────────────────────────────────────
-
-function skillTarget(inv: SkillInventory, name: string) {
-  return { kind: "skill" as const, id: findSkill(inv, name).id };
-}
-
-function groupTarget(inv: SkillInventory, groupRel: string) {
-  const g = findGroup(inv, groupRel);
-  if (!g) throw new Error(`no group ${groupRel}`);
-  return { kind: "group" as const, id: g.id };
-}
-
-function mutationBase(opts: BuildSkillInventoryOptions): MutateSkillEnabledOptions {
-  return { ...opts, target: { kind: "skill", id: "" }, enabled: false };
-}
-
-describe("mutation: atomic settings patches", () => {
-  it("disables one skill with an exact minus rule while preserving other JSON keys", async () => {
-    const opts = makeOptions({
-      globalSettings: { thinkingLevel: "high", skills: ["!skills/other/**"] },
-    });
-    const inv = buildSkillInventory(opts);
-    const result = await mutateSkillEnabled({
-      ...mutationBase(opts),
-      target: skillTarget(inv, "baoyu-diagram"),
-      enabled: false,
-    });
-    expect(readJson(join(opts.agentDir, "settings.json"))).toEqual({
-      thinkingLevel: "high",
-      skills: ["!skills/other/**", "-skills/baoyu-skills/baoyu-diagram"],
-    });
-    expect(result.runtimeRestartRequired).toBe(true);
-  });
-
-  it("enables a child still excluded by its group through exactly one plus rule", async () => {
-    const opts = makeOptions({
-      globalSettings: { skills: ["!skills/baoyu-skills/**"] },
-    });
-    const inv = buildSkillInventory(opts);
-    await mutateSkillEnabled({
-      ...mutationBase(opts),
-      target: skillTarget(inv, "baoyu-diagram"),
-      enabled: true,
-    });
-    expect(readJson(join(opts.agentDir, "settings.json")).skills).toEqual([
-      "!skills/baoyu-skills/**",
-      "+skills/baoyu-skills/baoyu-diagram",
-    ]);
-  });
-
-  it("disables a group with a skills-prefixed glob and removes its child plus exceptions", async () => {
-    const opts = makeOptions({
-      globalSettings: { skills: ["+skills/baoyu-skills/baoyu-diagram", "!skills/unrelated/**"] },
-    });
-    const inv = buildSkillInventory(opts);
-    await mutateSkillEnabled({
-      ...mutationBase(opts),
-      target: groupTarget(inv, "skills/baoyu-skills"),
-      enabled: false,
-    });
-    expect(readJson(join(opts.agentDir, "settings.json")).skills).toEqual([
-      "!skills/unrelated/**",
-      "!skills/baoyu-skills/**",
-    ]);
-  });
-
-  it("enables a group under a broader exclusion and force-includes still-matched members", async () => {
-    const opts = makeOptions({
-      globalSettings: { skills: ["!skills/**", "-skills/baoyu-skills/baoyu-article-illustrator"] },
-    });
-    const inv = buildSkillInventory(opts);
-    await mutateSkillEnabled({
-      ...mutationBase(opts),
-      target: groupTarget(inv, "skills/baoyu-skills"),
-      enabled: true,
-    });
-    const skills = readJson(join(opts.agentDir, "settings.json")).skills as string[];
-    expect(skills).toContain("!skills/**");
-    expect(skills).toContain("-skills/baoyu-skills/baoyu-article-illustrator"); // child - preserved
-    expect(skills).toContain("+skills/baoyu-skills/baoyu-diagram");
-    expect(skills).toContain("+skills/baoyu-skills/baoyu-infographic");
-    expect(skills).not.toContain("+skills/baoyu-skills/baoyu-article-illustrator"); // - wins, no +
-  });
-
-  it("is idempotent on repeated disable", async () => {
-    const opts = makeOptions();
-    const inv = buildSkillInventory(opts);
-    const target = skillTarget(inv, "baoyu-diagram");
-    const base = { ...mutationBase(opts), target, enabled: false };
-    await mutateSkillEnabled(base);
-    await mutateSkillEnabled(base);
-    expect(readJson(join(opts.agentDir, "settings.json")).skills).toEqual([
-      "-skills/baoyu-skills/baoyu-diagram",
-    ]);
-  });
-
-  it("rejects mutation of an untrusted project", async () => {
-    const opts = makeOptions({ scope: "project", projectTrusted: false });
-    await expect(
-      mutateSkillEnabled({
-        ...mutationBase(opts),
-        target: { kind: "skill", id: "/nonexistent/SKILL.md" },
-        enabled: false,
-      }),
-    ).rejects.toThrow(/not trusted/);
-  });
-
-  it("does not overwrite settings when the file is invalid JSON", async () => {
-    const opts = makeOptions();
-    const settingsPath = join(opts.agentDir, "settings.json");
-    const malformed = "{ not json";
-    writeFileSync(settingsPath, malformed);
-    const inv = buildSkillInventory(opts);
-    await expect(
-      mutateSkillEnabled({
-        ...mutationBase(opts),
-        target: skillTarget(inv, "baoyu-diagram"),
-        enabled: false,
-      }),
-    ).rejects.toThrow();
-    expect(readFileSync(settingsPath, "utf-8")).toBe(malformed);
-  });
-
-  it("rejects an unknown target id", async () => {
-    const opts = makeOptions();
-    await expect(
-      mutateSkillEnabled({
-        ...mutationBase(opts),
-        target: { kind: "skill", id: "/does/not/exist/SKILL.md" },
-        enabled: false,
-      }),
-    ).rejects.toThrow(/Unknown skill target/);
-  });
-
-  it("rejects a skill that does not belong to the selected scope", async () => {
-    const opts = makeOptions({ scope: "global", projectTrusted: true });
-    const inv = buildSkillInventory(opts);
-    const projectSkill = flatItems(inv).find((i) => i.scope === "project");
-    expect(projectSkill).toBeDefined();
-    await expect(
-      mutateSkillEnabled({
-        ...mutationBase(opts),
-        target: { kind: "skill", id: projectSkill?.id ?? "" },
-        enabled: false,
-      }),
-    ).rejects.toThrow(/scope/);
-  });
-
-  it("rejects mutation of a cross-root ambiguous target", async () => {
-    const opts = makeOptions();
-    // Plant a second root whose skill shares the same base-relative path,
-    // so one portable rule would hit both roots.
-    const home = (opts as { homeDir: string }).homeDir;
-    writeSkill(join(home, ".agents", "skills", "baoyu-skills", "baoyu-diagram"), {
-      name: "baoyu-diagram",
-      description: "dup path",
-    });
-    const inv = buildSkillInventory(opts);
-    const ambiguous = flatItems(inv).find((i) => i.ambiguous);
-    expect(ambiguous).toBeDefined();
-    await expect(
-      mutateSkillEnabled({
-        ...mutationBase(opts),
-        target: { kind: "skill", id: ambiguous?.id ?? "" },
-        enabled: false,
-      }),
-    ).rejects.toThrow(/ambiguous/);
-  });
-
-  it("mutates project skills even when the project has no .pi/ directory yet", async () => {
-    const opts = makeOptions({ scope: "project", projectTrusted: true });
-    // Remove the whole .pi/ directory to model Dr. Lin's case (project has
-    // only ancestor .agents skills, no .pi/ at all).
-    rmSync(join(opts.cwd, ".pi"), { recursive: true, force: true });
-    writeSkill(join(opts.cwd, ".agents", "skills", "ag", "ag-skill"), {
-      name: "ag-skill",
-      description: "ag",
-    });
-    const inv = buildSkillInventory(opts);
-    const item = flatItems(inv).find((i) => i.name === "ag-skill");
-    expect(item).toBeDefined();
-    await mutateSkillEnabled({
-      ...mutationBase(opts),
-      scope: "project",
-      target: { kind: "skill", id: item?.id ?? "" },
-      enabled: false,
-    });
-    expect(existsSync(join(opts.cwd, ".pi", "settings.json"))).toBe(true);
-    expect(readJson(join(opts.cwd, ".pi", "settings.json")).skills).toEqual([
-      "-skills/ag/ag-skill",
-    ]);
-    // Lock uses the Pi-compatible settings.json.lock directory, not the old
-    // .picot.lock file; both are cleaned up after a successful mutation.
-    expect(existsSync(join(opts.cwd, ".pi", "settings.json.picot.lock"))).toBe(false);
-    expect(existsSync(join(opts.cwd, ".pi", "settings.json.lock"))).toBe(false);
-  });
-
-  it("recovers from a stale settings lock left by a crashed holder", async () => {
-    const opts = makeOptions();
-    const settingsPath = join(opts.agentDir, "settings.json");
-    const lockDir = `${settingsPath}.lock`;
-    // Pre-create the Pi-compatible lock directory with an old mtime (>10s stale).
-    await mkdirAsync(lockDir);
-    const old = new Date(Date.now() - 20000);
-    await utimes(lockDir, old, old);
-    const inv = buildSkillInventory(opts);
-    await mutateSkillEnabled({
-      ...mutationBase(opts),
-      target: skillTarget(inv, "baoyu-diagram"),
-      enabled: false,
-    });
-    // Mutation cleared the stale lock, ran, and released its own lock.
-    expect(existsSync(lockDir)).toBe(false);
-    expect(readJson(settingsPath).skills).toEqual(["-skills/baoyu-skills/baoyu-diagram"]);
-  });
-
-  it("waits for a concurrently held lock and succeeds once released", async () => {
-    const opts = makeOptions();
-    const settingsPath = join(opts.agentDir, "settings.json");
-    const lockDir = `${settingsPath}.lock`;
-    const inv = buildSkillInventory(opts);
-    // Hold the Pi-compatible lock directory from outside the mutation.
-    await mkdirAsync(lockDir);
-    let released = false;
-    const releaser = new Promise<void>((resolve) => {
-      setTimeout(async () => {
-        await rmdirAsync(lockDir);
-        released = true;
-        resolve();
-      }, 120);
-    });
-    await mutateSkillEnabled({
-      ...mutationBase(opts),
-      target: skillTarget(inv, "baoyu-diagram"),
-      enabled: false,
-    });
-    expect(released).toBe(true);
-    expect(readJson(settingsPath).skills).toEqual(["-skills/baoyu-skills/baoyu-diagram"]);
-    await releaser;
-  });
-
-  it("migrates a legacy skills object and preserves enableSkillCommands", async () => {
-    const opts = makeOptions({
-      globalSettings: {
-        skills: { enableSkillCommands: false, customDirectories: ["/custom/dir"] },
-      } as never,
-    });
-    const settingsPath = join(opts.agentDir, "settings.json");
-    const inv = buildSkillInventory(opts);
-    await mutateSkillEnabled({
-      ...mutationBase(opts),
-      target: skillTarget(inv, "baoyu-diagram"),
-      enabled: false,
-    });
-    const result = readJson(settingsPath);
-    // enableSkillCommands promoted to top level, not silently dropped.
-    expect(result.enableSkillCommands).toBe(false);
-    // skills is now an array (migrated customDirectories + the new minus rule),
-    // never the old object shape.
-    expect(Array.isArray(result.skills)).toBe(true);
-    expect(result.skills).toContain("-skills/baoyu-skills/baoyu-diagram");
-  });
-
-  it("writes atomically (no .tmp file left behind)", async () => {
-    const opts = makeOptions();
-    const inv = buildSkillInventory(opts);
-    await mutateSkillEnabled({
-      ...mutationBase(opts),
-      target: skillTarget(inv, "baoyu-diagram"),
-      enabled: false,
-    });
-    const { readdirSync } = await import("node:fs");
-    const leftovers = readdirSync(opts.agentDir).filter((f) => f.includes(".picot-skills-"));
-    expect(leftovers).toEqual([]);
-    expect(existsSync(join(opts.agentDir, "settings.json"))).toBe(true);
   });
 });

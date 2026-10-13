@@ -5,128 +5,56 @@
  */
 
 import { onLocaleChange, t } from "../i18n.js";
-import { createIcon } from "../icons.js";
 import { initImageLightbox } from "./image-lightbox.js";
 import { renderMarkdown, renderStreamingMarkdown, renderUserMarkdown } from "./markdown.js";
+import {
+  BRAIN_ICON,
+  buildWelcomeElement,
+  CHEVRON_ICON,
+  COPY_ICON,
+  cleanChatTranscript,
+  collectMessageImageItems,
+  createMessageDurationSpan,
+  createMessageTimeSpan,
+  createUserActionButton,
+  createUserCollapseToggleButton,
+  escapeHtmlText,
+  extractCopyableMessageText,
+  extractTextFromMessageContent,
+  formatDurationLabel,
+  formatMessageTime,
+  fullTimestampTitle,
+  resolveImageDataUrl,
+  resolveMessageEntryId,
+  setupCodeBlockCopyButtons,
+  setupThinkingBlockToggles,
+  shouldCollapseUserMessage,
+  splitStreamingMessageContent,
+  USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD,
+  USER_MESSAGE_COLLAPSE_NEWLINE_THRESHOLD,
+  writeClipboardText,
+} from "./message-renderer-helpers.js";
+import {
+  clearMessageSearchHighlights,
+  escapeSearchRegExp,
+  highlightContainerSearchQuery,
+  highlightTextNodeWithPattern,
+} from "./message-renderer-search.js";
 import { sanitizeMarkup } from "./sanitize-markup.js";
 
-/**
- * Detect and clean up pi-chat transcript format.
- *
- * Old format: `- [ISO-timestamp] [uid:ID] name: text`
- * New format:  `- [uid:ID] name: text`
- *
- * Returns the cleaned text (just `name: text` per line, deduplicated when
- * all lines share the same speaker), or null if the content doesn't look
- * like a chat transcript.
- */
-function cleanChatTranscript(text) {
-  if (!text || typeof text !== "string") return null;
-  const lineRe = /^- (?:\[[\dT:.Z+-]+\] )?\[uid:[^\]]+\] ([^:]+): (.*)$/;
-  const lines = text.split("\n").filter((line) => line.trim());
-  if (lines.length === 0) return null;
-  const parsed = lines.map((line) => {
-    const match = line.match(lineRe);
-    return match ? { name: match[1].trim(), text: match[2] } : null;
-  });
-  if (parsed.some((line) => line === null)) return null;
-  const names = [...new Set(parsed.map((line) => line.name))];
-  if (names.length === 1) {
-    return parsed.map((line) => line.text).join("\n");
-  }
-  return parsed.map((line) => `**${line.name}**: ${line.text}`).join("\n\n");
-}
-
-const COPY_ICON =
-  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-const CHEVRON_ICON =
-  '<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" aria-hidden="true"><path d="M2 1l4 3-4 3z"/></svg>';
-const BRAIN_ICON =
-  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px" aria-hidden="true"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M12 5v13"/><path d="M6.5 9h11"/><path d="M7 13h10"/></svg>';
 const AUTO_SCROLL_BOTTOM_TOLERANCE = 1;
 
-export const USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD = 400;
-export const USER_MESSAGE_COLLAPSE_NEWLINE_THRESHOLD = 8;
-
-function resolveMessageEntryId(message, override = null) {
-  const id = override ?? message?.entryId ?? message?.entry_id ?? null;
-  return typeof id === "string" && id ? id : null;
-}
-
-export function shouldCollapseUserMessage(text) {
-  if (typeof text !== "string" || text.length === 0) return false;
-  return (
-    text.length >= USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD ||
-    (text.match(/\n/g)?.length ?? 0) >= USER_MESSAGE_COLLAPSE_NEWLINE_THRESHOLD
-  );
-}
-
-/**
- * Format a message timestamp for a chat log.
- *
- * Same calendar day (local time) → "HH:MM". A different day → "MM/DD HH:MM"
- * (no i18n — the numeric form reads the same across locales). Invalid or
- * missing input → "" so callers can render unconditionally and omit the
- * span when there is nothing to show. Intentionally does NOT reuse the
- * sidebar's relative-time `formatSessionTime`; chat logs want absolute
- * clock times, not "2h ago".
- */
-export function formatMessageTime(timestampMs) {
-  // null / undefined must short-circuit before Number(): Number(null) === 0
-  // is a finite value and would otherwise render the epoch as a real time.
-  if (timestampMs == null) return "";
-  const ms = Number(timestampMs);
-  if (!Number.isFinite(ms)) return "";
-  const date = new Date(ms);
-  // Number.isFinite(1e20) passes, but new Date(1e20) is invalid (getTime → NaN).
-  if (Number.isNaN(date.getTime())) return "";
-  const now = new Date();
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-  const pad = (n) => String(n).padStart(2, "0");
-  const hhmm = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  if (sameDay) return hhmm;
-  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${hhmm}`;
-}
-
-/**
- * Format a response duration (ms) for the message footer, e.g. "3.2s" or
- * "1m 05s". Pipline times generation client-side (message_start → message_end);
- * pi's runtime events carry no duration field of their own. Returns "" for
- * missing/invalid input so callers can render unconditionally.
- */
-export function formatDurationLabel(durationMs) {
-  // null / undefined must short-circuit before Number(): Number(null) === 0
-  // is a finite value and would otherwise render a fake "0.0s" duration.
-  if (durationMs == null) return "";
-  const ms = Number(durationMs);
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  const totalSeconds = ms / 1000;
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.round(totalSeconds % 60);
-  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-}
-
-/** Full timestamp for the hover `title` (screen-reader / exact reference). */
-function fullTimestampTitle(timestampMs) {
-  const ms = Number(timestampMs);
-  if (!Number.isFinite(ms)) return "";
-  const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
-    d.getHours(),
-  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
+export {
+  formatDurationLabel,
+  formatMessageTime,
+  shouldCollapseUserMessage,
+  USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD,
+  USER_MESSAGE_COLLAPSE_NEWLINE_THRESHOLD,
+};
 
 export class MessageRenderer {
   constructor(container, { sessionTreeActions = false } = {}) {
     this.container = container;
-    // Session-tree actions (Fork/Edit) need a persisted session tree behind
-    // the message list; ephemeral or detached views render no inert controls.
     this.sessionTreeActions = sessionTreeActions;
     this.isNearBottom = true;
     this.lastWelcomeOptions = null;
@@ -163,107 +91,47 @@ export class MessageRenderer {
   clear() {
     if (!this.container) return;
     this.container.replaceChildren();
+    this._hasWelcome = false;
     this.isNearBottom = true;
   }
 
   clearSearchHighlights() {
-    const marks = this.container.querySelectorAll("mark[data-search-highlight='true']");
-    marks.forEach((mark) => {
-      const text = document.createTextNode(mark.textContent || "");
-      mark.replaceWith(text);
-      text.parentNode?.normalize();
-    });
+    clearMessageSearchHighlights(this.container);
   }
 
   highlightSearchQuery(query, { scrollToFirst = true } = {}) {
-    this.clearSearchHighlights();
-
-    const normalizedQuery = typeof query === "string" ? query.trim() : "";
-    if (!normalizedQuery) return 0;
-
-    const pattern = new RegExp(this.escapeRegExp(normalizedQuery), "gi");
-    let matchCount = 0;
-    let firstMatch = null;
-
-    this.container.querySelectorAll(".message-content").forEach((content) => {
-      const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
-        acceptNode: (node) => {
-          if (!node.textContent?.trim()) return NodeFilter.FILTER_REJECT;
-          if (node.parentElement?.closest("mark[data-search-highlight='true']")) {
-            return NodeFilter.FILTER_REJECT;
-          }
-          return NodeFilter.FILTER_ACCEPT;
-        },
-      });
-
-      const textNodes = [];
-      let currentNode = walker.nextNode();
-      while (currentNode) {
-        textNodes.push(currentNode);
-        currentNode = walker.nextNode();
-      }
-
-      textNodes.forEach((node) => {
-        const count = this.highlightTextNode(node, pattern, (mark) => {
-          if (!firstMatch) firstMatch = mark;
-        });
-        matchCount += count;
-      });
+    return highlightContainerSearchQuery(this.container, query, {
+      scrollToFirst,
+      highlightNode: (node, pattern, onMatch) => this.highlightTextNode(node, pattern, onMatch),
     });
-
-    if (scrollToFirst && firstMatch && typeof firstMatch.scrollIntoView === "function") {
-      firstMatch.scrollIntoView({ block: "center", behavior: "smooth" });
-    }
-
-    return matchCount;
   }
 
   renderWelcome({ workspacePath } = {}) {
     this.lastWelcomeOptions = { workspacePath };
-    const welcome = document.createElement("div");
-    welcome.className = "welcome";
-
-    const icon = document.createElement("div");
-    icon.className = "welcome-icon";
-    const logo = document.createElement("img");
-    logo.src = "icons/logo-dark.svg";
-    logo.alt = "Pipline logo";
-    logo.className = "tau-icon-welcome";
-    icon.appendChild(logo);
-    welcome.appendChild(icon);
-
-    welcome.appendChild(this._textElement("p", t("app.welcome")));
-    welcome.appendChild(this._textElement("p", t("app.welcomeHint"), "hint"));
-    if (workspacePath) {
-      const workspace = document.createElement("p");
-      workspace.className = "hint welcome-workspace";
-      workspace.appendChild(document.createTextNode(`${t("app.currentWorkspace")} `));
-      const code = document.createElement("code");
-      code.textContent = workspacePath;
-      workspace.appendChild(code);
-      welcome.appendChild(workspace);
-    }
-
-    const shortcuts = document.createElement("div");
-    shortcuts.className = "shortcuts-hint";
-    shortcuts.setAttribute("aria-label", t("migrated.index.ariaLabel.keyboardShortcuts"));
-    const focusShortcut = this._textElement("span", "");
-    this._appendMarkup(focusShortcut, `<kbd>/</kbd> ${this.escapeHtml(t("shortcuts.focusInput"))}`);
-    const abortShortcut = this._textElement("span", "");
-    this._appendMarkup(abortShortcut, `<kbd>Esc</kbd> ${this.escapeHtml(t("shortcuts.abort"))}`);
-    shortcuts.append(focusShortcut, abortShortcut);
-    welcome.appendChild(shortcuts);
+    const welcome = buildWelcomeElement({
+      workspacePath,
+      appendMarkup: (parent, markup) => this._appendMarkup(parent, markup),
+    });
     this.container.replaceChildren(welcome);
+    this._hasWelcome = true;
+  }
+
+  _clearWelcomeIfPresent() {
+    if (!this._hasWelcome && !this.container?.firstElementChild?.classList?.contains("welcome")) {
+      return;
+    }
+    this._hasWelcome = false;
+    const welcome = this.container?.querySelector(".welcome");
+    if (welcome) welcome.remove();
   }
 
   renderUserMessage(message, isHistory = false, { entryId = null } = {}) {
-    const welcome = this.container.querySelector(".welcome");
-    if (welcome) welcome.remove();
+    this._clearWelcomeIfPresent();
 
     const div = document.createElement("div");
     div.className = `message user${isHistory ? " history" : ""}`;
 
-    const imageItems = this._collectImageItems(message);
+    const imageItems = collectMessageImageItems(message);
     const content = document.createElement("div");
     content.className = "message-content";
     if (imageItems.length > 0) {
@@ -272,32 +140,29 @@ export class MessageRenderer {
       for (const image of imageItems) {
         const imageElement = document.createElement("img");
         imageElement.className = "message-image";
-        imageElement.src = this._imageSource(image);
+        imageElement.src = resolveImageDataUrl(image);
         imageElement.alt = t("messages.attachedImage");
         images.appendChild(imageElement);
       }
       content.appendChild(images);
     }
 
-    const rawContent = this._textContentFromMessageContent(message.content);
+    const rawContent = extractTextFromMessageContent(message.content);
     const displayContent = cleanChatTranscript(rawContent) ?? rawContent;
     this._appendMarkup(content, renderUserMarkdown(displayContent));
     div.appendChild(content);
 
-    const collapseToggle = this._createUserCollapseToggle(content, displayContent);
+    const collapseToggle = createUserCollapseToggleButton(content, displayContent);
     const footer = document.createElement("div");
     footer.className = "message-footer";
-    // Fixed user order (v3 2026-08-21 design): Expand → Fork → Edit → Copy →
-    // Timestamp. Fork/Edit are session-tree actions gated to persisted trees;
-    // the toolbar is always visible (no hover reveal).
     if (collapseToggle) footer.appendChild(collapseToggle);
     if (this.sessionTreeActions) {
       const actionText = typeof message.content === "string" ? message.content : "";
-      footer.appendChild(this._createUserActionButton("fork", actionText));
-      footer.appendChild(this._createUserActionButton("edit", actionText));
+      footer.appendChild(createUserActionButton("fork", actionText));
+      footer.appendChild(createUserActionButton("edit", actionText));
     }
     footer.appendChild(this._createCopyButton());
-    const timeSpan = this._createTimeSpan(message.timestamp);
+    const timeSpan = createMessageTimeSpan(message.timestamp);
     if (timeSpan) footer.appendChild(timeSpan);
     const forkEntryId = resolveMessageEntryId(message, entryId);
     if (forkEntryId) {
@@ -306,22 +171,18 @@ export class MessageRenderer {
     div.appendChild(footer);
 
     this.container.appendChild(div);
-    this._setupCodeCopyButtons(div);
+    setupCodeBlockCopyButtons(div);
     this._setupCopyBtn(div);
     if (!isHistory) this.scrollToBottom();
     return div;
   }
 
   renderAssistantMessage(message, isStreaming = false, isHistory = false, targetContainer = null) {
-    const welcome = this.container.querySelector(".welcome");
-    if (welcome) welcome.remove();
+    this._clearWelcomeIfPresent();
 
     const div = document.createElement("div");
     div.className = `message assistant${isHistory ? " history" : ""}`;
     div.dataset.messageId = message.id || "streaming";
-    // Jump targets for the Info panel. Process-group fragments share a
-    // parent assistant entry; only the visible answer (or unterminated
-    // leading text) should carry the session-tree id.
     const isProcessMessage = targetContainer !== null;
     const assistantEntryId = resolveMessageEntryId(message);
     if (assistantEntryId && !isProcessMessage) {
@@ -383,8 +244,8 @@ export class MessageRenderer {
       `<div class="message-content${streamingClass}">${contentHtml}</div>${footerHtml}`,
     );
 
-    this._setupThinkingToggles(div);
-    this._setupCodeCopyButtons(div);
+    setupThinkingBlockToggles(div);
+    setupCodeBlockCopyButtons(div);
     if (!isStreaming && hasText && !isProcessMessage) this._setupCopyBtn(div);
     (targetContainer || this.container).appendChild(div);
     if (!isHistory) this.scrollToBottom();
@@ -402,29 +263,6 @@ export class MessageRenderer {
     return `<span class="thinking-usage" title="Total cost for this response">$${cost.toFixed(4)}</span>`;
   }
 
-  _setupThinkingToggles(root) {
-    root.querySelectorAll(".thinking-label-text").forEach((label) => {
-      label.textContent = t("messages.thinking");
-    });
-    root.querySelectorAll("[data-thinking-toggle]").forEach((toggle) => {
-      if (toggle.dataset.bound === "true") return;
-      const toggleThinking = () => {
-        const block = toggle.closest(".thinking-block");
-        const content = block?.querySelector(".thinking-content");
-        content?.classList.toggle("expanded");
-        toggle.classList.toggle("expanded");
-      };
-      toggle.addEventListener("click", toggleThinking);
-      toggle.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          toggleThinking();
-        }
-      });
-      toggle.dataset.bound = "true";
-    });
-  }
-
   updateStreamingThinking(messageElement, thinking) {
     let thinkingDiv = messageElement.querySelector(".streaming-thinking");
     if (!thinkingDiv) {
@@ -437,10 +275,10 @@ export class MessageRenderer {
         `<div class="thinking-toggle expanded" data-thinking-toggle="true" role="button" tabindex="0"><span class="chevron">${CHEVRON_ICON}</span><span class="thinking-label">${BRAIN_ICON} <span class="thinking-label-text">${this.escapeHtml(t("messages.thinking"))}</span></span></div><div class="thinking-content expanded"></div>`,
       );
       contentDiv.prepend(thinkingDiv);
-      this._setupThinkingToggles(thinkingDiv);
+      setupThinkingBlockToggles(thinkingDiv);
     }
     const contentEl = thinkingDiv.querySelector(".thinking-content");
-    if (contentEl) {
+    if (contentEl && contentEl.textContent !== thinking) {
       contentEl.textContent = thinking;
       this.scrollToBottom();
     }
@@ -451,16 +289,10 @@ export class MessageRenderer {
     if (!contentDiv) return;
 
     const { text, thinking } = this.splitStreamingContent(content);
-
     if (thinking) this.updateStreamingThinking(messageElement, thinking);
-
-    // Only overwrite the accumulated raw text when the update actually contains
-    // text content. If the final message_end event carries only tool_use blocks
-    // (no text), we must keep the text that streamed in earlier so that
-    // finalizeStreamingMessage can re-render it correctly.
     if (text) messageElement._streamingRawText = text;
+
     const thinkingBlock = contentDiv.querySelector(".streaming-thinking");
-    const rendered = renderStreamingMarkdown(text);
     if (thinkingBlock) {
       let textNode = contentDiv.querySelector(".streaming-text");
       if (!textNode) {
@@ -468,24 +300,21 @@ export class MessageRenderer {
         textNode.className = "streaming-text";
         contentDiv.appendChild(textNode);
       }
-      this._replaceMarkup(textNode, text ? rendered : textNode.innerHTML);
-    } else if (text) {
-      this._replaceMarkup(contentDiv, rendered);
+      if (text && messageElement._streamingRenderedText !== text) {
+        messageElement._streamingRenderedText = text;
+        this._replaceMarkup(textNode, renderStreamingMarkdown(text));
+        setupCodeBlockCopyButtons(textNode);
+      }
+    } else if (text && messageElement._streamingRenderedText !== text) {
+      messageElement._streamingRenderedText = text;
+      this._replaceMarkup(contentDiv, renderStreamingMarkdown(text));
+      setupCodeBlockCopyButtons(contentDiv);
     }
-    this._setupCodeCopyButtons(contentDiv);
     this.scrollToBottom();
   }
 
   splitStreamingContent(content) {
-    if (typeof content === "string") return { text: content, thinking: "" };
-    if (!Array.isArray(content)) return { text: "", thinking: "" };
-    let text = "";
-    let thinking = "";
-    for (const block of content) {
-      if (block?.type === "text") text += block.text ?? "";
-      else if (block?.type === "thinking") thinking += block.thinking ?? "";
-    }
-    return { text, thinking };
+    return splitStreamingMessageContent(content);
   }
 
   finalizeStreamingMessage(messageElement, usage = null, thinking = "", durationMs = null) {
@@ -500,6 +329,7 @@ export class MessageRenderer {
           ? messageElement._streamingRawText
           : domText;
       messageElement._streamingRawText = null;
+      messageElement._streamingRenderedText = null;
 
       finalThinking =
         thinking ||
@@ -512,8 +342,8 @@ export class MessageRenderer {
       }
       html += renderMarkdown(rawText);
       this._replaceMarkup(contentDiv, html);
-      this._setupThinkingToggles(contentDiv);
-      this._setupCodeCopyButtons(contentDiv);
+      setupThinkingBlockToggles(contentDiv);
+      setupCodeBlockCopyButtons(contentDiv);
     }
 
     if (!messageElement.querySelector(".message-footer")) {
@@ -526,22 +356,17 @@ export class MessageRenderer {
 
       const footer = document.createElement("div");
       footer.className = "message-footer";
-
       if (copyableText) footer.appendChild(this._createCopyButton());
-
-      const timeSpan = this._createTimeSpan(Date.now());
+      const timeSpan = createMessageTimeSpan(Date.now());
       if (timeSpan) footer.appendChild(timeSpan);
-
-      const durationSpan = this._createDurationSpan(durationMs);
+      const durationSpan = createMessageDurationSpan(durationMs);
       if (durationSpan) footer.appendChild(durationSpan);
-
       if (hasUsage) {
         const span = document.createElement("span");
         span.className = "message-usage";
         span.textContent = `$${usage.cost.total.toFixed(4)}`;
         footer.appendChild(span);
       }
-
       messageElement.appendChild(footer);
       this._setupCopyBtn(messageElement);
     }
@@ -558,40 +383,9 @@ export class MessageRenderer {
   renderError(errorMessage) {
     const div = document.createElement("div");
     div.className = "error-message";
-    div.textContent = `⚠️ ${errorMessage}`;
+    div.textContent = errorMessage;
     this.container.appendChild(div);
     this.scrollToBottom();
-  }
-
-  /**
-   * Fork / Edit action for user messages (Pi-native /fork and /tree-select
-   * entry points). The buttons dispatch bubbling `messagefork` /
-   * `messageedit` CustomEvents carrying the Pi entry id (resolved from the
-   * nearest [data-entry-id] anchor at click time) and the original prompt
-   * text. App.js owns the transport calls; the renderer stays presentational.
-   */
-  _createUserActionButton(kind, actionText) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `message-action message-${kind}-btn`;
-    button.setAttribute(
-      "aria-label",
-      t(kind === "fork" ? "messages.forkSession" : "messages.editMessage"),
-    );
-    button.title = t(kind === "fork" ? "messages.forkSession" : "messages.editMessage");
-    const icon = createIcon(kind === "fork" ? "git-branch" : "pencil", { size: 12 });
-    if (icon) button.appendChild(icon);
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const entryId = button.closest("[data-entry-id]")?.dataset.entryId || null;
-      button.dispatchEvent(
-        new CustomEvent(kind === "fork" ? "messagefork" : "messageedit", {
-          bubbles: true,
-          detail: { entryId, text: actionText },
-        }),
-      );
-    });
-    return button;
   }
 
   _setupCopyBtn(messageEl) {
@@ -600,82 +394,15 @@ export class MessageRenderer {
     btn.addEventListener("click", () => {
       const text = this.getCopyableText(messageEl);
       if (!text) return;
-      const copyText = (value) => {
-        if (navigator.clipboard) return navigator.clipboard.writeText(value);
-        const ta = document.createElement("textarea");
-        ta.value = value;
-        ta.style.cssText = "position:fixed;left:-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-        return Promise.resolve();
-      };
-      copyText(text).then(() => {
+      writeClipboardText(text).then(() => {
         btn.classList.add("copied");
-        setTimeout(() => {
-          btn.classList.remove("copied");
-        }, 1500);
+        setTimeout(() => btn.classList.remove("copied"), 1500);
       });
     });
   }
 
   getCopyableText(messageEl) {
-    const content = messageEl.querySelector(".message-content");
-    if (!content) return "";
-    const clone = content.cloneNode(true);
-    clone.querySelectorAll(".thinking-block, .streaming-thinking").forEach((el) => {
-      el.remove();
-    });
-    return (clone.textContent || "").trim();
-  }
-
-  _textElement(tagName, text, className = "") {
-    const element = document.createElement(tagName);
-    if (className) element.className = className;
-    element.textContent = text;
-    return element;
-  }
-
-  /** Timestamp span for the message footer; null when there is no valid time. */
-  _createTimeSpan(timestampMs) {
-    const label = formatMessageTime(timestampMs);
-    if (!label) return null;
-    const span = document.createElement("span");
-    span.className = "message-time";
-    span.textContent = label;
-    const title = fullTimestampTitle(timestampMs);
-    if (title) span.title = title;
-    return span;
-  }
-
-  /** Response-time span for the assistant footer; null when there's no duration to show. */
-  _createDurationSpan(durationMs) {
-    const label = formatDurationLabel(durationMs);
-    if (!label) return null;
-    const span = document.createElement("span");
-    span.className = "message-duration";
-    span.textContent = label;
-    span.title = t("messages.responseTime");
-    return span;
-  }
-
-  /** Create the expand/collapse control for long user prompts. */
-  _createUserCollapseToggle(contentEl, rawContent) {
-    if (!shouldCollapseUserMessage(rawContent)) return null;
-
-    contentEl.classList.add("user-message-collapsible");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "message-user-collapse-toggle";
-    button.textContent = t("messages.expand");
-    button.setAttribute("aria-expanded", "false");
-    button.addEventListener("click", () => {
-      const expanded = contentEl.classList.toggle("expanded");
-      button.setAttribute("aria-expanded", String(expanded));
-      button.textContent = t(expanded ? "messages.collapse" : "messages.expand");
-    });
-    return button;
+    return extractCopyableMessageText(messageEl);
   }
 
   _createCopyButton() {
@@ -688,45 +415,11 @@ export class MessageRenderer {
     return button;
   }
 
-  _collectImageItems(message) {
-    const imageItems = [];
-    if (message.images?.length > 0) imageItems.push(...message.images);
-    if (Array.isArray(message.content)) {
-      for (const block of message.content) {
-        if (block?.type === "image" && block.data) imageItems.push(block);
-      }
-    }
-    if (message.attachments?.length > 0) {
-      for (const attachment of message.attachments) {
-        if (attachment.type === "image" && attachment.content) {
-          imageItems.push({ data: attachment.content, mimeType: attachment.mimeType });
-        }
-      }
-    }
-    return imageItems;
-  }
-
-  _textContentFromMessageContent(content) {
-    if (!Array.isArray(content)) return content;
-    return content
-      .filter((block) => block?.type === "text")
-      .map((block) => block.text)
-      .join("\n");
-  }
-
-  _imageSource(image) {
-    const data = typeof image?.data === "string" ? image.data : "";
-    if (/^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(data)) return data;
-    const mime = /^image\/(?:png|jpe?g|gif|webp)$/i.test(image?.mimeType || "")
-      ? image.mimeType
-      : "image/png";
-    return `data:${mime};base64,${data}`;
-  }
-
   _appendMarkup(parent, markup) {
-    const parsed = new DOMParser().parseFromString(String(markup || ""), "text/html");
-    this._sanitizeMarkup(parsed.body);
-    parent.append(...Array.from(parsed.body.childNodes));
+    this._domParser ??= new DOMParser();
+    const parsed = this._domParser.parseFromString(String(markup || ""), "text/html");
+    sanitizeMarkup(parsed.body);
+    parent.append(...parsed.body.childNodes);
   }
 
   _replaceMarkup(parent, markup) {
@@ -734,90 +427,16 @@ export class MessageRenderer {
     this._appendMarkup(parent, markup);
   }
 
-  _sanitizeMarkup(root) {
-    sanitizeMarkup(root);
-  }
-
-  _setupCodeCopyButtons(root) {
-    root.querySelectorAll(".copy-btn").forEach((button) => {
-      if (button.dataset.bound === "true") return;
-      button.addEventListener("click", () => {
-        const code = button.closest(".code-block-wrapper")?.querySelector("code");
-        if (!code) return;
-        const copy = (text) => {
-          if (navigator.clipboard) return navigator.clipboard.writeText(text);
-          const textarea = document.createElement("textarea");
-          textarea.value = text;
-          textarea.style.cssText = "position:fixed;left:-9999px";
-          document.body.appendChild(textarea);
-          textarea.select();
-          document.execCommand("copy");
-          textarea.remove();
-          return Promise.resolve();
-        };
-        copy(code.textContent || "").then(() => {
-          button.textContent = t("messages.copied");
-          button.classList.add("copied");
-          setTimeout(() => {
-            button.textContent = t("messages.copy");
-            button.classList.remove("copied");
-          }, 2000);
-        });
-      });
-      button.dataset.bound = "true";
-    });
-  }
-
   highlightTextNode(node, pattern, onMatch) {
-    const text = node.textContent || "";
-    const regex = new RegExp(pattern.source, pattern.flags);
-    let lastIndex = 0;
-    let matchCount = 0;
-    let match = regex.exec(text);
-    if (!match) return 0;
-
-    const fragment = document.createDocumentFragment();
-    while (match) {
-      const [matchedText] = match;
-      const start = match.index;
-      if (start > lastIndex) {
-        fragment.appendChild(document.createTextNode(text.slice(lastIndex, start)));
-      }
-
-      const mark = document.createElement("mark");
-      mark.dataset.searchHighlight = "true";
-      mark.textContent = matchedText;
-      fragment.appendChild(mark);
-      if (typeof onMatch === "function") onMatch(mark);
-
-      matchCount += 1;
-      lastIndex = start + matchedText.length;
-      match = regex.exec(text);
-    }
-
-    if (lastIndex < text.length) {
-      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
-    }
-
-    node.replaceWith(fragment);
-    return matchCount;
+    return highlightTextNodeWithPattern(node, pattern, onMatch);
   }
 
   escapeRegExp(text) {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return escapeSearchRegExp(text);
   }
 
   escapeHtml(text) {
-    return String(text ?? "").replace(/[&<>"']/g, (character) => {
-      const entities = {
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-      };
-      return entities[character];
-    });
+    return escapeHtmlText(text);
   }
 
   scrollToBottom() {
@@ -827,7 +446,10 @@ export class MessageRenderer {
   }
 
   forceScrollToBottom() {
+    if (this._scrollRafPending) return;
+    this._scrollRafPending = true;
     requestAnimationFrame(() => {
+      this._scrollRafPending = false;
       if (this.container) this.container.scrollTop = this.container.scrollHeight;
     });
   }

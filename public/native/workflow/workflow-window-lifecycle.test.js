@@ -6,6 +6,10 @@ import { describe, expect, it } from "vitest";
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const workflowPanelSource = readFileSync(resolve(testDirectory, "workflow-panel.js"), "utf8");
 const workflowWindowSource = readFileSync(resolve(testDirectory, "workflow-window.js"), "utf8");
+const workflowWindowBridgeSource = readFileSync(
+  resolve(testDirectory, "workflow-window-bridge.js"),
+  "utf8",
+);
 const appSource = readFileSync(resolve(testDirectory, "../app.js"), "utf8");
 
 describe("standalone workflow window lifecycle", () => {
@@ -20,8 +24,12 @@ describe("standalone workflow window lifecycle", () => {
   });
 
   it("restores the detached workflow panel without turning workflow mode off", () => {
-    expect(appSource).toMatch(
-      /addEventListener\("pipline:workflow-window-hidden",\s*\(\)\s*=>\s*\{[\s\S]*?classList\.remove\("is-detached"\);[\s\S]*?setAttribute\("aria-expanded",\s*"true"\)/,
+    expect(appSource).toContain("setupWorkflowWindowBridge");
+    expect(workflowWindowBridgeSource).toMatch(
+      /function handleWindowHidden\(\)\s*\{[\s\S]*?classList\.remove\("is-detached"\);[\s\S]*?setAttribute\("aria-expanded",\s*"true"\)/,
+    );
+    expect(workflowWindowBridgeSource).toMatch(
+      /addEventListener\?\.\("pipline:workflow-window-hidden",\s*handleWindowHidden\)/,
     );
   });
 
@@ -37,10 +45,13 @@ describe("standalone workflow window lifecycle", () => {
   });
 
   it("hides the editor with a native event that reaches the workspace chat", () => {
-    const hostSource = readFileSync(
-      resolve(testDirectory, "../../../src-tauri/src/main.rs"),
-      "utf8",
-    );
+    const hostSource = [
+      readFileSync(resolve(testDirectory, "../../../src-tauri/src/main.rs"), "utf8"),
+      readFileSync(
+        resolve(testDirectory, "../../../src-tauri/src/app_shell/workflow_windows.rs"),
+        "utf8",
+      ),
+    ].join("\n");
     expect(hostSource).toContain("notify_workflow_window_hidden(&app, workspace_id)");
     expect(hostSource).toContain("pipline:workflow-window-hidden");
   });

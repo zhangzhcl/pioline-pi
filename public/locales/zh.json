@@ -634,7 +634,7 @@
     "unavailableReason": "不可用（{reason}）",
     "startingNewSession": "正在启动新会话…",
     "loadingSession": "正在加载会话…",
-    "sessionStatsTitle": "📊 会话统计",
+    "sessionStatsTitle": "会话统计",
     "sessionStatsMessages": "消息：{total}（{user} 用户，{assistant} 助手）",
     "sessionStatsToolCalls": "工具调用：{count}",
     "sessionStatsContext": "上下文：~{tokens}k 令牌",

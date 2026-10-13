@@ -23,9 +23,7 @@
     "steeringMode",
     "thinkingLevel"
   ],
-  "commandSources": [
-    "extension"
-  ],
+  "commandSources": ["extension"],
   "eventTypes": [
     "agent_end",
     "agent_settled",

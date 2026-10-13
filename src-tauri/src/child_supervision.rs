@@ -18,6 +18,12 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+use crate::windows_child::windows_job;
+
+#[cfg(test)]
+mod tests;
+
 const REGISTRY_DIR: &str = "picot-runtimes";
 
 /// Make the child its own process-group leader so its descendants can be
@@ -202,7 +208,7 @@ pub fn record_runtime(pid: u32) {
     let Some(path) = registry_path_for(std::process::id()) else {
         return;
     };
-    let mut registry = read_registry(&path).unwrap_or(RuntimeRegistry {
+    let mut registry = read_registry(&path).unwrap_or_else(|| RuntimeRegistry {
         supervisor_pid: std::process::id(),
         entries: Vec::new(),
     });
@@ -301,60 +307,6 @@ fn sweep_orphans_in(
 }
 
 #[cfg(windows)]
-mod windows_job {
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-    };
-
-    pub struct JobHandle(HANDLE);
-    // SAFETY: the handle is an opaque kernel object; Windows serializes operations on it.
-    unsafe impl Send for JobHandle {}
-    unsafe impl Sync for JobHandle {}
-
-    pub fn create_and_assign(pid: u32) -> Option<JobHandle> {
-        unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() {
-                return None;
-            }
-            // KILL_ON_JOB_CLOSE is the point of this: when Picot dies for any
-            // reason its handles close, and Windows terminates the job with it.
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                std::ptr::addr_of!(limits).cast(),
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            );
-            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-            if process.is_null() || AssignProcessToJobObject(job, process) == 0 {
-                if !process.is_null() {
-                    CloseHandle(process);
-                }
-                CloseHandle(job);
-                return None;
-            }
-            CloseHandle(process);
-            Some(JobHandle(job))
-        }
-    }
-
-    pub fn terminate(job: JobHandle) {
-        unsafe {
-            TerminateJobObject(job.0, 1);
-            CloseHandle(job.0);
-        }
-    }
-}
-
-#[cfg(windows)]
 mod windows_process {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
@@ -369,7 +321,7 @@ mod windows_process {
                 return false;
             }
             let mut exit_code = 0;
-            let is_running = GetExitCodeProcess(process, &mut exit_code) != 0
+            let is_running = GetExitCodeProcess(process, std::ptr::from_mut(&mut exit_code)) != 0
                 && exit_code == STILL_ACTIVE as u32;
             CloseHandle(process);
             is_running
@@ -386,8 +338,13 @@ mod windows_process {
             let mut exit = std::mem::zeroed::<FILETIME>();
             let mut kernel = std::mem::zeroed::<FILETIME>();
             let mut user = std::mem::zeroed::<FILETIME>();
-            let succeeded =
-                GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) != 0;
+            let succeeded = GetProcessTimes(
+                process,
+                std::ptr::from_mut(&mut creation),
+                std::ptr::from_mut(&mut exit),
+                std::ptr::from_mut(&mut kernel),
+                std::ptr::from_mut(&mut user),
+            ) != 0;
             CloseHandle(process);
             succeeded.then(|| {
                 let ticks =
@@ -405,121 +362,5 @@ mod windows_process {
                 CloseHandle(process);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::RefCell;
-
-    #[test]
-    fn runtime_registry_follows_the_resolved_pi_agent_directory() {
-        let root = Path::new(r"C:\isolated\.pi\agent");
-        assert_eq!(
-            pi_root_from_agent_dir(root),
-            Some(Path::new(r"C:\isolated\.pi"))
-        );
-    }
-
-    fn registry_with(dir: &Path, supervisor_pid: u32, entries: Vec<RuntimeEntry>) {
-        write_registry(
-            &dir.join(format!("{supervisor_pid}.json")),
-            &RuntimeRegistry {
-                supervisor_pid,
-                entries,
-            },
-        );
-    }
-
-    #[test]
-    fn kills_runtimes_whose_supervisor_is_gone() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().to_path_buf();
-        registry_with(
-            &dir,
-            4242,
-            vec![RuntimeEntry {
-                pid: 7001,
-                started_at: String::new(),
-            }],
-        );
-        let killed = RefCell::new(Vec::new());
-        let count = sweep_orphans_in(Some(dir.clone()), 1, &|pid| pid == 7001, &|pid| {
-            killed.borrow_mut().push(pid)
-        });
-        assert_eq!(count, 1);
-        assert_eq!(*killed.borrow(), vec![7001]);
-        assert!(!dir.join("4242.json").exists());
-    }
-
-    #[test]
-    fn leaves_runtimes_of_a_live_supervisor_alone() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().to_path_buf();
-        registry_with(
-            &dir,
-            4242,
-            vec![RuntimeEntry {
-                pid: 7001,
-                started_at: String::new(),
-            }],
-        );
-        let killed = RefCell::new(Vec::new());
-        let count = sweep_orphans_in(Some(dir.clone()), 1, &|_| true, &|pid| {
-            killed.borrow_mut().push(pid)
-        });
-        assert_eq!(count, 0);
-        assert!(killed.borrow().is_empty());
-        // The registry must survive: those runtimes still have an owner.
-        assert!(dir.join("4242.json").exists());
-    }
-
-    #[test]
-    fn never_kills_a_pid_that_was_recycled() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().to_path_buf();
-        registry_with(
-            &dir,
-            4242,
-            vec![RuntimeEntry {
-                pid: 7001,
-                started_at: "Thu Sep  3 11:59:30 2026".into(),
-            }],
-        );
-        let killed = RefCell::new(Vec::new());
-        // The pid is alive, but it is some other process now: start times differ.
-        let count = sweep_orphans_in(Some(dir.clone()), 1, &|pid| pid == 7001, &|pid| {
-            killed.borrow_mut().push(pid)
-        });
-        assert_eq!(count, 0);
-        assert!(killed.borrow().is_empty());
-    }
-
-    #[test]
-    fn ignores_our_own_registry_file() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().to_path_buf();
-        registry_with(
-            &dir,
-            99,
-            vec![RuntimeEntry {
-                pid: 7001,
-                started_at: String::new(),
-            }],
-        );
-        let killed = RefCell::new(Vec::new());
-        let count = sweep_orphans_in(Some(dir.clone()), 99, &|_| false, &|pid| {
-            killed.borrow_mut().push(pid)
-        });
-        assert_eq!(count, 0);
-        assert!(dir.join("99.json").exists());
-    }
-
-    #[test]
-    fn a_live_process_reads_as_alive() {
-        let pid = std::process::id();
-        assert!(pid_is_alive(pid));
-        assert!(process_start_time(pid).is_some());
     }
 }

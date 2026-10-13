@@ -1,11 +1,15 @@
-#![allow(dead_code)]
+// ABOUTME: Spawns and supervises embedded `pi --mode rpc` processes, routing
+// ABOUTME: RPC requests, event streams, and extension UI prompts per RuntimeTarget.
+
+mod lifecycle;
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 use crate::pi_rpc_bridge::InMemoryPiProcess;
 use crate::pi_rpc_bridge::{BridgeFrame, PiRpcBridge, PiRpcProcess};
 use crate::runtime_coordinator::{
-    MutationAcceptance, RuntimeCoordinator, RuntimeSnapshot, RuntimeState, RuntimeStatus,
-    RuntimeTarget,
+    MutationAcceptance, RuntimeCoordinator, RuntimeState, RuntimeTarget,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -15,6 +19,8 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
+
+use self::lifecycle::remove_closed_runtime;
 
 const MAX_RPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
@@ -85,12 +91,7 @@ impl NativeLaunchSpec {
             );
         }
         // A remote workspace opened with an SSH password: hand it to the pi
-        // process that will actually run the SSH calls. Injecting it here
-        // rather than pushing it in from the WebView means it is in place
-        // before the first tool call, and survives a respawn — the frontend
-        // route raced session startup and left `bash` unauthenticated.
-        // Memory only: the vault is never written to disk, so the password is
-        // gone when Picot exits.
+        // process that will actually run the SSH calls.
         if let Some(password) = crate::remote_workspace::peek_password(&self.cwd) {
             environment.insert("PICOT_SSH_PASSWORD".into(), password.into());
         }
@@ -102,17 +103,17 @@ impl NativeLaunchSpec {
     }
 }
 
-struct ManagedRuntime {
-    target: Arc<Mutex<RuntimeTarget>>,
-    bridge: PiRpcBridge,
-    process: Option<PiRpcProcess>,
+pub(super) struct ManagedRuntime {
+    pub(super) target: Arc<Mutex<RuntimeTarget>>,
+    pub(super) bridge: PiRpcBridge,
+    pub(super) process: Option<PiRpcProcess>,
 }
 
-struct NativePiManagerInner {
-    coordinator: Mutex<RuntimeCoordinator>,
-    runtimes: Mutex<HashMap<String, ManagedRuntime>>,
-    events: broadcast::Sender<NativeRuntimeEvent>,
-    pending_ui: Mutex<HashMap<String, Vec<NativeRuntimeEvent>>>,
+pub(super) struct NativePiManagerInner {
+    pub(super) coordinator: Mutex<RuntimeCoordinator>,
+    pub(super) runtimes: Mutex<HashMap<String, ManagedRuntime>>,
+    pub(super) events: broadcast::Sender<NativeRuntimeEvent>,
+    pub(super) pending_ui: Mutex<HashMap<String, Vec<NativeRuntimeEvent>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -142,11 +143,11 @@ impl NativePiManager {
     }
 
     #[cfg(test)]
-    fn in_memory(idempotency_capacity: usize) -> Self {
+    pub(super) fn in_memory(idempotency_capacity: usize) -> Self {
         Self::new(idempotency_capacity)
     }
 
-    pub fn spawn(&self, target: RuntimeTarget, spec: NativeLaunchSpec) -> Result<(), String> {
+    pub fn spawn(&self, target: RuntimeTarget, spec: &NativeLaunchSpec) -> Result<(), String> {
         let launch = spec.command_description();
         let mut command = Command::new(&launch.program);
         crate::windows_child::hide_console(&mut command);
@@ -169,30 +170,32 @@ impl NativePiManager {
             .spawn()
             .map_err(|error| format!("Cannot start embedded Pi native RPC process: {error}"))?;
         crate::child_supervision::record_runtime(child.id());
-        let (bridge, mut process) = PiRpcBridge::attach(child, MAX_RPC_FRAME_BYTES)?;
-        if let Err(error) = self
+        let (bridge, process) = PiRpcBridge::attach(child, MAX_RPC_FRAME_BYTES)?;
+        let register_result = self
             .inner
             .coordinator
             .lock()
             .map_err(|_| "Runtime coordinator lock poisoned".to_string())?
-            .register(target.clone(), RuntimeState::Starting)
-        {
+            .register(target.clone(), RuntimeState::Starting);
+        if let Err(error) = register_result {
             let _ = process.kill();
             return Err(format!("Cannot register Pi runtime: {error:?}"));
         }
+        let instance_id = target.instance_id.clone();
+        let target_cell = Arc::new(Mutex::new(target));
         self.inner
             .runtimes
             .lock()
             .map_err(|_| "Native runtime registry lock poisoned".to_string())?
             .insert(
-                target.instance_id.clone(),
+                instance_id.clone(),
                 ManagedRuntime {
-                    target: Arc::new(Mutex::new(target.clone())),
+                    target: Arc::clone(&target_cell),
                     bridge: bridge.clone(),
                     process: Some(process),
                 },
             );
-        self.start_event_pump(target, bridge);
+        self.start_event_pump(instance_id, target_cell, bridge);
         Ok(())
     }
 
@@ -205,7 +208,7 @@ impl NativePiManager {
     }
 
     #[cfg(test)]
-    fn register_in_memory_with_state(
+    pub(super) fn register_in_memory_with_state(
         &self,
         target: RuntimeTarget,
         initial_state: RuntimeState,
@@ -217,38 +220,34 @@ impl NativePiManager {
             .map_err(|_| "Runtime coordinator lock poisoned".to_string())?
             .register(target.clone(), initial_state)
             .map_err(|error| format!("Cannot register test runtime: {error:?}"))?;
+        let instance_id = target.instance_id.clone();
+        let target_cell = Arc::new(Mutex::new(target));
         self.inner
             .runtimes
             .lock()
             .map_err(|_| "Native runtime registry lock poisoned".to_string())?
             .insert(
-                target.instance_id.clone(),
+                instance_id.clone(),
                 ManagedRuntime {
-                    target: Arc::new(Mutex::new(target.clone())),
+                    target: Arc::clone(&target_cell),
                     bridge: bridge.clone(),
                     process: None,
                 },
             );
-        self.start_event_pump(target, bridge);
+        self.start_event_pump(instance_id, target_cell, bridge);
         Ok(process)
     }
 
-    fn start_event_pump(&self, target: RuntimeTarget, bridge: PiRpcBridge) {
+    fn start_event_pump(
+        &self,
+        instance_id: String,
+        target_cell: Arc<Mutex<RuntimeTarget>>,
+        bridge: PiRpcBridge,
+    ) {
         let inner = Arc::clone(&self.inner);
-        // Started from the synchronous startup path (Tauri `setup` hook), which
-        // has no entered Tokio runtime — use Tauri's global runtime handle so
-        // this works off the main thread instead of panicking on `tokio::spawn`.
         tauri::async_runtime::spawn(async move {
             while let Some(frame) = bridge.next_frame().await {
-                let target = inner.runtimes.lock().ok().and_then(|runtimes| {
-                    runtimes
-                        .get(&target.instance_id)?
-                        .target
-                        .lock()
-                        .ok()
-                        .map(|target| target.clone())
-                });
-                let Some(target) = target else {
+                let Ok(target) = target_cell.lock().map(|target| target.clone()) else {
                     return;
                 };
                 let event = match frame {
@@ -280,9 +279,7 @@ impl NativePiManager {
                     sequence: sequenced.sequence,
                     event: sequenced.event,
                 };
-                if runtime_event.event.get("type").and_then(Value::as_str)
-                    == Some("extension_ui_request")
-                {
+                if crate::host_server::extension_ui_requires_owner(&runtime_event.event) {
                     if let Ok(mut pending) = inner.pending_ui.lock() {
                         pending
                             .entry(runtime_event.target.instance_id.clone())
@@ -292,7 +289,7 @@ impl NativePiManager {
                 }
                 let _ = inner.events.send(runtime_event);
             }
-            remove_closed_runtime(&inner, &target.instance_id);
+            remove_closed_runtime(&inner, &instance_id);
         });
     }
 
@@ -370,9 +367,10 @@ impl NativePiManager {
         let response = match bridge.request(command, timeout).await {
             Ok(response) => response,
             Err(error) => {
+                use std::fmt::Write as _;
                 let mut message = format!("Pi RPC request failed: {error:?}");
                 if let Some(stderr) = self.drain_diagnostics(&target.instance_id) {
-                    message.push_str(&format!("\nPi stderr:\n{stderr}"));
+                    let _ = write!(message, "\nPi stderr:\n{stderr}");
                 }
                 return Err(message);
             }
@@ -384,14 +382,13 @@ impl NativePiManager {
             {
                 let _ = coordinator.set_state(target, RuntimeState::Ready);
             }
-        }
-        if let Some(key) = mutation_key {
-            self.inner
-                .coordinator
-                .lock()
-                .map_err(|_| "Runtime coordinator lock poisoned".to_string())?
-                .complete_mutation(target, &key, response.clone())
-                .map_err(|error| format!("Cannot cache mutation result: {error:?}"))?;
+            if let Some(key) = mutation_key {
+                coordinator
+                    .complete_mutation(target, &key, response.clone())
+                    .map_err(|error| format!("Cannot cache mutation result: {error:?}"))?;
+            }
+        } else if mutation_key.is_some() {
+            return Err("Runtime coordinator lock poisoned".to_string());
         }
         Ok(response)
     }
@@ -407,232 +404,6 @@ impl NativePiManager {
             .process
             .as_ref()?
             .drain_diagnostics()
-    }
-
-    pub fn stop(&self, target: &RuntimeTarget) -> Result<(), String> {
-        self.inner
-            .coordinator
-            .lock()
-            .map_err(|_| "Runtime coordinator lock poisoned".to_string())?
-            .validate(target)
-            .map_err(|error| format!("Runtime stop rejected: {error:?}"))?;
-        let mut runtime = self
-            .inner
-            .runtimes
-            .lock()
-            .map_err(|_| "Native runtime registry lock poisoned".to_string())?
-            .remove(&target.instance_id)
-            .ok_or_else(|| "Native runtime instance is not running".to_string())?;
-        if let Some(process) = &mut runtime.process {
-            process.kill()?;
-        }
-        self.inner
-            .coordinator
-            .lock()
-            .map_err(|_| "Runtime coordinator lock poisoned".to_string())?
-            .unregister(target)
-            .map_err(|error| format!("Cannot unregister stopped runtime: {error:?}"))?;
-        Ok(())
-    }
-
-    pub fn stop_workspace(&self, workspace_id: &str) {
-        let targets = self
-            .inner
-            .runtimes
-            .lock()
-            .map(|runtimes| {
-                runtimes
-                    .values()
-                    .filter_map(|runtime| runtime.target.lock().ok().map(|target| target.clone()))
-                    .filter(|target| target.workspace_id == workspace_id)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for target in targets {
-            let _ = self.stop(&target);
-        }
-    }
-
-    pub fn stop_all(&self) {
-        let targets = self
-            .inner
-            .runtimes
-            .lock()
-            .map(|runtimes| {
-                runtimes
-                    .values()
-                    .filter_map(|runtime| runtime.target.lock().ok().map(|target| target.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for target in targets {
-            let _ = self.stop(&target);
-        }
-    }
-
-    /// Stop the runtime for `target` and spawn a fresh one that resumes the same
-    /// session, returning the new instance id. Used to pick up extension/package
-    /// changes without leaving the app. Falls back to a no-op returning the
-    /// existing instance id when the target is not currently running.
-    pub fn restart(
-        &self,
-        target: &RuntimeTarget,
-        spec: NativeLaunchSpec,
-    ) -> Result<String, String> {
-        let existing = self
-            .inner
-            .runtimes
-            .lock()
-            .map_err(|_| "Native runtime registry lock poisoned".to_string())?
-            .values()
-            .find_map(|runtime| {
-                runtime.target.lock().ok().map(|t| t.clone()).filter(|t| {
-                    t.workspace_id == target.workspace_id && t.session_id == target.session_id
-                })
-            });
-
-        let Some(existing) = existing else {
-            // Not currently running — nothing to restart.
-            return Ok(target.instance_id.clone());
-        };
-
-        self.stop(&existing)?;
-
-        let new_instance = format!("instance-{}", uuid::Uuid::new_v4().simple());
-        let fresh = RuntimeTarget::new(
-            existing.workspace_id.clone(),
-            existing.session_id.clone(),
-            new_instance.clone(),
-        );
-        self.spawn(fresh, spec)?;
-        Ok(new_instance)
-    }
-
-    pub fn target_for_session(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-    ) -> Option<RuntimeTarget> {
-        self.inner
-            .runtimes
-            .lock()
-            .ok()?
-            .values()
-            .find(|runtime| {
-                runtime.target.lock().is_ok_and(|target| {
-                    target.workspace_id == workspace_id && target.session_id == session_id
-                })
-            })
-            .and_then(|runtime| runtime.target.lock().ok().map(|target| target.clone()))
-    }
-
-    pub fn target_for_session_id(&self, session_id: &str) -> Option<RuntimeTarget> {
-        self.inner
-            .runtimes
-            .lock()
-            .ok()?
-            .values()
-            .find(|runtime| {
-                runtime
-                    .target
-                    .lock()
-                    .is_ok_and(|target| target.session_id == session_id)
-            })
-            .and_then(|runtime| runtime.target.lock().ok().map(|target| target.clone()))
-    }
-
-    pub fn bind_session_id(
-        &self,
-        temporary: &RuntimeTarget,
-        session_id: &str,
-    ) -> Result<RuntimeTarget, String> {
-        if !temporary.session_id.starts_with("temporary-") {
-            return Ok(temporary.clone());
-        }
-        self.rebind_session_id_with_event(temporary, session_id, "session_bound")
-    }
-
-    /// Re-point a *formal* (non-"temporary-") session id to another formal
-    /// session id, for an instance whose live session changed identity out
-    /// from under the registry — e.g. pi forking a new session file in place
-    /// for the same running instance. Unlike `bind_session_id`, this has no
-    /// "temporary-" guard: the caller (the fork RPC flow) is responsible for
-    /// only calling this once it has confirmed via `get_session_stats` that
-    /// the instance is actually on a different session now. Without this,
-    /// the registry keeps reporting the old session id forever, which desyncs
-    /// `target_for_session_id` lookups (used by snapshot requests) and the
-    /// per-client event `subscriptions` set (keyed on the full target tuple),
-    /// silently breaking event delivery for any client that adopts the new id
-    /// locally without the backend ever learning about it.
-    pub fn rebind_session_id(
-        &self,
-        current: &RuntimeTarget,
-        session_id: &str,
-    ) -> Result<RuntimeTarget, String> {
-        self.rebind_session_id_with_event(current, session_id, "session_rebound")
-    }
-
-    fn rebind_session_id_with_event(
-        &self,
-        current: &RuntimeTarget,
-        session_id: &str,
-        event_type: &str,
-    ) -> Result<RuntimeTarget, String> {
-        let mut coordinator = self
-            .inner
-            .coordinator
-            .lock()
-            .map_err(|_| "Runtime coordinator lock poisoned".to_string())?;
-        let binding_event = coordinator
-            .emit_event(
-                current,
-                serde_json::json!({
-                    "type": event_type,
-                    "sessionId": session_id,
-                }),
-            )
-            .map_err(|error| format!("Cannot sequence session binding: {error:?}"))?;
-        let formal = coordinator
-            .bind_session_id(current, session_id)
-            .map_err(|error| format!("Cannot bind formal session: {error:?}"))?;
-        drop(coordinator);
-        let runtime = self
-            .inner
-            .runtimes
-            .lock()
-            .map_err(|_| "Native runtime registry lock poisoned".to_string())?;
-        let managed = runtime
-            .get(&current.instance_id)
-            .ok_or_else(|| "Native runtime instance is not running".to_string())?;
-        *managed
-            .target
-            .lock()
-            .map_err(|_| "Native runtime target lock poisoned".to_string())? = formal.clone();
-        drop(runtime);
-        let _ = self.inner.events.send(NativeRuntimeEvent {
-            target: binding_event.target,
-            sequence: binding_event.sequence,
-            event: binding_event.event,
-        });
-        Ok(formal)
-    }
-
-    pub fn snapshot(&self, target: &RuntimeTarget) -> Result<RuntimeSnapshot, String> {
-        self.inner
-            .coordinator
-            .lock()
-            .map_err(|_| "Runtime coordinator lock poisoned".to_string())?
-            .snapshot(target)
-            .map_err(|error| format!("Runtime snapshot rejected: {error:?}"))
-    }
-
-    pub fn statuses(&self) -> Result<Vec<RuntimeStatus>, String> {
-        Ok(self
-            .inner
-            .coordinator
-            .lock()
-            .map_err(|_| "Runtime coordinator lock poisoned".to_string())?
-            .statuses())
     }
 
     pub async fn respond_extension_ui(
@@ -681,29 +452,6 @@ impl NativePiManager {
     }
 }
 
-fn remove_closed_runtime(inner: &NativePiManagerInner, instance_id: &str) {
-    let runtime = inner
-        .runtimes
-        .lock()
-        .ok()
-        .and_then(|mut runtimes| runtimes.remove(instance_id));
-    let Some(mut runtime) = runtime else {
-        return;
-    };
-    if let Some(process) = &mut runtime.process {
-        let _ = process.kill();
-    }
-    let target = runtime.target.lock().ok().map(|target| target.clone());
-    if let Some(target) = target {
-        if let Ok(mut coordinator) = inner.coordinator.lock() {
-            let _ = coordinator.unregister(&target);
-        }
-    }
-    if let Ok(mut pending_ui) = inner.pending_ui.lock() {
-        pending_ui.remove(instance_id);
-    }
-}
-
 fn is_mutation(command_type: &str) -> bool {
     matches!(
         command_type,
@@ -722,354 +470,4 @@ fn is_mutation(command_type: &str) -> bool {
             | "set_steering_mode"
             | "set_follow_up_mode"
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{NativeLaunchSpec, NativePiManager};
-    use crate::runtime_coordinator::RuntimeTarget;
-    use serde_json::json;
-    use std::path::PathBuf;
-    use std::time::Duration;
-
-    #[test]
-    fn launch_spec_has_no_tcp_port_and_resumes_only_at_process_start() {
-        let spec = NativeLaunchSpec {
-            binary: PathBuf::from("/embedded/pi"),
-            cwd: PathBuf::from("/workspace"),
-            session_path: Some(PathBuf::from("/sessions/a.jsonl")),
-            extensions: vec![PathBuf::from("/extensions/picot-bridge.mjs")],
-            pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
-            path_env: "/usr/bin".into(),
-            approve: false,
-            windows_powershell_fallback: false,
-        };
-        let launch = spec.command_description();
-        assert_eq!(launch.program, PathBuf::from("/embedded/pi"));
-        assert!(launch.args.windows(2).any(|pair| pair == ["--mode", "rpc"]));
-        assert!(launch
-            .args
-            .windows(2)
-            .any(|pair| pair == ["--session", "/sessions/a.jsonl"]));
-        assert!(!launch.environment.contains_key("PI_STUDIO_PORT"));
-        assert!(launch.environment.contains_key("PI_CODING_AGENT_DIR"));
-        assert!(!launch
-            .args
-            .iter()
-            .any(|argument| argument.to_string_lossy().parse::<u16>().is_ok()));
-        assert!(!launch
-            .environment
-            .contains_key(crate::pi_shell_compat::WINDOWS_POWERSHELL_FALLBACK_ENV));
-    }
-
-    #[test]
-    fn launch_spec_emits_power_shell_fallback_only_when_enabled() {
-        let spec = NativeLaunchSpec {
-            binary: PathBuf::from("/embedded/pi"),
-            cwd: PathBuf::from("/workspace"),
-            session_path: None,
-            extensions: vec![],
-            pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
-            path_env: "/usr/bin".into(),
-            approve: false,
-            windows_powershell_fallback: true,
-        };
-        assert_eq!(
-            spec.command_description()
-                .environment
-                .get(crate::pi_shell_compat::WINDOWS_POWERSHELL_FALLBACK_ENV)
-                .and_then(|value| value.to_str()),
-            Some("1")
-        );
-    }
-
-    #[test]
-    fn a_remote_workspace_password_reaches_the_pi_process_it_was_parked_for() {
-        let anchor = PathBuf::from("/picot-test/remotes/box/app");
-        crate::remote_workspace::stash_password(&anchor, "not-a-real-secret");
-        let spec = |cwd: PathBuf| NativeLaunchSpec {
-            binary: PathBuf::from("/embedded/pi"),
-            cwd,
-            session_path: None,
-            extensions: vec![],
-            pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
-            path_env: "/usr/bin".into(),
-            approve: false,
-            windows_powershell_fallback: false,
-        };
-        assert_eq!(
-            spec(anchor)
-                .command_description()
-                .environment
-                .get("PICOT_SSH_PASSWORD")
-                .and_then(|value| value.to_str()),
-            Some("not-a-real-secret")
-        );
-        // An ordinary local workspace must not inherit some other host's password.
-        assert!(!spec(PathBuf::from("/workspace"))
-            .command_description()
-            .environment
-            .contains_key("PICOT_SSH_PASSWORD"));
-    }
-
-    #[test]
-    fn approve_flag_appends_dash_dash_approve_arg() {
-        let spec = NativeLaunchSpec {
-            binary: PathBuf::from("/embedded/pi"),
-            cwd: PathBuf::from("/workspace"),
-            session_path: None,
-            extensions: vec![],
-            pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
-            path_env: "/usr/bin".into(),
-            approve: true,
-            windows_powershell_fallback: false,
-        };
-        assert!(spec
-            .command_description()
-            .args
-            .iter()
-            .any(|argument| argument == "--approve"));
-    }
-
-    #[tokio::test]
-    async fn routes_native_requests_by_opaque_target_and_rejects_session_replacement() {
-        let manager = NativePiManager::in_memory(8);
-        let target = RuntimeTarget::new("workspace-a", "session-a", "instance-a");
-        let mut events = manager.subscribe();
-        let mut fake = manager.register_in_memory(target.clone()).unwrap();
-
-        fake.write_frame(json!({ "type": "agent_start" }))
-            .await
-            .unwrap();
-        let event = events.recv().await.unwrap();
-        assert_eq!(event.target, target);
-        assert_eq!(event.sequence, 1);
-        assert_eq!(event.event["type"], "agent_start");
-
-        let request = tokio::spawn({
-            let manager = manager.clone();
-            let target = target.clone();
-            async move {
-                manager
-                    .request(
-                        &target,
-                        json!({ "type": "get_state" }),
-                        None,
-                        Duration::from_secs(1),
-                    )
-                    .await
-            }
-        });
-        let outbound = fake.read_request().await.unwrap();
-        let id = outbound["id"].as_str().unwrap();
-        fake.write_frame(json!({
-            "id": id,
-            "type": "response",
-            "command": "get_state",
-            "success": true
-        }))
-        .await
-        .unwrap();
-        assert!(request.await.unwrap().unwrap()["success"]
-            .as_bool()
-            .unwrap());
-
-        let first_prompt = tokio::spawn({
-            let manager = manager.clone();
-            let target = target.clone();
-            async move {
-                manager
-                    .request(
-                        &target,
-                        json!({ "type": "prompt", "message": "once" }),
-                        Some("prompt-intent"),
-                        Duration::from_secs(1),
-                    )
-                    .await
-            }
-        });
-        let outbound = fake.read_request().await.unwrap();
-        let id = outbound["id"].as_str().unwrap();
-        fake.write_frame(json!({
-            "id": id,
-            "type": "response",
-            "command": "prompt",
-            "success": true
-        }))
-        .await
-        .unwrap();
-        let accepted = first_prompt.await.unwrap().unwrap();
-        let duplicate = manager
-            .request(
-                &target,
-                json!({ "type": "prompt", "message": "once" }),
-                Some("prompt-intent"),
-                Duration::from_secs(1),
-            )
-            .await
-            .unwrap();
-        assert_eq!(duplicate, accepted);
-        assert!(fake.try_read_request().is_none());
-
-        assert!(manager
-            .request(
-                &target,
-                json!({ "type": "switch_session", "sessionPath": "/other.jsonl" }),
-                Some("intent-1"),
-                Duration::from_secs(1),
-            )
-            .await
-            .is_err());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn launch_spec_preserves_unpaired_windows_utf16_session_path_units() {
-        use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
-        let mut session = r"C:\Users\".encode_utf16().collect::<Vec<_>>();
-        session.push(0xD800);
-        session.extend(r"\.pi\agent\sessions\session.jsonl".encode_utf16());
-        let spec = NativeLaunchSpec {
-            binary: PathBuf::from(r"C:\Pipline\resources\pi.exe"),
-            cwd: PathBuf::from(r"C:\workspace"),
-            session_path: Some(PathBuf::from(std::ffi::OsString::from_wide(&session))),
-            extensions: vec![],
-            pi_version: env!("PI_STUDIO_PI_VERSION_BUNDLED").into(),
-            path_env: r"C:\Windows\System32".into(),
-            approve: false,
-            windows_powershell_fallback: false,
-        };
-        let launch = spec.command_description();
-        let session_argument = launch
-            .args
-            .windows(2)
-            .find(|pair| pair[0] == "--session")
-            .map(|pair| &pair[1])
-            .expect("session path argument should exist");
-        assert_eq!(session_argument.encode_wide().collect::<Vec<_>>(), session);
-    }
-
-    #[tokio::test]
-    async fn marks_starting_runtime_ready_after_first_successful_rpc_response() {
-        let manager = NativePiManager::in_memory(8);
-        let target = RuntimeTarget::new("workspace-a", "session-a", "instance-starting");
-        let mut fake = manager
-            .register_in_memory_with_state(target.clone(), super::RuntimeState::Starting)
-            .unwrap();
-        let request = tokio::spawn({
-            let manager = manager.clone();
-            let target = target.clone();
-            async move {
-                manager
-                    .request(
-                        &target,
-                        json!({ "type": "get_state" }),
-                        None,
-                        Duration::from_secs(1),
-                    )
-                    .await
-            }
-        });
-        let outbound = fake.read_request().await.unwrap();
-        let id = outbound["id"].as_str().unwrap();
-        fake.write_frame(json!({
-            "id": id,
-            "type": "response",
-            "command": "get_state",
-            "success": true,
-            "data": { "sessionId": "session-a" }
-        }))
-        .await
-        .unwrap();
-
-        assert!(request.await.unwrap().is_ok());
-        assert_eq!(
-            manager.snapshot(&target).unwrap().state,
-            super::RuntimeState::Ready
-        );
-    }
-
-    #[tokio::test]
-    async fn unregisters_runtime_when_the_rpc_stream_closes_unexpectedly() {
-        let manager = NativePiManager::in_memory(8);
-        let target = RuntimeTarget::new("workspace-a", "session-a", "instance-a");
-        let fake = manager.register_in_memory(target.clone()).unwrap();
-
-        assert_eq!(manager.target_for_session_id("session-a"), Some(target));
-        drop(fake);
-
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while manager.target_for_session_id("session-a").is_some()
-                || !manager.statuses().unwrap().is_empty()
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("closed RPC stream should unregister its runtime");
-        assert!(manager.statuses().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn binds_a_temporary_session_once_and_routes_future_events_to_the_formal_target() {
-        let manager = NativePiManager::in_memory(8);
-        let temporary = RuntimeTarget::new("workspace-a", "temporary-a", "instance-a");
-        let mut events = manager.subscribe();
-        let mut fake = manager.register_in_memory(temporary.clone()).unwrap();
-
-        let formal = manager.bind_session_id(&temporary, "session-a").unwrap();
-        let binding = events.recv().await.unwrap();
-        assert_eq!(binding.target, temporary);
-        assert_eq!(binding.event["type"], "session_bound");
-        assert_eq!(binding.event["sessionId"], "session-a");
-        assert_eq!(formal.instance_id, "instance-a");
-
-        fake.write_frame(json!({ "type": "agent_start" }))
-            .await
-            .unwrap();
-        let event = events.recv().await.unwrap();
-        assert_eq!(event.target, formal);
-        assert_eq!(manager.target_for_session_id("session-a"), Some(formal));
-    }
-
-    #[tokio::test]
-    async fn rebinds_a_formal_session_after_an_in_place_fork_and_routes_future_events_there() {
-        let manager = NativePiManager::in_memory(8);
-        let original = RuntimeTarget::new("workspace-a", "session-a", "instance-a");
-        let mut events = manager.subscribe();
-        let mut fake = manager.register_in_memory(original.clone()).unwrap();
-
-        // bind_session_id is a no-op once the session id is already formal;
-        // only rebind_session_id can move an instance from one real session
-        // id to another, which is what a fork does in place.
-        assert_eq!(
-            manager.bind_session_id(&original, "session-b").unwrap(),
-            original
-        );
-
-        let forked = manager.rebind_session_id(&original, "session-b").unwrap();
-        let binding = events.recv().await.unwrap();
-        assert_eq!(binding.target, original);
-        assert_eq!(binding.event["type"], "session_rebound");
-        assert_eq!(binding.event["sessionId"], "session-b");
-        assert_eq!(forked.instance_id, "instance-a");
-        assert_eq!(forked.session_id, "session-b");
-
-        // The old session id no longer resolves to this instance, and future
-        // events carry the rebound target rather than the stale one — the
-        // exact desync that broke a client's event subscription when only
-        // the frontend, not the registry, learned about the new session id.
-        assert_eq!(manager.target_for_session_id("session-a"), None);
-        assert_eq!(
-            manager.target_for_session_id("session-b"),
-            Some(forked.clone())
-        );
-
-        fake.write_frame(json!({ "type": "agent_start" }))
-            .await
-            .unwrap();
-        let event = events.recv().await.unwrap();
-        assert_eq!(event.target, forked);
-    }
 }

@@ -634,7 +634,7 @@
     "unavailableReason": "Unavailable ({reason})",
     "startingNewSession": "Starting new session…",
     "loadingSession": "Loading session…",
-    "sessionStatsTitle": "📊 Session Stats",
+    "sessionStatsTitle": "Session Stats",
     "sessionStatsMessages": "Messages: {total} ({user} user, {assistant} assistant)",
     "sessionStatsToolCalls": "Tool calls: {count}",
     "sessionStatsContext": "Context: ~{tokens}k tokens",

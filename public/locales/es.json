@@ -634,7 +634,7 @@
     "unavailableReason": "No disponible ({reason})",
     "startingNewSession": "Iniciando nueva sesión…",
     "loadingSession": "Cargando sesión…",
-    "sessionStatsTitle": "📊 Estadísticas de sesión",
+    "sessionStatsTitle": "Estadísticas de sesión",
     "sessionStatsMessages": "Mensajes: {total} ({user} usuario, {assistant} asistente)",
     "sessionStatsToolCalls": "Llamadas a herramientas: {count}",
     "sessionStatsContext": "Contexto: ~{tokens}k tokens",

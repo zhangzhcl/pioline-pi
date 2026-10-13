@@ -2,8 +2,6 @@
 // ABOUTME: checkpoint watermarking, bounded retention, and history-gap detection.
 // ABOUTME: Stores opaque bytes only; never parses ANSI or runs an emulator.
 
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
 
 /// Default bounded sizes per terminal. A checkpoint caps retained screen state;
@@ -87,6 +85,7 @@ impl TerminalOutputStore {
     }
 
     /// The sequence that will be assigned to the next appended batch.
+    #[cfg(test)]
     pub fn next_sequence(&self) -> u64 {
         self.next_sequence
     }
@@ -104,10 +103,12 @@ impl TerminalOutputStore {
         self.history_gap
     }
 
+    #[cfg(test)]
     pub fn highest_ack(&self) -> u64 {
         self.highest_ack
     }
 
+    #[cfg(test)]
     pub fn retained_journal_bytes(&self) -> usize {
         self.journal_bytes
     }
@@ -187,7 +188,7 @@ impl TerminalOutputStore {
         let mut bytes = Vec::new();
         let mut first: Option<u64> = None;
         let mut last = 0;
-        for entry in self.journal.iter() {
+        for entry in &self.journal {
             if entry.sequence > after_sequence {
                 first.get_or_insert(entry.sequence);
                 last = entry.sequence;
@@ -211,8 +212,7 @@ impl TerminalOutputStore {
             let drop_below_watermark = self
                 .journal
                 .front()
-                .map(|e| e.sequence <= self.checkpoint_watermark)
-                .unwrap_or(false);
+                .is_some_and(|e| e.sequence <= self.checkpoint_watermark);
             if !drop_below_watermark {
                 break;
             }
@@ -222,9 +222,8 @@ impl TerminalOutputStore {
         // Still over: drop the oldest post-checkpoint entry and signal that
         // continuity can no longer be guaranteed. The shell keeps running.
         while self.journal_bytes > self.limits.journal_bytes {
-            let entry = match self.journal.pop_front() {
-                Some(e) => e,
-                None => break,
+            let Some(entry) = self.journal.pop_front() else {
+                break;
             };
             self.journal_bytes -= entry.bytes.len();
             self.history_gap = true;
@@ -243,9 +242,11 @@ mod tests {
     #[test]
     fn append_assigns_strictly_increasing_sequences() {
         let mut output = TerminalOutputStore::new(limits());
+        assert_eq!(output.next_sequence(), 1);
         assert_eq!(output.append(b"one"), 1);
         assert_eq!(output.append(b"two"), 2);
         assert_eq!(output.append(b"three"), 3);
+        assert_eq!(output.next_sequence(), 4);
     }
 
     #[test]

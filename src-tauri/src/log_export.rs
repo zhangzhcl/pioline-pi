@@ -20,8 +20,10 @@ pub fn copy_pipline_logs(source_dir: &Path, destination: &Path) -> Result<usize,
             let name = name.to_str()?;
             let normalized_name = name.to_ascii_lowercase();
             let is_active = normalized_name == "pipline.log";
-            let is_rotated =
-                normalized_name.starts_with("pipline_") && normalized_name.ends_with(".log");
+            let is_rotated = normalized_name.starts_with("pipline_")
+                && Path::new(&normalized_name)
+                    .extension()
+                    .is_some_and(|ext| ext == "log");
             (is_active || is_rotated).then(|| (is_active, entry.path()))
         })
         .collect::<Vec<_>>();

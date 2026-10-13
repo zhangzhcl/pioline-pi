@@ -15,123 +15,22 @@
 
 import { t } from "../../i18n.js";
 import { getPackageInstallFailure } from "../../packages/install-status.js";
-
-const RESOURCE_GROUPS = [
-  ["extensions", "extensions"],
-  ["skills", "skills"],
-  ["prompts", "prompts"],
-  ["themes", "themes"],
-];
-
-function sourceOf(pkg) {
-  return typeof pkg?.source === "string" ? pkg.source : "";
-}
-
-function keyOf(pkg) {
-  return `${pkg.scope}\0${pkg.source}`;
-}
-
-// Normalize a user-typed install source: trim whitespace and unwrap a pasted
-// `pi install ...` command so any of `npm:foo`, `pi install npm:foo`, or
-// `npm install @scope/pkg` style inputs work.
-function normalizeSource(raw) {
-  let value = String(raw || "").trim();
-  const installMatch = value.match(/(?:^|\s)(?:pi|npm)\s+install\s+(.+)$/i);
-  if (installMatch) {
-    value = installMatch[1]
-      .split(/\s+/)
-      .filter((part) => part && !part.startsWith("-"))
-      .join(" ");
-  }
-  return value.trim();
-}
-
-function shortenPath(path) {
-  if (!path) return "";
-  return String(path).replace(/^\/?(Users|home)\/[^/]+/, "~");
-}
-
-function statusColor(status) {
-  if (status === "loaded") return "var(--accent)";
-  if (status === "installed") return "#f59e0b";
-  if (status === "disabled") return "var(--text-secondary)";
-  return "#ef4444";
-}
-
-function statusLabel(status) {
-  return status || "unknown";
-}
-
-function installedPathLabel(pkg) {
-  return pkg?.installedPath ? shortenPath(pkg.installedPath) : t("extensions.notOnDisk");
-}
-
-function resourceSummary(pkg) {
-  const parts = RESOURCE_GROUPS.map(([key, label]) => {
-    const count = pkg?.counts?.[key] ?? 0;
-    return count > 0 ? t("extensions.resourceCount", { count, label }) : "";
-  }).filter(Boolean);
-  return parts.length ? parts.join(" · ") : t("extensions.noResources");
-}
-
-function scopeLabel(scope) {
-  return scope === "project" ? t("extensions.scopeProject") : t("extensions.scopeGlobal");
-}
-
-function iconButton(label, { danger = false, disabled = false, title = "" } = {}) {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "settings-value-btn pkg-manager-btn";
-  if (danger) btn.classList.add("is-danger");
-  btn.disabled = disabled;
-  btn.textContent = label;
-  if (title) btn.title = title;
-  return btn;
-}
-
-function makeToggle({ enabled, loading, onToggle, label }) {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "pkg-manager-toggle";
-  btn.setAttribute("role", "switch");
-  btn.setAttribute("aria-checked", String(enabled));
-  btn.setAttribute("aria-label", label);
-  btn.title = label;
-  btn.addEventListener("click", onToggle);
-  const knob = document.createElement("span");
-  knob.className = "pkg-manager-toggle-knob";
-  btn.appendChild(knob);
-  updateToggle(btn, enabled, loading);
-  return btn;
-}
-
-function updateToggle(btn, enabled, loading) {
-  if (!btn) return;
-  btn.classList.toggle("is-on", enabled);
-  btn.classList.toggle("is-loading", Boolean(loading));
-  btn.setAttribute("aria-checked", String(enabled));
-  btn.disabled = Boolean(loading);
-}
-
-function message(text, { isError = false } = {}) {
-  const el = document.createElement("div");
-  el.className = `pkg-manager-message${isError ? " is-error" : ""}`;
-  el.textContent = text;
-  return el;
-}
-
-function statusRow(label, value) {
-  const row = document.createElement("div");
-  row.className = "pkg-manager-status-row";
-  const labelEl = document.createElement("span");
-  labelEl.className = "pkg-manager-status-label";
-  labelEl.textContent = label;
-  const valueEl = document.createElement("span");
-  valueEl.className = "pkg-manager-status-value";
-  valueEl.textContent = value;
-  row.append(labelEl, valueEl);
-  return row;
-}
+import {
+  emptyNote,
+  iconButton,
+  keyOf,
+  message,
+  normalizeSource,
+  noticeNote,
+  RESOURCE_GROUPS,
+  renderPackageDetailView,
+  resourceSummary,
+  scopeLabel,
+  sourceOf,
+  statusColor,
+  statusLabel,
+  updateBadge,
+} from "./package-manager-views.js";
 
 // Wires the Settings → Extensions installed-package management UI.
 // `deps` = { control, data, notify, getWorkspaceId, getSessionId, onRestarted }.
@@ -172,8 +71,6 @@ export function setupPackageManager(deps) {
   }
 
   addBtn?.addEventListener("click", () => {
-    // Adding a plugin means going to browse the community catalog: reveal the
-    // package browser section (hidden by default), load it, and scroll to it.
     const browseSection = document.getElementById("pkg-browse-section");
     if (!browseSection) return;
     if (sectionEl) sectionEl.hidden = true;
@@ -182,8 +79,6 @@ export function setupPackageManager(deps) {
     browseSection.scrollIntoView?.({ behavior: "smooth", block: "start" });
   });
 
-  // Close button hides the package browser section again (return to the
-  // installed-packages view). Attached once so it survives repeated open/close.
   document.getElementById("pkg-browse-close-btn")?.addEventListener("click", () => {
     const browseSection = document.getElementById("pkg-browse-section");
     if (browseSection) browseSection.hidden = true;
@@ -191,8 +86,6 @@ export function setupPackageManager(deps) {
   });
 
   async function load(force = false) {
-    // runUpdateAll owns the list while it is in flight; a concurrent reload
-    // (e.g. re-entering the tab mid-update) would swap the list underneath it.
     if (updatingAll) return;
     if (!force && lastLoaded) {
       render();
@@ -213,8 +106,6 @@ export function setupPackageManager(deps) {
     await checkForUpdates();
   }
 
-  // Re-list installed packages. `previousStates` (keyOf -> updateAvailable) keeps
-  // already-known update badges stable across the reload instead of resetting them.
   async function fetchList(previousStates) {
     cwd = await resolveCwd();
     const listed = await control.listPiPackages();
@@ -222,8 +113,6 @@ export function setupPackageManager(deps) {
       const p = typeof pkg === "string" ? { source: pkg } : pkg;
       const status = p.disabled ? "disabled" : p.installedPath ? "loaded" : "installed";
       const source = sourceOf(p);
-      // Normalize the scope once here so keyOf() below always produces the same
-      // key format as the update-probe response mapping.
       const scope = p.scope === "project" ? "project" : "global";
       const key = `${scope}\0${source}`;
       return {
@@ -250,8 +139,6 @@ export function setupPackageManager(deps) {
     return packages.filter((pkg) => pkg.updateAvailable === true).length;
   }
 
-  // Probe every installed package for an available update. Concurrent calls are
-  // merged into one probe so re-entering the page never stacks network checks.
   function checkForUpdates() {
     if (updatingAll) return Promise.resolve();
     if (checkInFlight) return checkInFlight;
@@ -272,8 +159,6 @@ export function setupPackageManager(deps) {
           updateAvailable: availableByKey.get(keyOf(pkg)) ?? false,
         }));
       } catch {
-        // Keep the loaded list; every Update button stays disabled because no
-        // package reports updateAvailable === true, and the notice explains why.
         checkNotice = t("extensions.checkUpdatesFailed");
       } finally {
         checkingUpdates = false;
@@ -289,7 +174,17 @@ export function setupPackageManager(deps) {
   function render() {
     sectionEl?.classList.remove("hidden");
     renderGroups();
-    renderDetail(packages.find((p) => keyOf(p) === selectedKey) || null);
+    renderPackageDetailView({
+      detailEl,
+      pkg: packages.find((p) => keyOf(p) === selectedKey) || null,
+      busyScope,
+      canManage,
+      updatingAll,
+      cwd,
+      onToggle: runToggle,
+      onUpdate: runUpdate,
+      onRemove: runRemove,
+    });
     renderFooter();
     renderBanner();
   }
@@ -309,20 +204,6 @@ export function setupPackageManager(deps) {
     groupsEl.replaceChildren(msg);
     detailEl?.replaceChildren();
     renderFooter();
-  }
-
-  function emptyNote(text) {
-    const el = document.createElement("div");
-    el.className = "settings-api-keys-empty";
-    el.textContent = text;
-    return el;
-  }
-
-  function noticeNote(text, isError = false) {
-    const el = document.createElement("div");
-    el.className = `pkg-manager-notice${isError ? " pkg-manager-notice-error" : ""}`;
-    el.textContent = text;
-    return el;
   }
 
   function renderGroups() {
@@ -377,107 +258,6 @@ export function setupPackageManager(deps) {
     return row;
   }
 
-  function updateBadge() {
-    const badge = document.createElement("span");
-    badge.className = "pkg-manager-update-badge";
-    badge.textContent = t("extensions.updateAvailable");
-    badge.title = t("extensions.updateAvailable");
-    badge.setAttribute("role", "status");
-    return badge;
-  }
-
-  function renderDetail(pkg) {
-    if (!detailEl) return;
-    detailEl.innerHTML = "";
-    if (!pkg) return;
-    const key = keyOf(pkg);
-    const busy = busyScope === key;
-
-    const header = document.createElement("div");
-    header.className = "pkg-manager-detail-header";
-    const toggle = makeToggle({
-      enabled: !pkg.disabled,
-      loading: busy,
-      label: pkg.disabled ? t("extensions.enablePackage") : t("extensions.disablePackage"),
-      onToggle: () => runToggle(pkg, key),
-    });
-    header.appendChild(toggle);
-
-    const scopeTag = document.createElement("span");
-    scopeTag.className = "pkg-manager-scope";
-    scopeTag.textContent = scopeLabel(pkg.scope);
-    header.appendChild(scopeTag);
-
-    const sourceEl = document.createElement("span");
-    sourceEl.className = "pkg-manager-source";
-    sourceEl.textContent = pkg.source;
-    sourceEl.title = pkg.source;
-    header.appendChild(sourceEl);
-    if (pkg.updateAvailable === true) {
-      header.appendChild(updateBadge());
-    }
-    detailEl.appendChild(header);
-
-    const actions = document.createElement("div");
-    actions.className = "settings-extension-actions pkg-manager-actions";
-
-    // The update probe decides whether an update actually exists; until it
-    // succeeds for this package (updateAvailable === true) the button stays off.
-    const updateBtn = iconButton(t("extensions.update"), {
-      disabled: busy || !canManage || pkg.updateAvailable !== true || updatingAll,
-      title: t("extensions.updateTip"),
-    });
-    updateBtn.addEventListener("click", () => runUpdate(pkg, key));
-    actions.appendChild(updateBtn);
-
-    const removeBtn = iconButton(t("extensions.remove"), {
-      danger: true,
-      disabled: busy || !canManage,
-      title: t("extensions.removeTip"),
-    });
-    removeBtn.addEventListener("click", () => runRemove(pkg, key));
-    actions.appendChild(removeBtn);
-    detailEl.appendChild(actions);
-
-    const statusGrid = document.createElement("div");
-    statusGrid.className = "pkg-manager-status-grid";
-    statusGrid.appendChild(statusRow(t("extensions.status"), statusLabel(pkg.status)));
-    if (pkg.version) statusGrid.appendChild(statusRow(t("extensions.version"), pkg.version));
-    if (pkg.packageName)
-      statusGrid.appendChild(statusRow(t("extensions.package"), pkg.packageName));
-    if (pkg.description)
-      statusGrid.appendChild(statusRow(t("extensions.description"), pkg.description));
-    statusGrid.appendChild(statusRow(t("extensions.resources"), resourceSummary(pkg)));
-    statusGrid.appendChild(statusRow(t("extensions.installPath"), installedPathLabel(pkg)));
-    if (cwd) statusGrid.appendChild(statusRow(t("extensions.cwd"), cwd));
-    detailEl.appendChild(statusGrid);
-
-    const resolvedTitle = document.createElement("div");
-    resolvedTitle.className = "settings-section-title settings-section-title-small";
-    resolvedTitle.textContent = t("extensions.resolvedResources");
-    detailEl.appendChild(resolvedTitle);
-
-    const resourceList = document.createElement("div");
-    resourceList.className = "pkg-manager-resource-list";
-    if (!pkg.resources.length) {
-      resourceList.appendChild(emptyNote(t("extensions.noResources")));
-    } else {
-      for (const entry of pkg.resources) {
-        const row = document.createElement("div");
-        row.className = "pkg-manager-resource-row";
-        const name = document.createElement("span");
-        name.className = "pkg-manager-resource-name";
-        name.textContent = entry.name;
-        const path = document.createElement("span");
-        path.className = "pkg-manager-resource-path";
-        path.textContent = entry.relativePath;
-        row.append(name, path);
-        resourceList.appendChild(row);
-      }
-    }
-    detailEl.appendChild(resourceList);
-  }
-
   function renderFooter() {
     if (!footerEl) return;
     footerEl.innerHTML = "";
@@ -523,9 +303,6 @@ export function setupPackageManager(deps) {
     footerEl.appendChild(refreshBtn);
   }
 
-  // Update every package that reported an available update, one at a time so
-  // failures stay isolated. Afterwards re-list to refresh versions while keeping
-  // each package's last known update state (no fresh network probe).
   async function runUpdateAll() {
     if (!canManage || busyScope !== null || restarting || updatingAll) return;
     const targets = packages.filter((pkg) => pkg.updateAvailable === true);
@@ -562,9 +339,6 @@ export function setupPackageManager(deps) {
     deps.onUpdatesChecked?.(updateCount());
   }
 
-  // Restart the embedded pi subprocess for the current workspace/session so
-  // package enable/disable/update changes take effect immediately. On success
-  // the caller re-bootstraps the session against the fresh runtime.
   async function runRestart() {
     if (!canManage || restarting || busyScope !== null) return;
     const workspaceId = deps.getWorkspaceId?.();
@@ -656,10 +430,6 @@ export function setupPackageManager(deps) {
     return failure.detail || String(error?.message || error || "unknown error");
   }
 
-  // Status/error text has its own fixed slot above the footer so it never
-  // resizes or reflows the summary/action buttons next to it (a shared flex
-  // row let a long error squeeze the buttons to the point of scrambling their
-  // layout).
   function renderBanner() {
     if (!bannerEl) return;
     bannerEl.replaceChildren();

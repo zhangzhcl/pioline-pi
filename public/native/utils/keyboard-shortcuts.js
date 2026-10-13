@@ -28,6 +28,19 @@ function overlayOwnsEscape() {
   );
 }
 
+export function isMacOS(nav = globalThis.navigator) {
+  const platform = nav?.userAgentData?.platform || nav?.platform || "";
+  return /mac/i.test(platform);
+}
+
+export function isFilePanelShortcut(event, nav = globalThis.navigator) {
+  if (!event || event.altKey || event.shiftKey) return false;
+  if (String(event.key || "").toLowerCase() !== "b") return false;
+  return isMacOS(nav)
+    ? Boolean(event.metaKey && !event.ctrlKey)
+    : Boolean(event.ctrlKey && !event.metaKey);
+}
+
 export function setupAppKeyboardShortcuts({ input, abort, isWorking }) {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {

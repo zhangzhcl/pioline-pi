@@ -125,6 +125,15 @@ export function buildSessionTree({ entries, leafId } = {}) {
 
   /** Visible children of a full-tree entry, bridging through hidden entries.
    * Cycle-guarded: malformed parent chains can loop. */
+  const classifiedById = new Map();
+  const getClassified = (entry) => {
+    if (!entry || typeof entry.id !== "string") return null;
+    if (classifiedById.has(entry.id)) return classifiedById.get(entry.id);
+    const cls = classifyEntry(entry);
+    classifiedById.set(entry.id, cls);
+    return cls;
+  };
+
   // Only final assistant answers belong in Session history. Pi may persist
   // several assistant entries for one turn (thinking/tool work followed by a
   // final answer); identify the last text-bearing assistant before the next
@@ -133,8 +142,8 @@ export function buildSessionTree({ entries, leafId } = {}) {
   const isVisibleUser = (entry) => entry?.type === "message" && entry.message?.role === "user";
   const isTextAssistant = (entry) => {
     if (entry?.type !== "message" || entry.message?.role !== "assistant") return false;
-    const text = messageText(entry.message.content);
-    return Boolean(text.trim());
+    const cls = getClassified(entry);
+    return Boolean(cls && !cls.statusOnly && cls.previewText);
   };
   const markFinalAssistant = (entry) => {
     if (!isTextAssistant(entry)) return;
@@ -152,14 +161,16 @@ export function buildSessionTree({ entries, leafId } = {}) {
   };
   for (const entry of list) markFinalAssistant(entry);
 
+  const visibleChildrenCache = new Map();
   const visibleChildren = (entryId) => {
+    if (visibleChildrenCache.has(entryId)) return visibleChildrenCache.get(entryId);
     const out = [];
     const seen = new Set();
     const walk = (id) => {
       for (const child of childrenOf.get(id) ?? []) {
         if (seen.has(child.id)) continue;
         seen.add(child.id);
-        const cls = classifyEntry(child);
+        const cls = getClassified(child);
         if (
           cls &&
           (cls.role !== "assistant" || cls.statusOnly || finalAssistantIds.has(child.id))
@@ -174,7 +185,7 @@ export function buildSessionTree({ entries, leafId } = {}) {
       for (const root of roots) {
         if (seen.has(root.id)) continue;
         seen.add(root.id);
-        const cls = classifyEntry(root);
+        const cls = getClassified(root);
         if (cls && (cls.role !== "assistant" || cls.statusOnly || finalAssistantIds.has(root.id))) {
           out.push({ entry: root, cls });
         } else {
@@ -184,6 +195,7 @@ export function buildSessionTree({ entries, leafId } = {}) {
     } else {
       walk(entryId);
     }
+    visibleChildrenCache.set(entryId, out);
     return out;
   };
 

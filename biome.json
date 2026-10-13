@@ -17,6 +17,7 @@
       "!pi-gui",
       "!node_modules",
       "!public/vendor",
+      "!public/compat",
       "!coverage",
       "!skill-install-prototype.html",
       "!docs/prototypes"

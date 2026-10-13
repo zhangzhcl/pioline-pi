@@ -3,6 +3,7 @@ function createEmptyAssistantMessage() {
 }
 
 const MAX_TOOL_CALL_ARGUMENT_BYTES = 1024 * 1024;
+const TEXT_ENCODER = new TextEncoder();
 
 function cloneMessage(message) {
   if (message?.role !== "assistant") return createEmptyAssistantMessage();
@@ -11,6 +12,19 @@ function cloneMessage(message) {
     content: Array.isArray(message.content)
       ? structuredClone(message.content)
       : message.content || [],
+  };
+}
+
+function snapshotStreamingMessage(message) {
+  if (!message) return null;
+  return {
+    ...message,
+    ...(message.usage ? { usage: structuredClone(message.usage) } : {}),
+    content: Array.isArray(message.content)
+      ? message.content.map((block) =>
+          block?.type === "toolCall" ? structuredClone(block) : block ? { ...block } : block,
+        )
+      : [],
   };
 }
 
@@ -64,19 +78,21 @@ function applyDelta(message, event, toolCallArgumentBuffers) {
       const block = ensureBlock(content, delta.contentIndex, "toolCall");
       if (typeof delta.id === "string") block.id = delta.id;
       if (typeof delta.toolName === "string") block.name = delta.toolName;
-      toolCallArgumentBuffers.set(delta.contentIndex, "");
+      toolCallArgumentBuffers.set(delta.contentIndex, { text: "", bytes: 0 });
       break;
     }
     case "toolcall_delta": {
       const block = ensureBlock(content, delta.contentIndex, "toolCall");
-      if (typeof delta.delta !== "string" || toolCallArgumentBuffers.get(delta.contentIndex) === null)
-        break;
-      const partial = `${toolCallArgumentBuffers.get(delta.contentIndex) ?? ""}${delta.delta}`;
-      if (new TextEncoder().encode(partial).byteLength > MAX_TOOL_CALL_ARGUMENT_BYTES) {
+      const currentBuffer = toolCallArgumentBuffers.get(delta.contentIndex);
+      if (typeof delta.delta !== "string" || currentBuffer === null) break;
+      const chunkBytes = TEXT_ENCODER.encode(delta.delta).byteLength;
+      const nextBytes = (currentBuffer?.bytes ?? 0) + chunkBytes;
+      if (nextBytes > MAX_TOOL_CALL_ARGUMENT_BYTES) {
         toolCallArgumentBuffers.set(delta.contentIndex, null);
         break;
       }
-      toolCallArgumentBuffers.set(delta.contentIndex, partial);
+      const partial = `${currentBuffer?.text ?? ""}${delta.delta}`;
+      toolCallArgumentBuffers.set(delta.contentIndex, { text: partial, bytes: nextBytes });
       try {
         const args = JSON.parse(partial);
         if (args && typeof args === "object" && !Array.isArray(args)) block.arguments = args;
@@ -104,7 +120,7 @@ export function createAssistantMessageStream() {
     start(initialMessage) {
       toolCallArgumentBuffers.clear();
       message = cloneMessage(initialMessage);
-      return structuredClone(message);
+      return snapshotStreamingMessage(message);
     },
     update(event) {
       message = applyDelta(
@@ -112,7 +128,7 @@ export function createAssistantMessageStream() {
         event,
         toolCallArgumentBuffers,
       );
-      return structuredClone(message);
+      return snapshotStreamingMessage(message);
     },
     finish(finalMessage) {
       const completed = cloneMessage(finalMessage ?? message);
@@ -125,7 +141,7 @@ export function createAssistantMessageStream() {
       toolCallArgumentBuffers.clear();
     },
     current() {
-      return message ? structuredClone(message) : null;
+      return snapshotStreamingMessage(message);
     },
   };
 }

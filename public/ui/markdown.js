@@ -5,8 +5,9 @@
  * task lists, images, paragraphs.
  */
 
-import { onLocaleChange, t } from "../i18n.js";
 import remend from "remend";
+import { onLocaleChange, t } from "../i18n.js";
+import { escapeHtmlText as escapeHtml } from "./message-renderer-helpers.js";
 
 /**
  * Streaming-tolerant renderer for partial markdown. remend closes unterminated
@@ -332,14 +333,6 @@ function renderInline(text) {
   text = text.replace(/%%ICODE(\d+)%%/g, (_, idx) => codeSpans[parseInt(idx, 10)]);
 
   return text;
-}
-
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 /**

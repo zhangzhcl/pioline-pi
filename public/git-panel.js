@@ -1,11 +1,18 @@
 // ABOUTME: Owns the Git tab, status groups, and safe user-visible Git actions.
 // ABOUTME: Renders untrusted repository paths with DOM text nodes and delegates writes to GitClient.
 
-import { createFileTypeIcon } from "./file-type-icons.js";
 import { GitHistoryPanel } from "./git-history-panel.js";
+import {
+  buildGitTree,
+  confirmDiscardDialog,
+  countGitTreeFiles,
+  createCommitDialog,
+  createGitPanelToolbar,
+  groupsForGitEntry,
+  renderGitTree,
+} from "./git-panel-dialogs.js";
 import { t } from "./i18n.js";
-import { createIcon, setButtonIcon } from "./icons.js";
-import { bindDialogEscape } from "./ui/dialog-escape.js";
+import { createIcon } from "./icons.js";
 
 function createSectionChevron() {
   const chevron = document.createElement("span");
@@ -13,18 +20,6 @@ function createSectionChevron() {
   chevron.setAttribute("aria-hidden", "true");
   chevron.append(createIcon("chevron-right", { size: 16 }));
   return chevron;
-}
-
-function createToolbarIconButton({ className, icon, label, variant, disabled = false, onClick }) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = `ui-icon-button ui-icon-button--sm ${variant} ${className}`;
-  button.setAttribute("aria-label", label);
-  button.title = label;
-  button.disabled = disabled;
-  setButtonIcon(button, icon, { size: 14 });
-  button.addEventListener("click", onClick);
-  return button;
 }
 
 // Object-icon rendering for Git entries uses the shared Material file-type
@@ -154,45 +149,7 @@ export class GitPanel {
     return this.write("discard", entries, contextGroup);
   }
   confirmDiscard(count) {
-    return new Promise((resolve) => {
-      const overlay = document.createElement("div");
-      overlay.className = "git-confirm-dialog-overlay";
-      overlay.setAttribute("role", "alertdialog");
-      overlay.setAttribute("aria-modal", "true");
-      const dialog = document.createElement("div");
-      dialog.className = "git-confirm-dialog";
-      const message = document.createElement("p");
-      message.className = "git-confirm-message";
-      message.textContent = t("git.discardConfirm", { count });
-      dialog.append(message);
-      const actions = document.createElement("div");
-      actions.className = "git-confirm-actions";
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.textContent = t("git.cancel");
-      const confirm = document.createElement("button");
-      confirm.type = "button";
-      confirm.textContent = t("git.discard");
-      confirm.className = "git-confirm-discard";
-      actions.append(cancel, confirm);
-      dialog.append(actions);
-      overlay.append(dialog);
-      overlay.addEventListener("click", () => {
-        // Modal: do not close on overlay click. The user must explicitly
-        // cancel or confirm.
-      });
-      let unbindEscape = () => {};
-      const finish = (result) => {
-        unbindEscape();
-        overlay.remove();
-        resolve(result);
-      };
-      unbindEscape = bindDialogEscape(() => finish(false));
-      cancel.addEventListener("click", () => finish(false));
-      confirm.addEventListener("click", () => finish(true));
-      document.body.append(overlay);
-      confirm.focus();
-    });
+    return confirmDiscardDialog(count);
   }
   requestAiCommitMessage() {
     if (
@@ -233,80 +190,27 @@ export class GitPanel {
   }
   applyConfirmationToken(token) {
     this.pendingConfirmationToken = token || null;
-    // A confirmation-required response means the first commit attempt was
-    // accepted-but-pending, not failed. End the in-progress state so the
-    // dialog becomes editable and the submit button is re-enabled for the
-    // user to explicitly confirm.
     this.commitInProgress = false;
     if (this.commitDialog) {
-      // Re-render the dialog so the confirmation notice appears.
       this.openCommitDialog();
     }
   }
   openCommitDialog() {
     if (!this.aiSnapshot?.snapshotId) return;
     this.closeCommitDialog();
-    const overlay = document.createElement("div");
-    overlay.className = "git-commit-dialog-overlay";
-    overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-modal", "true");
-    overlay.setAttribute("aria-labelledby", "git-commit-dialog-title");
-    const dialog = document.createElement("div");
-    dialog.className = "git-commit-dialog";
-    const title = document.createElement("h3");
-    title.id = "git-commit-dialog-title";
-    title.textContent = t("git.commit");
-    dialog.append(title);
-    if (this.aiError) {
-      const error = document.createElement("p");
-      error.className = "git-commit-error";
-      error.textContent = this.aiError;
-      dialog.append(error);
-    }
-    if (this.pendingConfirmationToken) {
-      const notice = document.createElement("p");
-      notice.className = "git-commit-confirmation";
-      notice.textContent = t("git.confirmationRequired");
-      dialog.append(notice);
-    }
-    const textarea = document.createElement("textarea");
-    textarea.className = "git-commit-textarea";
-    textarea.value = this.commitMessage || "";
-    textarea.setAttribute("aria-label", t("git.commitMessageLabel"));
-    textarea.rows = 6;
-    textarea.addEventListener("input", () => {
-      this.commitMessage = textarea.value;
+    this.commitDialog = createCommitDialog({
+      aiError: this.aiError,
+      pendingConfirmationToken: this.pendingConfirmationToken,
+      commitMessage: this.commitMessage,
+      onInput: (value) => {
+        this.commitMessage = value;
+      },
+      onCancel: () => this.closeCommitDialog(),
+      onSubmit: (value) => {
+        this.commitMessage = value;
+        this.commit();
+      },
     });
-    dialog.append(textarea);
-    const actions = document.createElement("div");
-    actions.className = "git-commit-actions";
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.textContent = t("git.cancel");
-    cancel.addEventListener("click", () => this.closeCommitDialog());
-    const submit = document.createElement("button");
-    submit.type = "button";
-    submit.textContent = t("git.commit");
-    submit.className = "git-commit-submit";
-    submit.addEventListener("click", () => {
-      this.commitMessage = textarea.value;
-      this.commit();
-    });
-    actions.append(cancel, submit);
-    dialog.append(actions);
-    overlay.append(dialog);
-    overlay.addEventListener("click", () => {
-      // Commit dialog is modal: do not close on overlay click. The user
-      // must explicitly cancel or submit.
-    });
-    document.body.append(overlay);
-    this.commitDialog = {
-      overlay,
-      textarea,
-      submit,
-      unbindEscape: bindDialogEscape(() => this.closeCommitDialog()),
-    };
-    textarea.focus();
     this.updateCommitDialogState();
   }
   closeCommitDialog() {
@@ -339,9 +243,6 @@ export class GitPanel {
       this.pendingCommitRequestId = null;
       return;
     }
-    // failed / outcomeUnknown: end the spinner but keep the user's message so
-    // they can read the error and retry. Do not clear aiSnapshot — the commit
-    // may be retried against the same snapshot once the user fixes the cause.
     this.commitInProgress = false;
     this.pendingCommitRequestId = null;
     if (status === "outcomeUnknown") {
@@ -352,9 +253,6 @@ export class GitPanel {
     if (this.commitDialog) this.openCommitDialog();
   }
   applyCommitFailure(error) {
-    // A commit failure (stale snapshot, hook rejection, token error) must not
-    // leave the dialog permanently disabled. End the in-progress state,
-    // surface the error, and keep the user's message so they can retry.
     this.commitInProgress = false;
     this.aiError = error || t("git.aiFailed");
     if (this.commitDialog) this.openCommitDialog();
@@ -368,8 +266,6 @@ export class GitPanel {
   }
   push() {
     if (this.pushInProgress) return null;
-    // Clear the previous outcome first so a retry never renders a stale error
-    // next to an in-flight push.
     this.pushError = null;
     this.pushInProgress = true;
     const requestId = this.client?.push();
@@ -399,9 +295,6 @@ export class GitPanel {
   }
   write(operation, entries = [], contextGroup = null) {
     const snapshotId = this.snapshot?.snapshotId;
-    // The caller supplies the group context (the group the user clicked in).
-    // Do NOT expand a partial-stage entry into all its groups: staging from
-    // the Changes group must send group="changes", not also "staged".
     const selected = entries
       .map((entry) => ({
         group: contextGroup || this.groupsFor(entry)[0],
@@ -424,6 +317,8 @@ export class GitPanel {
     return this.client?.write(operation, snapshotId, selected);
   }
   destroy() {
+    this.closeCommitDialog();
+    this.historyPanel?.destroy?.();
     this.container?.replaceChildren();
   }
   render() {
@@ -443,16 +338,18 @@ export class GitPanel {
       this.container.append(empty);
       return;
     }
-    const selectedEntriesFor = (group) =>
-      (snapshot.entries || [])
-        .filter((entry) => this.groupsFor(entry).includes(group))
-        .filter((entry) =>
-          this.selected.has(`${snapshot.snapshotId}:${group}:${entry.pathBytesBase64}`),
-        );
-    for (const group of GROUPS) {
-      const entries = (snapshot.entries || []).filter((entry) =>
-        this.groupsFor(entry).includes(group),
+    const entriesByGroup = new Map(GROUPS.map((group) => [group, []]));
+    for (const entry of snapshot.entries || []) {
+      for (const group of this.groupsFor(entry)) {
+        entriesByGroup.get(group)?.push(entry);
+      }
+    }
+    const selectedEntriesFor = (group, groupEntries) =>
+      groupEntries.filter((entry) =>
+        this.selected.has(`${snapshot.snapshotId}:${group}:${entry.pathBytesBase64}`),
       );
+    for (const group of GROUPS) {
+      const entries = entriesByGroup.get(group) || [];
       const section = document.createElement("section");
       section.className = `git-group git-group-${group}`;
       const heading = document.createElement("div");
@@ -503,7 +400,7 @@ export class GitPanel {
         section.append(notice);
       }
       if (entries.length > 0) {
-        const selected = selectedEntriesFor(group);
+        const selected = selectedEntriesFor(group, entries);
         const actions = document.createElement("div");
         actions.className = "git-group-actions";
         const operations =
@@ -530,195 +427,38 @@ export class GitPanel {
       }
       this.container.append(section);
     }
-    const toolbar = document.createElement("header");
-    toolbar.className = "git-panel-toolbar";
-    const details = document.createElement("div");
-    details.className = "git-panel-details";
-    const summary = document.createElement("p");
-    summary.className = "git-panel-summary";
-    const branch = snapshot.branch || snapshot.headState || "";
-    const upstream = snapshot.upstream || t("git.noUpstream");
-    summary.textContent = t("git.summary", {
-      branch,
-      upstream,
-      ahead: snapshot.ahead || 0,
-      behind: snapshot.behind || 0,
-    });
-    details.append(summary);
-    const stats = document.createElement("p");
-    stats.className = "git-panel-stats";
-    stats.textContent = t("git.stats", {
-      staged: snapshot.counts?.staged || 0,
-      changes: snapshot.counts?.changes || 0,
-      untracked: snapshot.counts?.untracked || 0,
-      additions: snapshot.changeStats?.additions || 0,
-      deletions: snapshot.changeStats?.deletions || 0,
-      untrackedExcluded: snapshot.changeStats?.untrackedExcludedCount || 0,
-      binary: snapshot.changeStats?.binaryFileCount || 0,
-    });
-    details.append(stats);
-    if (this.pushError) {
-      const pushError = document.createElement("p");
-      pushError.className = "git-panel-push-error";
-      pushError.setAttribute("role", "alert");
-      pushError.textContent = this.pushError;
-      details.append(pushError);
-    }
-    toolbar.append(details);
-    const actions = document.createElement("div");
-    actions.className = "git-panel-toolbar-actions";
-    actions.append(
-      createToolbarIconButton({
-        className: "git-panel-push",
-        icon: "arrow-up",
-        label: this.pushInProgress ? t("git.pushing") : t("git.push"),
-        variant: "ui-icon-button--ghost",
-        // Nothing to publish from a detached HEAD, and a push already in
-        // flight holds the workspace write slot.
-        disabled: this.pushInProgress || !snapshot.branch,
-        onClick: () => this.push(),
+    this.container.prepend(
+      createGitPanelToolbar({
+        snapshot,
+        pushError: this.pushError,
+        pushInProgress: this.pushInProgress,
+        onPush: () => this.push(),
+        onAiCommit: () => this.requestAiCommitMessage(),
       }),
     );
-    actions.append(
-      createToolbarIconButton({
-        className: "git-panel-commit",
-        icon: "sparkles",
-        label: t("git.aiCommitMessage"),
-        variant: "ui-icon-button--primary",
-        disabled: snapshot.counts?.staged === 0 || snapshot.counts?.conflicted > 0,
-        onClick: () => this.requestAiCommitMessage(),
-      }),
-    );
-    toolbar.append(actions);
-    this.container.prepend(toolbar);
     this.container.scrollTop = scrollTop;
   }
   buildTree(entries) {
-    const root = { dirs: new Map(), files: [] };
-    for (const entry of entries) {
-      const path = entry.displayPath || "";
-      const parts = path.split(/[/\\]/).filter(Boolean);
-      if (parts.length <= 1) {
-        root.files.push(entry);
-        continue;
-      }
-      let node = root;
-      for (let i = 0; i < parts.length - 1; i += 1) {
-        const segment = parts[i];
-        let child = node.dirs.get(segment);
-        if (!child) {
-          child = {
-            dirs: new Map(),
-            files: [],
-            prefix: parts.slice(0, i + 1).join("/"),
-          };
-          node.dirs.set(segment, child);
-        }
-        node = child;
-      }
-      node.files.push(entry);
-    }
-    return root;
+    return buildGitTree(entries);
   }
   renderTree(node, container, snapshot, group, prefix) {
-    for (const [segment, child] of node.dirs) {
-      const dirKey = `dir:${group}:${child.prefix}`;
-      const dirSection = document.createElement("div");
-      dirSection.className = "git-directory";
-      const dirHeading = document.createElement("button");
-      dirHeading.type = "button";
-      dirHeading.className = "git-directory-heading git-tree-row";
-      if (this.folded.has(dirKey)) dirHeading.classList.add("collapsed");
-      const fileCount = this.countFiles(child);
-      const icon = document.createElement("span");
-      icon.className = "git-tree-folder-icon";
-      icon.setAttribute("aria-hidden", "true");
-      icon.append(
-        createFileTypeIcon({
-          name: segment,
-          isDirectory: true,
-          expanded: !this.folded.has(dirKey),
-        }),
-      );
-      const label = document.createElement("span");
-      label.className = "git-tree-label";
-      label.textContent = `${prefix ? `${prefix}/` : ""}${segment}`;
-      const count = document.createElement("span");
-      count.className = "git-tree-count";
-      count.textContent = String(fileCount);
-      dirHeading.append(icon, label, count);
-      dirHeading.setAttribute("aria-expanded", String(!this.folded.has(dirKey)));
-      dirHeading.addEventListener("click", () => {
-        this.folded.has(dirKey) ? this.folded.delete(dirKey) : this.folded.add(dirKey);
-        this.render();
-      });
-      dirSection.append(dirHeading);
-      if (!this.folded.has(dirKey)) {
-        const dirBody = document.createElement("div");
-        dirBody.className = "git-directory-body";
-        this.renderTree(child, dirBody, snapshot, group, `${prefix ? `${prefix}/` : ""}${segment}`);
-        dirSection.append(dirBody);
-      }
-      container.append(dirSection);
-    }
-    for (const entry of node.files) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "git-entry git-tree-row";
-      const fileName = entry.displayPath.split(/[/\\]/).pop() || entry.displayPath;
-      const icon = document.createElement("span");
-      icon.className = "git-tree-file-icon";
-      icon.setAttribute("aria-hidden", "true");
-      icon.append(createFileTypeIcon({ name: fileName }));
-      const label = document.createElement("span");
-      label.className = "git-tree-label";
-      label.textContent = fileName;
-      row.append(icon, label);
-      row.setAttribute("aria-label", entry.displayPath);
-      row.title = entry.displayPath;
-      const identity = `${snapshot.snapshotId}:${group}:${entry.pathBytesBase64}`;
-      if (this.selected.has(identity)) {
-        row.classList.add("git-entry-selected");
-        row.setAttribute("aria-pressed", "true");
-      }
-      row.addEventListener("click", (event) => {
-        if (group === "conflicted") return;
-        if (event.shiftKey) {
-          this.selected.has(identity)
-            ? this.selected.delete(identity)
-            : this.selected.add(identity);
-          this.render();
-          return;
-        }
-        const comparison =
-          group === "staged" ? "staged" : group === "untracked" ? "untracked" : "changes";
-        const requestId = this.client?.diff?.(
-          snapshot.snapshotId,
-          group,
-          entry.pathBytesBase64,
-          comparison,
-        );
-        if (requestId) this.onDiffRequest?.(requestId, { ...entry, comparison });
-        else this.openDiff?.({ ...entry, comparison });
-      });
-      container.append(row);
-    }
+    renderGitTree({
+      panel: this,
+      node,
+      container,
+      snapshot,
+      group,
+      prefix,
+    });
   }
   countFiles(node) {
-    let count = node.files.length;
-    for (const child of node.dirs.values()) count += this.countFiles(child);
-    return count;
+    return countGitTreeFiles(node);
   }
   _createChevron() {
     return createSectionChevron();
   }
   groupsFor(entry) {
-    if (entry.entryKind === "unmerged") return ["conflicted"];
-    if (entry.entryKind === "untracked") return ["untracked"];
-    const groups = [];
-    if (entry.xy?.[0] && entry.xy[0] !== ".") groups.push("staged");
-    if (entry.xy?.[1] && entry.xy[1] !== ".") groups.push("changes");
-    return groups.length > 0 ? groups : ["changes"];
+    return groupsForGitEntry(entry);
   }
   groupFor(entry) {
     return this.groupsFor(entry)[0];

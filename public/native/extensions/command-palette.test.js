@@ -37,7 +37,7 @@ describe("command palette", () => {
       palette,
       overlay,
       list,
-      commands: [{ icon: "⚙️", label: "Settings", desc: "Open settings", action }],
+      commands: [{ icon: "*", label: "Settings", desc: "Open settings", action }],
     });
 
     button.click();

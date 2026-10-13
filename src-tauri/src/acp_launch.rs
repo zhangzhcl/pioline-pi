@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 /// How to spawn one external Agent Client Protocol (ACP) coding agent — the
@@ -11,6 +9,7 @@ pub struct AcpLaunchSpec {
     /// composer's `#` picker, e.g. `"claude-code"`.
     pub agent_id: String,
     /// Human-readable name shown in the composer picker.
+    #[cfg(test)]
     pub label: String,
     pub command: String,
     pub args: Vec<String>,
@@ -111,19 +110,12 @@ pub fn resolve_preset(agent_id: &str, cwd: PathBuf) -> Result<AcpLaunchSpec, Str
     let args = parts.map(str::to_string).collect();
     Ok(AcpLaunchSpec {
         agent_id: agent_id.to_string(),
+        #[cfg(test)]
         label: preset.label.to_string(),
         command,
         args,
         cwd,
     })
-}
-
-/// Every built-in preset, regardless of local availability.
-pub fn available_presets() -> Vec<(&'static str, &'static str)> {
-    PRESETS
-        .iter()
-        .map(|preset| (preset.id, preset.label))
-        .collect()
 }
 
 /// Presets whose agent looks usable on this machine — the underlying CLI is on

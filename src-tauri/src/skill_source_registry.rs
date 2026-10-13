@@ -11,11 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::window_owner::OwnerId;
 
-#[allow(dead_code)]
 pub const SKILL_SOURCE_TTL: Duration = Duration::from_secs(10 * 60);
-#[allow(dead_code)]
 pub const MAX_SKILL_SOURCES_PER_OWNER: usize = 8;
-#[allow(dead_code)]
 const SOURCE_ID_BYTES: usize = 32;
 const INVALID_SOURCE: &str = "invalid or expired skill source";
 
@@ -45,7 +42,6 @@ struct RegistryState {
 struct Entry {
     binding: SkillSourceBinding,
     expires_at: Instant,
-    #[allow(dead_code)]
     issued_at: Instant,
 }
 
@@ -69,18 +65,17 @@ impl SkillSourceRegistry {
         }
     }
 
-    #[allow(dead_code)]
     pub fn issue(
         &self,
         owner_id: OwnerId,
         window_label: String,
-        workspace_root: PathBuf,
+        workspace_root: &Path,
         workspace_port: u16,
         workspace_generation: u64,
-        canonical_path: PathBuf,
+        canonical_path: &Path,
     ) -> Result<String, String> {
-        let canonical_workspace = canonical_dir(&workspace_root)?;
-        let canonical_source = canonical_dir(&canonical_path)?;
+        let canonical_workspace = canonical_dir(workspace_root)?;
+        let canonical_source = canonical_dir(canonical_path)?;
         let now = (self.clock)();
         let mut state = self.inner.lock().map_err(|_| INVALID_SOURCE.to_string())?;
         state.entries.retain(|_, entry| entry.expires_at > now);
@@ -123,10 +118,10 @@ impl SkillSourceRegistry {
                 issued_at: now,
             },
         );
+        drop(state);
         Ok(source_id)
     }
 
-    #[allow(dead_code)]
     pub fn resolve(
         &self,
         source_id: &str,
@@ -151,10 +146,11 @@ impl SkillSourceRegistry {
         {
             return Err(INVALID_SOURCE.to_string());
         }
-        Ok(entry.binding.clone())
+        let binding = entry.binding.clone();
+        drop(state);
+        Ok(binding)
     }
 
-    #[allow(dead_code)]
     pub fn consume(
         &self,
         source_id: &str,
@@ -177,7 +173,7 @@ impl SkillSourceRegistry {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn revoke_owner(&self, owner_id: &OwnerId) {
         if let Ok(mut state) = self.inner.lock() {
             state
@@ -186,7 +182,7 @@ impl SkillSourceRegistry {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn revoke_workspace(&self, owner_id: &OwnerId, generation: u64) {
         if let Ok(mut state) = self.inner.lock() {
             state.entries.retain(|_, entry| {
@@ -196,7 +192,7 @@ impl SkillSourceRegistry {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn revoke_port(&self, workspace_port: u16) {
         if let Ok(mut state) = self.inner.lock() {
             state
@@ -212,28 +208,6 @@ fn canonical_dir(path: &Path) -> Result<PathBuf, String> {
         return Err(INVALID_SOURCE.to_string());
     }
     std::fs::canonicalize(path).map_err(|_| INVALID_SOURCE.to_string())
-}
-
-/// Placeholder: scans a local skill source directory for candidates.
-/// The full implementation delegates to the embedded Pi extension layer.
-#[allow(dead_code)]
-pub fn scan_source_static(
-    _source_id: &str,
-    _install_secret: &str,
-) -> Result<serde_json::Value, String> {
-    Err("skill source scanning is not yet wired to the native host".into())
-}
-
-/// Placeholder: installs skill links into Pi's settings.json.
-#[allow(dead_code)]
-pub fn install_links_static(
-    _source_id: &str,
-    _scope: &str,
-    _scan_revision: &str,
-    _selection: &[serde_json::Value],
-    _install_secret: &str,
-) -> Result<serde_json::Value, String> {
-    Err("skill link installation is not yet wired to the native host".into())
 }
 
 #[cfg(test)]
@@ -269,14 +243,7 @@ mod tests {
         let (_temp, workspace, source) = fixture();
         let registry = SkillSourceRegistry::new();
         let id = registry
-            .issue(
-                owner("owner"),
-                "main".into(),
-                workspace.clone(),
-                4100,
-                7,
-                source.clone(),
-            )
+            .issue(owner("owner"), "main".into(), &workspace, 4100, 7, &source)
             .unwrap();
         assert_eq!(id.len(), 43);
         assert!(id
@@ -296,25 +263,11 @@ mod tests {
         fs::write(&file, "x").unwrap();
         let registry = SkillSourceRegistry::new();
         let error = registry
-            .issue(
-                owner("owner"),
-                "main".into(),
-                workspace.clone(),
-                4100,
-                7,
-                file,
-            )
+            .issue(owner("owner"), "main".into(), &workspace, 4100, 7, &file)
             .unwrap_err();
         assert_eq!(error, INVALID_SOURCE);
         let id = registry
-            .issue(
-                owner("owner"),
-                "main".into(),
-                workspace.clone(),
-                4100,
-                7,
-                source,
-            )
+            .issue(owner("owner"), "main".into(), &workspace, 4100, 7, &source)
             .unwrap();
         for (owner_name, window, generation) in [
             ("other", "main", 7),
@@ -335,24 +288,10 @@ mod tests {
         let (_temp, workspace, source) = fixture();
         let registry = SkillSourceRegistry::new();
         let first = registry
-            .issue(
-                owner("owner"),
-                "main".into(),
-                workspace.clone(),
-                1,
-                0,
-                source.clone(),
-            )
+            .issue(owner("owner"), "main".into(), &workspace, 1, 0, &source)
             .unwrap();
         let second = registry
-            .issue(
-                owner("owner"),
-                "main".into(),
-                workspace.clone(),
-                1,
-                0,
-                source,
-            )
+            .issue(owner("owner"), "main".into(), &workspace, 1, 0, &source)
             .unwrap();
         assert_eq!(
             registry
@@ -373,14 +312,7 @@ mod tests {
         let (seconds, clock) = clock();
         let registry = SkillSourceRegistry::with_clock(clock);
         let id = registry
-            .issue(
-                owner("owner"),
-                "main".into(),
-                workspace.clone(),
-                1,
-                0,
-                source,
-            )
+            .issue(owner("owner"), "main".into(), &workspace, 1, 0, &source)
             .unwrap();
         seconds.fetch_add(SKILL_SOURCE_TTL.as_secs() + 1, Ordering::SeqCst);
         assert_eq!(
@@ -396,24 +328,13 @@ mod tests {
         let (_temp, workspace, source) = fixture();
         let registry = SkillSourceRegistry::new();
         let owner_handle = registry
-            .issue(
-                owner("owner"),
-                "main".into(),
-                workspace.clone(),
-                1,
-                1,
-                source.clone(),
-            )
+            .issue(owner("owner"), "main".into(), &workspace, 1, 1, &source)
             .unwrap();
         let other = registry
-            .issue(
-                owner("other"),
-                "main".into(),
-                workspace.clone(),
-                2,
-                2,
-                source,
-            )
+            .issue(owner("other"), "main".into(), &workspace, 2, 2, &source)
+            .unwrap();
+        let third = registry
+            .issue(owner("third"), "main".into(), &workspace, 3, 3, &source)
             .unwrap();
         registry.revoke_workspace(&owner("owner"), 1);
         registry.revoke_workspace(&owner("owner"), 1);
@@ -434,6 +355,14 @@ mod tests {
                 .unwrap_err(),
             INVALID_SOURCE
         );
+        registry.revoke_owner(&owner("third"));
+        registry.revoke_owner(&owner("third"));
+        assert_eq!(
+            registry
+                .resolve(&third, &owner("third"), "main", &workspace, 3)
+                .unwrap_err(),
+            INVALID_SOURCE
+        );
     }
 
     #[test]
@@ -447,10 +376,10 @@ mod tests {
                     .issue(
                         owner("owner"),
                         window.to_string(),
-                        workspace.clone(),
+                        &workspace,
                         window as u16,
                         0,
-                        source.clone(),
+                        &source,
                     )
                     .unwrap(),
             );
